@@ -1,0 +1,29 @@
+# Private planning and agent context. Never commit this directory.
+privateDocs/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Build and test output
+dist/
+tmp/
+coverage/
+*.out
+*.test
+
+# Go
+vendor/
+
+# Svelte / Node
+node_modules/
+.svelte-kit/
+build/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
