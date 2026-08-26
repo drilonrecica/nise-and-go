@@ -1,0 +1,46 @@
+name: Focused proposal
+description: Propose a change backed by a concrete application need.
+title: "proposal: "
+labels:
+  - proposal
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Nise follows one golden path. Requests for broad stack expansion are unlikely to be accepted.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Concrete problem
+      description: Describe the real application and workflow that are blocked.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Existing escape hatches considered
+      description: Explain why normal application code or an existing extension point is insufficient.
+    validations:
+      required: true
+  - type: textarea
+    id: costs
+    attributes:
+      label: Security, performance, compatibility, and maintenance cost
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope checks
+      options:
+        - label: This proposal is compatible with the documented golden profile.
+          required: true
+        - label: I understand that opening an issue does not commit the maintainer to implementing it.
+          required: true
+
