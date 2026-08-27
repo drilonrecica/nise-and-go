@@ -16,6 +16,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Generated frontend](frontend.md)
 - [Security model](security.md)
 - [CLI and distribution](cli-and-distribution.md)
+- [CLI output contract](cli-output.md)
 - [Toolchain](toolchain.md)
 - [Dependency allowlist](dependencies.md)
 - [Supported platforms](supported-platforms.md)
