@@ -1,0 +1,471 @@
+package secure_test
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/drilonrecica/nise-and-go/runtime/secure"
+)
+
+// TestUnsafeSourcesAreRefused checks the property the brief states as a hard
+// requirement: there is no route through this API to 'unsafe-eval', or to
+// 'unsafe-inline' in script-src.
+func TestUnsafeSourcesAreRefused(t *testing.T) {
+	t.Parallel()
+
+	refused := []string{
+		"'unsafe-inline'",
+		"'UNSAFE-INLINE'",
+		"'unsafe-eval'",
+		"'unsafe-hashes'",
+		"'wasm-unsafe-eval'",
+		"*",
+	}
+	makers := map[string]func(string) secure.Option{
+		"AllowScriptSources": func(s string) secure.Option {
+			return secure.AllowScriptSources("reason", s)
+		},
+		"AllowStyleSources": func(s string) secure.Option {
+			return secure.AllowStyleSources("reason", s)
+		},
+		"AllowConnectSources": func(s string) secure.Option {
+			return secure.AllowConnectSources("reason", s)
+		},
+		"AllowImageSources": func(s string) secure.Option {
+			return secure.AllowImageSources("reason", s)
+		},
+		"AllowFontSources": func(s string) secure.Option {
+			return secure.AllowFontSources("reason", s)
+		},
+		"AllowFrameAncestors": func(s string) secure.Option {
+			return secure.AllowFrameAncestors("reason", s)
+		},
+	}
+	for name, make := range makers {
+		for _, source := range refused {
+			t.Run(name+"/"+source, func(t *testing.T) {
+				t.Parallel()
+				if _, err := secure.NewDocumentPolicy(secure.Production, make(source)); err == nil {
+					t.Fatalf("%s accepted %q; no option may produce this source", name, source)
+				}
+			})
+		}
+	}
+}
+
+// TestSourcesCannotBreakOutOfTheHeader checks that a source cannot terminate
+// its directive, split the source list, or split the HTTP response header.
+func TestSourcesCannotBreakOutOfTheHeader(t *testing.T) {
+	t.Parallel()
+
+	refused := []string{
+		"https://ok.example; script-src 'unsafe-inline'",
+		"https://ok.example, https://evil.example",
+		"https://ok.example\r\nSet-Cookie: session=stolen",
+		"https://ok.example\nX-Injected: 1",
+		"https://ok.example https://evil.example",
+		"https://ok.example\t",
+		"https://ok.example\x00",
+		"https://ok.exämple",
+		"",
+		strings.Repeat("a", 4096),
+	}
+	for _, source := range refused {
+		t.Run(strings.ReplaceAll(source, "\n", `\n`), func(t *testing.T) {
+			t.Parallel()
+			_, err := secure.NewDocumentPolicy(
+				secure.Production,
+				secure.AllowConnectSources("third-party analytics", source),
+			)
+			if err == nil {
+				t.Fatalf("accepted CSP source %q", source)
+			}
+		})
+	}
+}
+
+func TestAllowOptionsRequireANonEmptyReason(t *testing.T) {
+	t.Parallel()
+
+	for _, reason := range []string{"", " ", "\t\n"} {
+		options := map[string]secure.Option{
+			"AllowScriptSources":         secure.AllowScriptSources(reason, "https://cdn.example"),
+			"AllowStyleSources":          secure.AllowStyleSources(reason, "https://cdn.example"),
+			"AllowConnectSources":        secure.AllowConnectSources(reason, "https://api.example"),
+			"AllowImageSources":          secure.AllowImageSources(reason, "https://img.example"),
+			"AllowFontSources":           secure.AllowFontSources(reason, "https://font.example"),
+			"AllowFrameAncestors":        secure.AllowFrameAncestors(reason, "https://portal.example"),
+			"AllowInlineStyleAttributes": secure.AllowInlineStyleAttributes(reason),
+			"AllowCrossOriginPopups":     secure.AllowCrossOriginPopups(reason),
+			"AllowCrossOriginResources":  secure.AllowCrossOriginResources(reason, secure.ResourceCrossOrigin),
+			"AllowReferrerPolicy":        secure.AllowReferrerPolicy(reason, secure.ReferrerUnsafeURL),
+			"AllowPermission":            secure.AllowPermission(reason, "camera", "self"),
+		}
+		for name, opt := range options {
+			t.Run(name+"/"+strings.TrimSpace(reason)+"empty", func(t *testing.T) {
+				t.Parallel()
+				if _, err := secure.NewDocumentPolicy(secure.Production, opt); err == nil {
+					t.Fatalf("%s accepted an empty reason", name)
+				}
+			})
+		}
+	}
+}
+
+func TestWaiversRecordEveryWeakening(t *testing.T) {
+	t.Parallel()
+
+	clean, err := secure.NewDocumentPolicy(secure.Production)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+	if got := clean.Waivers(); len(got) != 0 {
+		t.Errorf("the default policy carries %d waivers: %v", len(got), got)
+	}
+
+	weakened, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.AllowInlineStyleAttributes("SvelteKit's accessibility announcer sets a style attribute"),
+		secure.AllowConnectSources("error reporting", "https://errors.example"),
+		secure.AllowCrossOriginPopups("the identity provider signs in through a popup"),
+	)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+	waivers := weakened.Waivers()
+	if len(waivers) != 3 {
+		t.Fatalf("got %d waivers, want 3: %v", len(waivers), waivers)
+	}
+	controls := map[string]bool{}
+	for _, w := range waivers {
+		controls[w.Control] = true
+		if w.Reason == "" {
+			t.Errorf("waiver %v has no reason", w)
+		}
+		if !strings.Contains(w.String(), w.Reason) {
+			t.Errorf("Waiver.String() = %q, want it to carry the reason", w.String())
+		}
+	}
+	for _, want := range []string{"style-src-attr", "connect-src", "cross-origin-opener-policy"} {
+		if !controls[want] {
+			t.Errorf("no waiver recorded for %s", want)
+		}
+	}
+
+	// The returned slice is a copy: mutating it must not launder a waiver
+	// out of the policy.
+	waivers[0] = secure.Waiver{}
+	if weakened.Waivers()[0].Control == "" {
+		t.Error("Waivers() returned the policy's own slice; a caller could erase its own weakenings")
+	}
+}
+
+func TestAllowInlineStyleAttributesIsScopedToStyleSrcAttr(t *testing.T) {
+	t.Parallel()
+
+	p, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.AllowInlineStyleAttributes("component library sets element style attributes"),
+	)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+	directives := parseCSP(p.ContentSecurityPolicy())
+	if got := directives["style-src-attr"]; got != "'unsafe-inline'" {
+		t.Errorf("style-src-attr = %q, want %q", got, "'unsafe-inline'")
+	}
+	if got := directives["style-src"]; got != "'self'" {
+		t.Errorf("style-src = %q; the waiver must not widen inline style elements too", got)
+	}
+	if got := directives["script-src"]; strings.Contains(got, "unsafe") {
+		t.Errorf("script-src = %q; a style waiver must never touch script-src", got)
+	}
+}
+
+func TestAllowFrameAncestorsDropsXFrameOptions(t *testing.T) {
+	t.Parallel()
+
+	p, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.AllowFrameAncestors("embedded in the partner portal", "https://portal.example"),
+	)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+	if got := parseCSP(p.ContentSecurityPolicy())["frame-ancestors"]; got != "https://portal.example" {
+		t.Errorf("frame-ancestors = %q", got)
+	}
+	if got := serve(t, p, nil).Get(secure.HeaderFrameOptions); got != "" {
+		t.Errorf("%s = %q after frame-ancestors was relaxed; the two headers must never disagree",
+			secure.HeaderFrameOptions, got)
+	}
+}
+
+func TestScriptAndStyleHashes(t *testing.T) {
+	t.Parallel()
+
+	const validHash = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+
+	t.Run("accepted with and without quotes", func(t *testing.T) {
+		t.Parallel()
+		p, err := secure.NewDocumentPolicy(
+			secure.Production,
+			secure.WithScriptHashes(validHash),
+			secure.WithStyleHashes("'"+validHash+"'"),
+		)
+		if err != nil {
+			t.Fatalf("NewDocumentPolicy: %v", err)
+		}
+		directives := parseCSP(p.ContentSecurityPolicy())
+		if got := directives["script-src"]; got != "'self' '"+validHash+"'" {
+			t.Errorf("script-src = %q", got)
+		}
+		if got := directives["style-src"]; got != "'self' '"+validHash+"'" {
+			t.Errorf("style-src = %q", got)
+		}
+		if got := p.Waivers(); len(got) != 0 {
+			t.Errorf("a hash recorded %d waivers: %v; a hash names exact content and is not a weakening",
+				len(got), got)
+		}
+	})
+
+	t.Run("rejected", func(t *testing.T) {
+		t.Parallel()
+		for _, bad := range []string{
+			"md5-abcdef",
+			"sha256-",
+			"sha256-not base64!",
+			"sha1-47DEQpj8HBSa",
+			"47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+			"'unsafe-inline'",
+			"sha256-abc; script-src 'unsafe-inline'",
+		} {
+			if _, err := secure.NewDocumentPolicy(secure.Production, secure.WithScriptHashes(bad)); err == nil {
+				t.Errorf("WithScriptHashes accepted %q", bad)
+			}
+		}
+	})
+}
+
+func TestDocumentOnlyOptionsFailOnAnAPIPolicy(t *testing.T) {
+	t.Parallel()
+
+	options := map[string]secure.Option{
+		"WithScriptHashes":           secure.WithScriptHashes("sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="),
+		"WithStyleHashes":            secure.WithStyleHashes("sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="),
+		"AllowScriptSources":         secure.AllowScriptSources("r", "https://cdn.example"),
+		"AllowConnectSources":        secure.AllowConnectSources("r", "https://api.example"),
+		"AllowInlineStyleAttributes": secure.AllowInlineStyleAttributes("r"),
+		"AllowFrameAncestors":        secure.AllowFrameAncestors("r", "https://portal.example"),
+	}
+	for name, opt := range options {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := secure.NewAPIPolicy(secure.Production, opt); err == nil {
+				t.Fatalf("%s silently did nothing on an API policy; it must fail instead", name)
+			}
+		})
+	}
+}
+
+func TestReferrerPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		opt     secure.Option
+		want    string
+		wantErr bool
+	}{
+		{name: "default", want: "same-origin"},
+		{name: "no-referrer is not a weakening", opt: secure.WithReferrerPolicy(secure.ReferrerNoReferrer), want: "no-referrer"},
+		{name: "same-origin explicitly", opt: secure.WithReferrerPolicy(secure.ReferrerSameOrigin), want: "same-origin"},
+		{
+			name:    "a leaking value refuses the With option",
+			opt:     secure.WithReferrerPolicy(secure.ReferrerStrictOriginWhenCrossOrigin),
+			wantErr: true,
+		},
+		{
+			name: "a leaking value goes through Allow",
+			opt:  secure.AllowReferrerPolicy("the payment provider requires a referrer", secure.ReferrerStrictOrigin),
+			want: "strict-origin",
+		},
+		{
+			name:    "Allow refuses a non-leaking value",
+			opt:     secure.AllowReferrerPolicy("reason", secure.ReferrerNoReferrer),
+			wantErr: true,
+		},
+		{
+			name:    "unrecognized value",
+			opt:     secure.WithReferrerPolicy(secure.ReferrerPolicy("no-referer")),
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var opts []secure.Option
+			if tc.opt != nil {
+				opts = append(opts, tc.opt)
+			}
+			p, err := secure.NewDocumentPolicy(secure.Production, opts...)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("NewDocumentPolicy succeeded, want an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewDocumentPolicy: %v", err)
+			}
+			if got := serve(t, p, nil).Get(secure.HeaderReferrerPolicy); got != tc.want {
+				t.Errorf("%s = %q, want %q", secure.HeaderReferrerPolicy, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCrossOriginEmbedderPolicyIsOptIn(t *testing.T) {
+	t.Parallel()
+
+	p, err := secure.NewDocumentPolicy(secure.Production)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+	if got := serve(t, p, nil).Get(secure.HeaderCOEP); got != "" {
+		t.Errorf("%s = %q by default; COEP breaks cross-origin subresources and must be opt-in",
+			secure.HeaderCOEP, got)
+	}
+
+	opted, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.WithCrossOriginEmbedderPolicy(secure.EmbedderCredentialless),
+	)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+	if got := serve(t, opted, nil).Get(secure.HeaderCOEP); got != "credentialless" {
+		t.Errorf("%s = %q, want %q", secure.HeaderCOEP, got, "credentialless")
+	}
+	if _, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.WithCrossOriginEmbedderPolicy(secure.EmbedderPolicy("unsafe-none")),
+	); err == nil {
+		t.Error("WithCrossOriginEmbedderPolicy accepted an unrecognized value")
+	}
+}
+
+func TestCrossOriginResourcePolicy(t *testing.T) {
+	t.Parallel()
+
+	p, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.AllowCrossOriginResources("the docs site embeds our status badge", secure.ResourceSameSite),
+	)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+	if got := serve(t, p, nil).Get(secure.HeaderCORP); got != "same-site" {
+		t.Errorf("%s = %q, want %q", secure.HeaderCORP, got, "same-site")
+	}
+	if _, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.AllowCrossOriginResources("reason", secure.ResourceSameOrigin),
+	); err == nil {
+		t.Error("AllowCrossOriginResources accepted the default value; that would record a waiver for nothing")
+	}
+}
+
+func TestAllowPermission(t *testing.T) {
+	t.Parallel()
+
+	p, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.AllowPermission("avatar capture", "camera", "self"),
+	)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+	got := serve(t, p, nil).Get(secure.HeaderPermissionsPolicy)
+	if !strings.Contains(got, "camera=(self)") {
+		t.Errorf("%s = %q, want it to contain camera=(self)", secure.HeaderPermissionsPolicy, got)
+	}
+	if !strings.Contains(got, "microphone=()") {
+		t.Errorf("%s = %q, want the other capabilities still denied", secure.HeaderPermissionsPolicy, got)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		feature   string
+		allowlist []string
+	}{
+		{name: "wildcard allowlist", feature: "camera", allowlist: []string{"*"}},
+		{name: "unquoted origin", feature: "camera", allowlist: []string{"https://example.com"}},
+		{name: "http origin", feature: "camera", allowlist: []string{`"http://example.com"`}},
+		{name: "uppercase feature", feature: "Camera", allowlist: []string{"self"}},
+		{name: "feature with a separator", feature: "camera;geolocation", allowlist: []string{"self"}},
+		{name: "empty feature", feature: "", allowlist: []string{"self"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := secure.NewDocumentPolicy(
+				secure.Production,
+				secure.AllowPermission("reason", tc.feature, tc.allowlist...),
+			); err == nil {
+				t.Fatalf("AllowPermission accepted feature %q allowlist %v", tc.feature, tc.allowlist)
+			}
+		})
+	}
+}
+
+func TestReportURIValidation(t *testing.T) {
+	t.Parallel()
+
+	accepted := []string{"/api/v1/csp-reports", "https://reports.example.com/csp"}
+	for _, uri := range accepted {
+		if _, err := secure.NewDocumentPolicy(secure.Production, secure.WithReportURI(uri)); err != nil {
+			t.Errorf("WithReportURI(%q): %v", uri, err)
+		}
+	}
+	refused := []string{
+		"",
+		"http://reports.example.com/csp",
+		"//reports.example.com/csp",
+		"api/v1/csp-reports",
+		"/reports; default-src *",
+		"/reports\r\nX-Injected: 1",
+		"https://",
+	}
+	for _, uri := range refused {
+		if _, err := secure.NewDocumentPolicy(secure.Production, secure.WithReportURI(uri)); err == nil {
+			t.Errorf("WithReportURI accepted %q", uri)
+		}
+	}
+}
+
+func TestConstructionErrorsAccumulate(t *testing.T) {
+	t.Parallel()
+
+	_, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.AllowConnectSources("", "https://one.example"),
+		secure.WithScriptHashes("not-a-hash"),
+		secure.WithReportURI("http://insecure.example"),
+	)
+	if err == nil {
+		t.Fatal("NewDocumentPolicy succeeded despite three bad options")
+	}
+	for _, want := range []string{"reason", "hash", "report URI"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q; all bad options should be reported at once", err, want)
+		}
+	}
+}
+
+func TestNilOptionIsRejected(t *testing.T) {
+	t.Parallel()
+
+	if _, err := secure.NewDocumentPolicy(secure.Production, nil); err == nil {
+		t.Error("NewDocumentPolicy accepted a nil Option")
+	}
+}
