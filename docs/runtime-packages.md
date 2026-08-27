@@ -16,7 +16,7 @@ Import path prefix: `github.com/drilonrecica/nise-and-go/runtime/…` ([ADR 0007
 | `runtime/health` | Startup, liveness, and readiness checks and their handlers. | planned | M2-006 |
 | `runtime/lifecycle` | Process modes `all`, `web`, and `worker`; HTTP server construction; graceful shutdown and bounded draining. | planned | M2-007, M2-008 |
 | `runtime/observability` | HTTP, database-pool, and job metrics, and the optional tracing interface. | planned | M2-011 |
-| `runtime/secure` | Security headers and Content Security Policy for the embedded frontend. | planned | M2-012 |
+| `runtime/secure` | Security headers and Content Security Policy for the embedded frontend. | implemented | M2-012 |
 
 `runtime/internal/…` holds shared implementation. The Go toolchain makes it invisible to applications, and it carries no compatibility promise.
 
