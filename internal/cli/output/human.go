@@ -1,6 +1,7 @@
 package output
 
 import (
+	"sync"
 	"time"
 
 	"github.com/drilonrecica/nise-and-go/internal/cli/clierr"
@@ -105,19 +106,35 @@ func (w *humanWriter) Spinner(label string) Spinner {
 
 // staticSpinner is the no-animation Spinner: Start does nothing (there is
 // no Start method — construction is the start), and Stop just reports
-// completion the same way any other command output does.
-type staticSpinner struct{ w *humanWriter }
+// completion the same way any other command output does. Stop is
+// idempotent (see liveSpinner's doc comment for why that contract matters
+// for every Spinner implementation, not just the animated one).
+type staticSpinner struct {
+	w    *humanWriter
+	once sync.Once
+}
 
-func (s *staticSpinner) Stop(msg string) { s.w.Success(msg) }
+func (s *staticSpinner) Stop(msg string) {
+	s.once.Do(func() { s.w.Success(msg) })
+}
 
 // liveSpinner ticks a small frame animation on stdout until Stop is called.
 // Stop closes stop and blocks on done, so by the time Stop's own write
 // happens the goroutine is guaranteed to have made its last write — no
 // completed operation is ever held up waiting for the next animation frame.
+//
+// Stop is idempotent, guarded by once: the natural calling pattern for a
+// long-running command is `defer sp.Stop(...)` alongside an explicit Stop
+// on the happy path, which is two calls. Without the guard, the second
+// call's close(s.stop) on an already-closed channel panics and crashes the
+// whole CLI — every Spinner implementation (this one, staticSpinner, and
+// json.go's noopSpinner) honors "Stop may be called more than once; only
+// the first call's message is shown" for exactly this reason.
 type liveSpinner struct {
 	w    *humanWriter
 	stop chan struct{}
 	done chan struct{}
+	once sync.Once
 }
 
 var spinnerFrames = []rune{'|', '/', '-', '\\'}
@@ -139,8 +156,10 @@ func (s *liveSpinner) run(label string) {
 }
 
 func (s *liveSpinner) Stop(msg string) {
-	close(s.stop)
-	<-s.done
-	s.w.stdout.writeString("\r" + ansiClear)
-	s.w.Success(msg)
+	s.once.Do(func() {
+		close(s.stop)
+		<-s.done
+		s.w.stdout.writeString("\r" + ansiClear)
+		s.w.Success(msg)
+	})
 }

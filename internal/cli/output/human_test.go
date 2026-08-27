@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drilonrecica/nise-and-go/internal/cli/clierr"
 )
@@ -147,20 +148,113 @@ func TestHumanWriterLiveSpinnerStopPrintsFinalMessageAndStopsWriting(t *testing.
 	var out bytes.Buffer
 	w := New(ModeHuman, Options{Animate: true, Quiet: false}, &out, &bytes.Buffer{})
 	sp := w.Spinner("working")
+
+	// Let at least one 120ms animation tick actually happen before
+	// stopping. Calling Stop immediately (as this test used to) proves
+	// nothing about whether Stop is held behind a frame boundary in
+	// steady state — it would pass identically whether or not that
+	// guarantee held, since there'd never have been a frame in flight to
+	// wait for in the first place.
+	time.Sleep(150 * time.Millisecond)
+
+	stopStart := time.Now()
 	sp.Stop("finished")
+	stopElapsed := time.Since(stopStart)
+
+	// Stop must return quickly — well under the 120ms tick interval —
+	// rather than blocking until the next scheduled frame. A generous
+	// margin (half a tick) keeps this robust under -race's slowdown and
+	// CI scheduling jitter while still failing if Stop were, say, waiting
+	// on ticker.C instead of its own stop/done channels.
+	if stopElapsed > 60*time.Millisecond {
+		t.Errorf("Stop took %s, want well under one 120ms animation frame — a completed operation must not wait for the next tick", stopElapsed)
+	}
 
 	final := out.String()
 	if !strings.Contains(final, "finished") {
 		t.Fatalf("live spinner Stop did not print the final message: %q", final)
 	}
+
 	// Stop must block until the animation goroutine has made its last
-	// write, so nothing further gets appended after Stop returns — this
-	// is the "never delay completed work, never write after completion"
-	// guarantee. Sleeping here would only prove absence of a race by
-	// luck; instead we assert the buffer is unchanged immediately.
+	// write, so nothing further gets appended after Stop returns. Give a
+	// hypothetical stray delayed write a real window to land before
+	// asserting the buffer is unchanged.
 	lenAfterStop := len(final)
+	time.Sleep(150 * time.Millisecond)
 	if len(out.String()) != lenAfterStop {
-		t.Error("spinner wrote more output after Stop returned")
+		t.Error("spinner wrote more output after Stop returned — it was not fully stopped")
+	}
+}
+
+func TestHumanWriterLiveSpinnerDoubleStopIsIdempotent(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	w := New(ModeHuman, Options{Animate: true}, &out, &bytes.Buffer{})
+	sp := w.Spinner("working")
+
+	// The natural usage pattern is `defer sp.Stop(...)` plus an explicit
+	// Stop on the happy path — two calls. Before the idempotency fix,
+	// the second call's close(s.stop) on an already-closed channel
+	// panicked and crashed the whole CLI; this must not panic.
+	sp.Stop("first")
+	sp.Stop("second")
+
+	got := out.String()
+	if strings.Count(got, "first") != 1 {
+		t.Errorf("output = %q, want %q printed exactly once", got, "first")
+	}
+	if strings.Contains(got, "second") {
+		t.Errorf("output = %q, want the second Stop call's message ignored", got)
+	}
+}
+
+func TestHumanWriterStaticSpinnerDoubleStopIsIdempotent(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	w := New(ModeHuman, Options{Animate: false}, &out, &bytes.Buffer{})
+	sp := w.Spinner("working")
+
+	sp.Stop("first")
+	sp.Stop("second")
+
+	got := out.String()
+	if strings.Count(got, "first") != 1 {
+		t.Errorf("output = %q, want %q printed exactly once", got, "first")
+	}
+	if strings.Contains(got, "second") {
+		t.Errorf("output = %q, want the second Stop call's message ignored", got)
+	}
+}
+
+// TestHumanWriterSpinnerRaceWithConcurrentWrites reproduces the reported
+// race: a live spinner's animation goroutine and the calling goroutine's
+// own Line/Result/etc. calls both write through the same humanWriter,
+// which is exactly the normal way a long-running command (doctor, dev,
+// check) reports progress alongside a spinner. Run with -race; before the
+// safeWriter synchronization fix this reliably reported a data race on
+// safeWriter.err and interleaved output.
+func TestHumanWriterSpinnerRaceWithConcurrentWrites(t *testing.T) {
+	var out bytes.Buffer
+	w := New(ModeHuman, Options{Animate: true}, &out, &bytes.Buffer{})
+	sp := w.Spinner("working")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		deadline := time.Now().Add(150 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			w.Line("progress")
+		}
+	}()
+
+	// Give the spinner's ticker goroutine and the writer goroutine above
+	// real overlapping wall-clock time before stopping either.
+	time.Sleep(150 * time.Millisecond)
+	<-done
+	sp.Stop("finished")
+
+	if !strings.Contains(out.String(), "finished") {
+		t.Error("expected the final message in output")
 	}
 }
 

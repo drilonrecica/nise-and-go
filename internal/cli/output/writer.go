@@ -52,7 +52,9 @@ type Result interface {
 type Spinner interface {
 	// Stop ends the spinner, if it was running, and prints msg. It never
 	// waits for another animation frame: a completed operation's result
-	// prints immediately.
+	// prints immediately. Stop is idempotent — calling it more than once
+	// (the natural `defer sp.Stop(...)` plus an explicit happy-path Stop
+	// pattern) is safe; only the first call's msg is shown.
 	Stop(msg string)
 }
 
