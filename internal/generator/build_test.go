@@ -43,12 +43,16 @@ func TestGeneratedGoCodeBuilds(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	run := func(args ...string) (string, error) {
+	runEnv := func(extraEnv []string, args ...string) (string, error) {
 		cmd := exec.Command(goBin, args...) // #nosec G204 -- args are literals from this test.
 		cmd.Dir = root
 		cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOFLAGS=-mod=mod")
+		cmd.Env = append(cmd.Env, extraEnv...)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
+	}
+	run := func(args ...string) (string, error) {
+		return runEnv(nil, args...)
 	}
 
 	if out, err := run("mod", "edit", "-replace",
@@ -65,6 +69,20 @@ func TestGeneratedGoCodeBuilds(t *testing.T) {
 	}
 	if out, err := run("vet", "./cmd/...", "./internal/..."); err != nil {
 		t.Fatalf("go vet of the generated project failed: %v\n%s", err, out)
+	}
+
+	// The generated project must build on every platform Nise supports,
+	// not merely on the one generating it. cmd/<app>/main.go references
+	// syscall.SIGTERM, which happens to be defined on Windows — but a
+	// future template reaching for a Unix-only symbol would break every
+	// generated project on that platform, and a runtime GOOS guard would
+	// not save it, because the reference still has to resolve at compile
+	// time. Cross-compiling here is what turns that from a thing someone
+	// has to remember into a thing the suite checks.
+	for _, target := range []string{"windows", "darwin"} {
+		if out, err := runEnv([]string{"GOOS=" + target}, "build", "./cmd/...", "./internal/..."); err != nil {
+			t.Errorf("the generated project does not build for GOOS=%s: %v\n%s", target, err, out)
+		}
 	}
 
 	// The committed placeholder is the whole reason the build above
