@@ -34,17 +34,17 @@ type PoolStatsFunc func() PoolStats
 // [PoolMetrics.Register] once per pool the application constructs (a
 // primary pool, and optionally others such as a read replica).
 type PoolMetrics struct {
-	maxConns   *GaugeFuncVec
-	openConns  *GaugeFuncVec
-	idleConns  *GaugeFuncVec
-	inUseConns *GaugeFuncVec
+	maxConns   *gaugeFuncVec
+	openConns  *gaugeFuncVec
+	idleConns  *gaugeFuncVec
+	inUseConns *gaugeFuncVec
 }
 
 // NewPoolMetrics registers PoolMetrics' four gauges on reg:
 // "db_pool_max_conns", "db_pool_open_conns", "db_pool_idle_conns", and
 // "db_pool_in_use_conns", each labeled by "pool".
 func NewPoolMetrics(reg *Registry) (*PoolMetrics, error) {
-	maxConns, err := reg.NewGaugeFuncVec(VecOpts{
+	maxConns, err := reg.newGaugeFuncVec(VecOpts{
 		Name:   "db_pool_max_conns",
 		Help:   "Maximum connections configured for the pool.",
 		Labels: []string{"pool"},
@@ -53,7 +53,7 @@ func NewPoolMetrics(reg *Registry) (*PoolMetrics, error) {
 		return nil, err
 	}
 
-	openConns, err := reg.NewGaugeFuncVec(VecOpts{
+	openConns, err := reg.newGaugeFuncVec(VecOpts{
 		Name:   "db_pool_open_conns",
 		Help:   "Connections currently open in the pool, idle or in use.",
 		Labels: []string{"pool"},
@@ -62,7 +62,7 @@ func NewPoolMetrics(reg *Registry) (*PoolMetrics, error) {
 		return nil, err
 	}
 
-	idleConns, err := reg.NewGaugeFuncVec(VecOpts{
+	idleConns, err := reg.newGaugeFuncVec(VecOpts{
 		Name:   "db_pool_idle_conns",
 		Help:   "Open connections currently idle.",
 		Labels: []string{"pool"},
@@ -71,7 +71,7 @@ func NewPoolMetrics(reg *Registry) (*PoolMetrics, error) {
 		return nil, err
 	}
 
-	inUseConns, err := reg.NewGaugeFuncVec(VecOpts{
+	inUseConns, err := reg.newGaugeFuncVec(VecOpts{
 		Name:   "db_pool_in_use_conns",
 		Help:   "Open connections currently checked out and in use.",
 		Labels: []string{"pool"},
@@ -95,16 +95,16 @@ func NewPoolMetrics(reg *Registry) (*PoolMetrics, error) {
 // Call it once at startup for each pool. statsFunc is invoked on every
 // scrape and must be safe for concurrent use.
 func (m *PoolMetrics) Register(poolName string, statsFunc PoolStatsFunc) error {
-	if err := m.maxConns.Add(func() float64 { return float64(statsFunc().MaxConns) }, poolName); err != nil {
+	if err := m.maxConns.add(func() float64 { return float64(statsFunc().MaxConns) }, poolName); err != nil {
 		return err
 	}
-	if err := m.openConns.Add(func() float64 { return float64(statsFunc().OpenConns) }, poolName); err != nil {
+	if err := m.openConns.add(func() float64 { return float64(statsFunc().OpenConns) }, poolName); err != nil {
 		return err
 	}
-	if err := m.idleConns.Add(func() float64 { return float64(statsFunc().IdleConns) }, poolName); err != nil {
+	if err := m.idleConns.add(func() float64 { return float64(statsFunc().IdleConns) }, poolName); err != nil {
 		return err
 	}
-	if err := m.inUseConns.Add(func() float64 { return float64(statsFunc().InUseConns) }, poolName); err != nil {
+	if err := m.inUseConns.add(func() float64 { return float64(statsFunc().InUseConns) }, poolName); err != nil {
 		return err
 	}
 	return nil

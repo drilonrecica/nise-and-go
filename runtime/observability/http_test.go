@@ -143,3 +143,83 @@ func TestHTTPMetricsMiddlewareInFlightDecrementsOnPanic(t *testing.T) {
 		t.Fatalf("in-flight gauge after a panicking handler = %v, want 0 (deferred Dec must still run)", got)
 	}
 }
+
+// TestHTTPMetricsMiddlewarePanicIsCountedAndRePanics is the fix-round-1
+// test for finding 3 (task-9-report.md): a panicking handler must still be
+// counted, labeled with the fixed panicStatusClass, and the panic must
+// continue to propagate unchanged rather than being swallowed by
+// Middleware.
+func TestHTTPMetricsMiddlewarePanicIsCountedAndRePanics(t *testing.T) {
+	reg := NewRegistry()
+	m, err := NewHTTPMetrics(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	template := func(r *http.Request) string { return "/panics" }
+	handler := m.Middleware(template)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("boom")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/panics", nil)
+	rr := httptest.NewRecorder()
+
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		handler.ServeHTTP(rr, req)
+	}()
+
+	if recovered != "boom" {
+		t.Fatalf("recovered panic value = %v, want %q: Middleware must re-panic with the original value, not swallow or replace it", recovered, "boom")
+	}
+
+	c := m.requests.WithLabelValues(http.MethodGet, "/panics", panicStatusClass)
+	if got := c.(*counterValue).value(); got != 1 {
+		t.Fatalf("request count for a panicking handler = %v, want 1: a panic must still be counted", got)
+	}
+
+	h := m.duration.WithLabelValues(http.MethodGet, "/panics", panicStatusClass)
+	if got := h.(*histogramValue).count.Load(); got != 1 {
+		t.Fatalf("duration observation count for a panicking handler = %d, want 1", got)
+	}
+
+	// The panic must never surface as a normal statusClass value (the
+	// handler wrote nothing, so rec.status would default to 200/"2xx"
+	// absent the fix).
+	normal := m.requests.WithLabelValues(http.MethodGet, "/panics", "2xx")
+	if got := normal.(*counterValue).value(); got != 0 {
+		t.Fatalf("2xx request count after a panic = %v, want 0: a panic must not be mislabeled as a normal response", got)
+	}
+}
+
+// TestHTTPMetricsMiddlewareFlushesThroughResponseController is the
+// fix-round-1 test for finding 2 (task-9-report.md): a handler wrapped by
+// Middleware must still be able to reach the underlying ResponseWriter's
+// http.Flusher through net/http.ResponseController, via statusRecorder's
+// Unwrap method.
+func TestHTTPMetricsMiddlewareFlushesThroughResponseController(t *testing.T) {
+	reg := NewRegistry()
+	m, err := NewHTTPMetrics(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var flushErr error
+	handler := m.Middleware(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("chunk"))
+		flushErr = http.NewResponseController(w).Flush()
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/stream", nil)
+	rr := httptest.NewRecorder() // httptest.ResponseRecorder implements http.Flusher.
+	handler.ServeHTTP(rr, req)
+
+	if flushErr != nil {
+		t.Fatalf("ResponseController.Flush() through statusRecorder = %v, want nil: Unwrap must expose the underlying http.Flusher", flushErr)
+	}
+	if !rr.Flushed {
+		t.Fatal("underlying ResponseRecorder was never flushed: statusRecorder.Unwrap did not reach it")
+	}
+}
