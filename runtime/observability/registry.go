@@ -7,16 +7,20 @@ import (
 
 // Registry collects named, labeled metrics independent of how they are
 // exposed. Construct one with [NewRegistry], build metrics on it once at
-// startup with [Registry.NewCounterVec], [Registry.NewGaugeVec],
-// [Registry.NewGaugeFuncVec], and [Registry.NewHistogramVec], and pass it
-// to [NewHandler] (or your own exposition code, via [WriteText]) to render
-// what has been recorded. A Registry is safe for concurrent use.
+// startup with [Registry.NewCounterVec], [Registry.NewGaugeVec], and
+// [Registry.NewHistogramVec], and pass it to [NewHandler] (or your own
+// exposition code, via [WriteText]) to render what has been recorded. A
+// Registry is safe for concurrent use.
+//
+// A pull-sampled gauge kind also exists internally (see gaugeFuncVec in
+// gauge.go), used by [PoolMetrics]; it is deliberately not exported here —
+// see that type's doc comment for why.
 type Registry struct {
 	mu         sync.Mutex
 	names      map[string]struct{}
 	counters   []*CounterVec
 	gauges     []*GaugeVec
-	gaugeFuncs []*GaugeFuncVec
+	gaugeFuncs []*gaugeFuncVec
 	histograms []*HistogramVec
 }
 
@@ -52,10 +56,10 @@ type VecOpts struct {
 	// "# HELP" line.
 	Help string
 	// Labels names each label, in the order values must later be supplied
-	// to WithLabelValues (or, for a GaugeFuncVec, to Add). Label by
-	// low-cardinality dimensions only — a route template, an HTTP method,
-	// a status class — never a raw path, a user ID, or any other value an
-	// unauthenticated caller can vary without bound.
+	// to WithLabelValues. Label by low-cardinality dimensions only — a
+	// route template, an HTTP method, a status class — never a raw path,
+	// a user ID, or any other value an unauthenticated caller can vary
+	// without bound.
 	Labels []string
 	// MaxSeries caps the number of distinct label-value combinations
 	// tracked individually before further combinations collapse into one
@@ -101,15 +105,16 @@ func (r *Registry) NewGaugeVec(opts VecOpts) (*GaugeVec, error) {
 	return gv, nil
 }
 
-// NewGaugeFuncVec registers a new [GaugeFuncVec] on r. MaxSeries in opts is
-// ignored: a GaugeFuncVec's series are registered explicitly through
-// [GaugeFuncVec.Add], not created from request-controlled input, so there
-// is nothing for a cap to bound.
-func (r *Registry) NewGaugeFuncVec(opts VecOpts) (*GaugeFuncVec, error) {
+// newGaugeFuncVec registers a new gaugeFuncVec on r. MaxSeries in opts is
+// ignored: a gaugeFuncVec's series are registered explicitly through add,
+// not created from request-controlled input, so there is nothing for a cap
+// to bound — see gaugeFuncVec's doc comment for why this stays
+// unexported.
+func (r *Registry) newGaugeFuncVec(opts VecOpts) (*gaugeFuncVec, error) {
 	if err := r.reserveName(opts.Name); err != nil {
 		return nil, err
 	}
-	gv := &GaugeFuncVec{
+	gv := &gaugeFuncVec{
 		name:       opts.Name,
 		help:       opts.Help,
 		labelNames: opts.Labels,

@@ -43,13 +43,13 @@ func WriteText(w io.Writer, reg *Registry) error {
 	reg.mu.Lock()
 	counters := append([]*CounterVec(nil), reg.counters...)
 	gauges := append([]*GaugeVec(nil), reg.gauges...)
-	gaugeFuncs := append([]*GaugeFuncVec(nil), reg.gaugeFuncs...)
+	gaugeFuncs := append([]*gaugeFuncVec(nil), reg.gaugeFuncs...)
 	histograms := append([]*HistogramVec(nil), reg.histograms...)
 	reg.mu.Unlock()
 
 	sortVecsByName(counters, func(c *CounterVec) string { return c.name })
 	sortVecsByName(gauges, func(g *GaugeVec) string { return g.name })
-	sortVecsByName(gaugeFuncs, func(g *GaugeFuncVec) string { return g.name })
+	sortVecsByName(gaugeFuncs, func(g *gaugeFuncVec) string { return g.name })
 	sortVecsByName(histograms, func(h *HistogramVec) string { return h.name })
 
 	for _, c := range counters {
@@ -109,7 +109,7 @@ func writeGauge(w io.Writer, g *GaugeVec) error {
 	return nil
 }
 
-func writeGaugeFunc(w io.Writer, g *GaugeFuncVec) error {
+func writeGaugeFunc(w io.Writer, g *gaugeFuncVec) error {
 	if err := writeHeader(w, g.name, g.help, "gauge"); err != nil {
 		return err
 	}

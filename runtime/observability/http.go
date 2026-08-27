@@ -93,14 +93,28 @@ type RouteTemplateFunc func(*http.Request) string
 // Middleware returns net/http middleware that records m's three metrics
 // for every request it wraps: the in-flight gauge for the duration of the
 // call, then the request counter and duration histogram once the wrapped
-// handler returns. routeTemplate supplies the route label; see
-// [RouteTemplateFunc]. A nil routeTemplate labels every request
+// handler returns — or panics; see below. routeTemplate supplies the route
+// label; see [RouteTemplateFunc]. A nil routeTemplate labels every request
 // [unmatchedRoute].
 //
 // Middleware never labels a metric with the request's raw URL path. The
 // cardinality of every series it produces is bounded by the cardinality
 // cap on the underlying [CounterVec], [HistogramVec], and [GaugeVec] (see
 // [DefaultMaxSeries]) regardless of what routeTemplate returns.
+//
+// # A panicking handler is still counted
+//
+// The count and duration observation are made from a deferred function, so
+// a handler that panics is recorded exactly like one that returns
+// normally, labeled with the fixed status class [panicStatusClass]
+// ("panic") regardless of anything the handler wrote to the response
+// before panicking. Middleware does not recover the panic itself — a crash
+// is exactly the request class an operator most wants counted, so
+// recording it and then letting the panic continue to propagate (to
+// whatever recovery middleware, if any, sits further out in the chain) is
+// the right default; silently dropping the observation would make the
+// worst-case request the one category never visible in the metrics that
+// exist to surface it.
 func (m *HTTPMetrics) Middleware(routeTemplate RouteTemplateFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -112,29 +126,53 @@ func (m *HTTPMetrics) Middleware(routeTemplate RouteTemplateFunc) func(http.Hand
 
 			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			start := time.Now()
-			next.ServeHTTP(rec, r)
-			elapsed := time.Since(start).Seconds()
 
-			route := unmatchedRoute
-			if routeTemplate != nil {
-				if t := routeTemplate(r); t != "" {
-					route = t
+			defer func() {
+				elapsed := time.Since(start).Seconds()
+
+				route := unmatchedRoute
+				if routeTemplate != nil {
+					if t := routeTemplate(r); t != "" {
+						route = t
+					}
 				}
-			}
-			class := statusClass(rec.status)
 
-			m.requests.WithLabelValues(method, route, class).Inc()
-			m.duration.WithLabelValues(method, route, class).Observe(elapsed)
+				class := statusClass(rec.status)
+				p := recover()
+				if p != nil {
+					class = panicStatusClass
+				}
+
+				m.requests.WithLabelValues(method, route, class).Inc()
+				m.duration.WithLabelValues(method, route, class).Observe(elapsed)
+
+				if p != nil {
+					panic(p) // re-panic: this middleware observes, it does not recover.
+				}
+			}()
+
+			next.ServeHTTP(rec, r)
 		})
 	}
 }
 
+// panicStatusClass is the status_class label [HTTPMetrics.Middleware]
+// records for a handler that panicked, in place of whatever
+// [statusRecorder.status] happened to hold at the moment of the panic
+// (which may still be the zero-value default if the handler panicked
+// before writing anything). It is a fixed string, never derived from the
+// panic value itself, so it adds exactly one bounded label value alongside
+// the six [statusClass] can already produce — never anything
+// request-controlled.
+const panicStatusClass = "panic"
+
 // statusClass reduces an HTTP status code to its class ("2xx", "4xx", …),
 // which is what request-count and duration metrics are labeled by rather
-// than the exact code: a class is a fixed set of six possible values,
-// while individual status codes an application might legitimately return
-// (404s carrying different Problem Details types, for example) could
-// otherwise grow without the same bound.
+// than the exact code: a class is a fixed set of six possible values
+// ([panicStatusClass] is a distinct seventh, applied only when the handler
+// panics — see [HTTPMetrics.Middleware]), while individual status codes an
+// application might legitimately return (404s carrying different Problem
+// Details types, for example) could otherwise grow without the same bound.
 func statusClass(code int) string {
 	switch {
 	case code >= 100 && code < 200:
@@ -155,12 +193,17 @@ func statusClass(code int) string {
 // statusRecorder wraps an [http.ResponseWriter] to capture the status code
 // a handler wrote, which the standard library does not otherwise expose to
 // middleware wrapping that handler. It forwards Header, Write, and
-// WriteHeader only; a handler that type-asserts its [http.ResponseWriter]
-// to [http.Flusher] or [http.Hijacker] (streaming responses, WebSocket
-// upgrades) will not find that optional interface satisfied through this
-// wrapper. Excluding those routes from Middleware, or extending this type,
-// is the application's call — out of scope for the essential metrics this
-// package implements.
+// WriteHeader directly, and exposes every other optional interface the
+// wrapped [http.ResponseWriter] implements — [http.Flusher],
+// [http.Hijacker], and anything else [net/http.ResponseController] knows
+// how to reach — through Unwrap, rather than by hand-rolling a forwarding
+// method for each one. A handler wrapped by [HTTPMetrics.Middleware] that
+// wants to flush a streamed response (SSE) or hijack the connection
+// (WebSocket) must go through [net/http.NewResponseController] rather than
+// type-asserting w directly to [http.Flusher] or [http.Hijacker]: a type
+// assertion on the wrapper itself would fail, exactly the silent
+// regression [net/http.ResponseController]'s Unwrap-chain walk exists to
+// avoid. See docs/metrics.md.
 type statusRecorder struct {
 	http.ResponseWriter
 	status      int
@@ -181,4 +224,13 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 		s.wroteHeader = true
 	}
 	return s.ResponseWriter.Write(b)
+}
+
+// Unwrap returns the wrapped [http.ResponseWriter], which is what lets
+// [net/http.ResponseController] reach Flush, Hijack, and the other
+// optional response-writer interfaces on the writer statusRecorder wraps,
+// even though statusRecorder itself only implements Header, Write, and
+// WriteHeader.
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
 }

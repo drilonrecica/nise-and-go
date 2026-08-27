@@ -40,7 +40,7 @@ func TestRegistryDuplicateNameRejected(t *testing.T) {
 		{
 			name: "counter vs gauge func",
 			fn: func() error {
-				_, err := reg.NewGaugeFuncVec(VecOpts{Name: "widgets_total", Help: "h"})
+				_, err := reg.newGaugeFuncVec(VecOpts{Name: "widgets_total", Help: "h"})
 				return err
 			},
 		},
@@ -125,13 +125,13 @@ func TestGaugeVecSetIncDecAdd(t *testing.T) {
 
 func TestGaugeFuncVecSamplesOnRead(t *testing.T) {
 	reg := NewRegistry()
-	gv, err := reg.NewGaugeFuncVec(VecOpts{Name: "g", Help: "h", Labels: []string{"pool"}})
+	gv, err := reg.newGaugeFuncVec(VecOpts{Name: "g", Help: "h", Labels: []string{"pool"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	n := 3
-	if err := gv.Add(func() float64 { return float64(n) }, "primary"); err != nil {
+	if err := gv.add(func() float64 { return float64(n) }, "primary"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -146,15 +146,15 @@ func TestGaugeFuncVecSamplesOnRead(t *testing.T) {
 
 func TestGaugeFuncVecDuplicateLabelValuesRejected(t *testing.T) {
 	reg := NewRegistry()
-	gv, err := reg.NewGaugeFuncVec(VecOpts{Name: "g", Help: "h", Labels: []string{"pool"}})
+	gv, err := reg.newGaugeFuncVec(VecOpts{Name: "g", Help: "h", Labels: []string{"pool"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := gv.Add(func() float64 { return 1 }, "primary"); err != nil {
+	if err := gv.add(func() float64 { return 1 }, "primary"); err != nil {
 		t.Fatal(err)
 	}
-	if err := gv.Add(func() float64 { return 2 }, "primary"); err == nil {
+	if err := gv.add(func() float64 { return 2 }, "primary"); err == nil {
 		t.Fatal("expected an error registering the same label values twice, got nil")
 	}
 }

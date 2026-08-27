@@ -48,7 +48,7 @@ func (v *GaugeVec) WithLabelValues(values ...string) Gauge {
 }
 
 // gaugeFuncSeries is one registered (label values, callback) pair inside a
-// [GaugeFuncVec].
+// [gaugeFuncVec].
 type gaugeFuncSeries struct {
 	values []string
 	fn     func() float64
@@ -56,38 +56,46 @@ type gaugeFuncSeries struct {
 
 func (s gaugeFuncSeries) value() float64 { return s.fn() }
 
-// GaugeFuncVec is a gauge whose series values are computed on demand, at
+// gaugeFuncVec is a gauge whose series values are computed on demand, at
 // exposition time, by a caller-supplied function rather than pushed
 // incrementally by application code. It exists for values a dependency
 // already tracks internally — a connection pool's open-connection count is
 // the motivating case (see [PoolMetrics]) — where re-deriving the value as
 // a pushed [Gauge] would just be a second, potentially stale copy of a
-// number the dependency can report accurately on demand. Construct one
-// with [Registry.NewGaugeFuncVec].
+// number the dependency can report accurately on demand.
 //
-// Unlike [GaugeVec], a GaugeFuncVec's series are fixed at registration
-// time through [GaugeFuncVec.Add], not created on the fly per request:
-// there is no cardinality cap here because nothing request-controlled ever
-// reaches it — see Add.
-type GaugeFuncVec struct {
+// gaugeFuncVec is deliberately unexported. Its series are fixed at
+// registration time through add, not created on the fly per request, so —
+// unlike CounterVec, GaugeVec, and HistogramVec — it has no cardinality
+// cap: nothing stops an unbounded number of distinct label-value
+// combinations from being registered if add is called with
+// request-controlled input. That is safe only because every call site in
+// this package (PoolMetrics.Register) calls add exactly once per pool at
+// startup, never per request. Exporting this type would let an application
+// call it from a request handler and defeat the package's own cardinality
+// guarantee with no cap to catch it — see the fix-round-1 note in
+// docs/metrics.md. If a genuine need for a public, pull-sampled,
+// per-request-safe gauge ever appears, it should be capped like the other
+// three Vec kinds before being exported, not exported as-is.
+type gaugeFuncVec struct {
 	name       string
 	help       string
 	labelNames []string
 	table      *seriesTable[gaugeFuncSeries]
 }
 
-// Add registers fn under this exact combination of label values, given in
+// add registers fn under this exact combination of label values, given in
 // the same order as the labels declared in [VecOpts.Labels]. fn is called
 // on every scrape and must be safe for concurrent use; it should return
 // quickly, since it runs synchronously while the exposition handler is
 // being written.
 //
-// Add is a startup-time call, not a per-request one: an application
+// add is a startup-time call, not a per-request one: an application
 // registers one series per pool, or per whatever fixed set of dependencies
-// it constructs, not one per request. Calling Add again with the same
-// label values is an error — a GaugeFuncVec series is meant to be
+// it constructs, not one per request. Calling add again with the same
+// label values is an error — a gaugeFuncVec series is meant to be
 // registered exactly once.
-func (v *GaugeFuncVec) Add(fn func() float64, values ...string) error {
+func (v *gaugeFuncVec) add(fn func() float64, values ...string) error {
 	values = normalizeLabelValues(v.labelNames, values)
 	key := joinLabelValues(values)
 
