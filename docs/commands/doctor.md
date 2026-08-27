@@ -87,18 +87,50 @@ doctor invoked) is what gets reported in `found`, e.g. `podman 5.8.4
 
 ### `sqlc`, `goose`, `oapi-codegen`
 
-Each runs its tool through `go tool <name>` (`go tool sqlc version`,
+These three checks behave differently depending on **where** `doctor`
+runs, because whether the tool is expected to be pinned at all depends on
+that context. Each is a wrapper around the same underlying check, keyed on
+whether a project recipe (`nise.json`) was found — see the `recipe` check
+below for that same detection.
+
+**Outside a generated project — i.e. inside the Nise framework repository
+itself:**
+
+Runs its tool through `go tool <name>` (`go tool sqlc version`,
 `go tool goose --version`, `go tool oapi-codegen -version`), which
 resolves the exact version pinned by this repository's `go.mod` `tool`
 directives and `go.sum` — see
 [Toolchain](../toolchain.md#pinned-go-tools). Because that pin lives in
 `go.mod`/`go.sum` rather than as a separate number on the toolchain page,
-these three checks verify only that the tool resolves and prints a
-parsable version, not a specific minimum — the pin itself is enforced by
-`go.sum`, not by doctor re-deriving it.
+this verifies only that the tool resolves and prints a parsable version,
+not a specific minimum — the pin itself is enforced by `go.sum`, not by
+doctor re-deriving it.
 
-- **Remedy:** run `go get -tool <module path>` from the repository root
-  (the exact command is included in the check's `remedy` field/line).
+- **`fail`** when the tool does not resolve through `go tool` or prints
+  nothing parsable as a version.
+  - **Remedy:** run `go get -tool <module path>` from the repository root
+    (the exact command is included in the check's `remedy` field/line).
+- **`ok`** when it resolves and parses.
+
+**Inside a generated project:**
+
+- **`skipped`**, unconditionally — the tool is never even invoked. A
+  generated project's `go.mod` is not expected to declare `sqlc`, `goose`,
+  or `oapi-codegen` at all: [ADR 0009](../adr/0009-generated-application-layout.md)
+  does not ask for `tool` directives, and the application has no use for
+  them until Nise's generator commands (M3/M4) land and would invoke them
+  from inside the application itself. `remedy` is empty here — there is
+  nothing to fix, and the "outside a project" remedy above is actively
+  wrong advice in this context: following it would add `tool` directives
+  for sqlc/goose/oapi-codegen to the *application's own* `go.mod`, not
+  Nise's.
+
+This distinction exists because a freshly generated project is the first
+context most users run `nise doctor` in, immediately after `nise new`,
+and reporting `fail` there — which was this command's original behavior —
+meant a completely healthy project exited non-zero on its very first
+health check, with a remedy that would have made the project worse if
+followed.
 
 ### `recipe`
 

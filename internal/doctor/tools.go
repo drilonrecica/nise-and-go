@@ -68,15 +68,31 @@ func checkPnpm(ctx context.Context, r Runner, timeout time.Duration) Check {
 }
 
 // checkSqlc, checkGoose, and checkOapiCodegen verify their respective tool
-// resolves through `go tool <name>` and prints a parsable version.
+// resolves through `go tool <name>` and prints a parsable version —
 // docs/toolchain.md pins these three by go.mod `tool` directive rather
 // than by a specific version number on that page — the exact pinned
 // version lives in go.mod/go.sum, which this package does not parse (that
 // would be reimplementing what `go tool` itself already resolves) — so
 // there is no minimum version to compare against here, only "does it
 // resolve and run".
-func checkSqlc(ctx context.Context, r Runner, timeout time.Duration) Check {
-	return checkMinVersion(ctx, r, timeout, minVersionSpec{
+//
+// This is only true inside the Nise framework repository itself, which is
+// what pins those `tool` directives. A generated application's own
+// go.mod carries none of them — ADR 0009 does not ask it to, and it has
+// no use for them until M3/M4 land the generator commands that would
+// invoke them from inside the application. insideGeneratedProject (set by
+// Run from whether a project recipe was found — see doctor.go) routes
+// each check to checkGeneratorTool, which reports StatusSkipped rather
+// than running the tool and reporting StatusFail at all: a generated
+// project genuinely lacking these tools is healthy, not broken, and
+// failing here would (a) fire in the very first thing a user runs after
+// `nise new`, (b) turn a healthy project's exit code non-zero, and worse,
+// (c) print a remedy — "add a go.mod tool directive" — that actively
+// corrupts the application's own go.mod if followed. See
+// TestCheckGeneratorToolSkipsInsideAGeneratedProject and
+// TestCheckGeneratorToolStillFailsOutsideAGeneratedProject.
+func checkSqlc(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool) Check {
+	return checkGeneratorTool(ctx, r, timeout, insideGeneratedProject, minVersionSpec{
 		name:    "sqlc",
 		command: "go",
 		args:    []string{"tool", "sqlc", "version"},
@@ -85,8 +101,8 @@ func checkSqlc(ctx context.Context, r Runner, timeout time.Duration) Check {
 	})
 }
 
-func checkGoose(ctx context.Context, r Runner, timeout time.Duration) Check {
-	return checkMinVersion(ctx, r, timeout, minVersionSpec{
+func checkGoose(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool) Check {
+	return checkGeneratorTool(ctx, r, timeout, insideGeneratedProject, minVersionSpec{
 		name:    "goose",
 		command: "go",
 		args:    []string{"tool", "goose", "--version"},
@@ -95,14 +111,37 @@ func checkGoose(ctx context.Context, r Runner, timeout time.Duration) Check {
 	})
 }
 
-func checkOapiCodegen(ctx context.Context, r Runner, timeout time.Duration) Check {
-	return checkMinVersion(ctx, r, timeout, minVersionSpec{
+func checkOapiCodegen(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool) Check {
+	return checkGeneratorTool(ctx, r, timeout, insideGeneratedProject, minVersionSpec{
 		name:    "oapi-codegen",
 		command: "go",
 		args:    []string{"tool", "oapi-codegen", "-version"},
 		min:     nil,
 		install: "Run `go get -tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen` from the repository root.",
 	})
+}
+
+// checkGeneratorTool routes a go.mod-`tool`-pinned generator check
+// (sqlc/goose/oapi-codegen) based on whether doctor is running inside a
+// generated project. Inside a generated project it never even invokes
+// spec.command: there is nothing to run yet, by design, so a StatusFail
+// (and its "add a tool directive" remedy, which is actively wrong advice
+// for an application's own go.mod) would misreport a healthy project as
+// broken. Outside a generated project — i.e. inside the Nise framework
+// repository itself, where these tools are genuinely pinned and
+// genuinely required — behavior is unchanged from before: checkMinVersion
+// runs the tool and reports StatusFail if it is missing or unparsable.
+func checkGeneratorTool(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool, spec minVersionSpec) Check {
+	if insideGeneratedProject {
+		return Check{
+			Name:   spec.name,
+			Status: StatusSkipped,
+			Found:  "not declared by this project's go.mod",
+			Required: spec.name + " is only required inside the Nise framework repository itself; " +
+				"a generated project does not declare it — Nise's generator tools arrive with a later milestone (M3/M4), not at project creation",
+		}
+	}
+	return checkMinVersion(ctx, r, timeout, spec)
 }
 
 // minVersionSpec describes one "run a command, parse a version, optionally
