@@ -42,6 +42,16 @@ Every field is required. Field order is fixed as written above, indentation is t
 - `cliVersion` is the version of the `nise` binary that created or last upgraded the project.
 - `runtimeVersion` is the version of `runtime/` the project targets. It is a separate field because an application may pin an older runtime in `go.mod` than the CLI that generated it.
 
+#### Version strings
+
+Both version fields hold a **bare version string, not a rendered banner**. `nise new` writes `internal/version.Get().Version`: a release version such as `v1.2.3`, a Go pseudo-version such as `v0.0.0-20260827120000-1a2b3c4d5e6f`, or `dev` for a source build carrying no metadata. `internal/version.Info.String()` renders `nise v1.2.3 (commit 1a2b3c4d, built 2026-08-27T00:00:00Z)`; that string must never reach the recipe, because it carries a build timestamp and the determinism rule forbids a timestamp in a generated file.
+
+The rule the format enforces is deliberately narrow: a version is required, is at most 64 bytes, and contains only printable ASCII in the range `!`–`~`. No spaces, no control characters, no non-ASCII.
+
+Semantic versioning is deliberately **not** required. `dev` and Go pseudo-versions are legitimate values that no released binary produces, and a recipe must still be writable from a source build.
+
+Rejecting the space is the deliberate part rather than an accident of the character range. It is the check that stops a rendered `Info.String()`, a `v1.2.3 (dirty)` build stamp, or any other human-facing banner from being written into a field that later commands compare mechanically. A build that needs a dirty marker encodes it without a space, as semantic-versioning build metadata: `v1.2.3+dirty`.
+
 ### Excluded from the recipe
 
 - The application name and Go module path. `go.mod` is authoritative; duplicating it invites drift.
@@ -64,6 +74,9 @@ Errors name the offending field and, where a closed set applies, list the accept
 | Unknown module | error naming `modules[i]` and listing accepted modules |
 | Duplicate module | error naming the duplicate |
 | `modules` absent or `null` | error directing the reader to `[]` |
+| `cliVersion` or `runtimeVersion` absent, `null`, or empty | error naming the field |
+| A version longer than 64 bytes | error naming the field and both lengths |
+| A version containing a space, a control character, or a non-ASCII rune | error naming the field and quoting the value |
 | Empty file | error stating the recipe is empty |
 | Malformed JSON | wrapped syntax error with its byte offset |
 | JSON array or scalar at the top level | error stating the recipe must be a JSON object |
@@ -77,4 +90,5 @@ Because `Marshal` is the canonicalizer, `nise check` can assert that the committ
 - Adding a field later requires either an optional field at `schemaVersion` 1 or a bump to 2 with a migration in `nise upgrade`. Removing or retyping a field always requires a bump.
 - Older CLIs reject newer recipes by design. The error must say which CLI version to install; that message is a compatibility surface.
 - `cliVersion` changes on every CLI release, so golden tests over generated trees must inject a fixed version rather than read the build's own.
+- `nise new` stamps the recipe from `internal/version.Get().Version`, never from `Info.String()`. Any future build stamp that wants extra detail has to fit the printable, space-free rule or move out of the recipe.
 - Revisit if the recipe ever needs to carry per-module settings. That is the point at which it would be turning into a configuration DSL, and the correct answer is likely a separate file rather than a larger recipe.
