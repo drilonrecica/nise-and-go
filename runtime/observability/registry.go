@@ -1,0 +1,153 @@
+package observability
+
+import (
+	"fmt"
+	"sync"
+)
+
+// Registry collects named, labeled metrics independent of how they are
+// exposed. Construct one with [NewRegistry], build metrics on it once at
+// startup with [Registry.NewCounterVec], [Registry.NewGaugeVec],
+// [Registry.NewGaugeFuncVec], and [Registry.NewHistogramVec], and pass it
+// to [NewHandler] (or your own exposition code, via [WriteText]) to render
+// what has been recorded. A Registry is safe for concurrent use.
+type Registry struct {
+	mu         sync.Mutex
+	names      map[string]struct{}
+	counters   []*CounterVec
+	gauges     []*GaugeVec
+	gaugeFuncs []*GaugeFuncVec
+	histograms []*HistogramVec
+}
+
+// NewRegistry returns an empty Registry.
+func NewRegistry() *Registry {
+	return &Registry{names: make(map[string]struct{})}
+}
+
+// reserveName claims name for the Registry, or reports an error if some
+// earlier call already claimed it. Metric names share one namespace across
+// every Vec kind: a counter and a gauge cannot share a name, matching the
+// exposition format's own constraint that one name has exactly one type.
+func (r *Registry) reserveName(name string) error {
+	if name == "" {
+		return fmt.Errorf("observability: metric name must not be empty")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.names[name]; exists {
+		return fmt.Errorf("observability: metric %q already registered", name)
+	}
+	r.names[name] = struct{}{}
+	return nil
+}
+
+// VecOpts names and describes a labeled metric.
+type VecOpts struct {
+	// Name is the metric's exposition name, for example
+	// "http_requests_total". It must be unique within the Registry across
+	// every metric kind.
+	Name string
+	// Help is a one-line description written into the exposition output's
+	// "# HELP" line.
+	Help string
+	// Labels names each label, in the order values must later be supplied
+	// to WithLabelValues (or, for a GaugeFuncVec, to Add). Label by
+	// low-cardinality dimensions only — a route template, an HTTP method,
+	// a status class — never a raw path, a user ID, or any other value an
+	// unauthenticated caller can vary without bound.
+	Labels []string
+	// MaxSeries caps the number of distinct label-value combinations
+	// tracked individually before further combinations collapse into one
+	// shared overflow series. Zero uses DefaultMaxSeries.
+	MaxSeries int
+}
+
+// NewCounterVec registers a new [CounterVec] on r.
+func (r *Registry) NewCounterVec(opts VecOpts) (*CounterVec, error) {
+	if err := r.reserveName(opts.Name); err != nil {
+		return nil, err
+	}
+	cv := &CounterVec{
+		name:       opts.Name,
+		help:       opts.Help,
+		labelNames: opts.Labels,
+		table: newSeriesTable(opts.MaxSeries, func() *counterValue {
+			return &counterValue{}
+		}),
+	}
+	r.mu.Lock()
+	r.counters = append(r.counters, cv)
+	r.mu.Unlock()
+	return cv, nil
+}
+
+// NewGaugeVec registers a new [GaugeVec] on r.
+func (r *Registry) NewGaugeVec(opts VecOpts) (*GaugeVec, error) {
+	if err := r.reserveName(opts.Name); err != nil {
+		return nil, err
+	}
+	gv := &GaugeVec{
+		name:       opts.Name,
+		help:       opts.Help,
+		labelNames: opts.Labels,
+		table: newSeriesTable(opts.MaxSeries, func() *gaugeValue {
+			return &gaugeValue{}
+		}),
+	}
+	r.mu.Lock()
+	r.gauges = append(r.gauges, gv)
+	r.mu.Unlock()
+	return gv, nil
+}
+
+// NewGaugeFuncVec registers a new [GaugeFuncVec] on r. MaxSeries in opts is
+// ignored: a GaugeFuncVec's series are registered explicitly through
+// [GaugeFuncVec.Add], not created from request-controlled input, so there
+// is nothing for a cap to bound.
+func (r *Registry) NewGaugeFuncVec(opts VecOpts) (*GaugeFuncVec, error) {
+	if err := r.reserveName(opts.Name); err != nil {
+		return nil, err
+	}
+	gv := &GaugeFuncVec{
+		name:       opts.Name,
+		help:       opts.Help,
+		labelNames: opts.Labels,
+		table:      newSeriesTable(0, func() gaugeFuncSeries { return gaugeFuncSeries{} }),
+	}
+	r.mu.Lock()
+	r.gaugeFuncs = append(r.gaugeFuncs, gv)
+	r.mu.Unlock()
+	return gv, nil
+}
+
+// HistogramVecOpts describes a labeled histogram: [VecOpts] plus its
+// bucket boundaries.
+type HistogramVecOpts struct {
+	VecOpts
+	// Buckets are the upper bounds of each bucket, in ascending order. An
+	// implicit +Inf bucket, matching Prometheus's cumulative "le"
+	// semantics, is always included and need not be listed.
+	Buckets []float64
+}
+
+// NewHistogramVec registers a new [HistogramVec] on r.
+func (r *Registry) NewHistogramVec(opts HistogramVecOpts) (*HistogramVec, error) {
+	if err := r.reserveName(opts.Name); err != nil {
+		return nil, err
+	}
+	buckets := opts.Buckets
+	hv := &HistogramVec{
+		name:       opts.Name,
+		help:       opts.Help,
+		labelNames: opts.Labels,
+		buckets:    buckets,
+		table: newSeriesTable(opts.MaxSeries, func() *histogramValue {
+			return newHistogramValue(buckets)
+		}),
+	}
+	r.mu.Lock()
+	r.histograms = append(r.histograms, hv)
+	r.mu.Unlock()
+	return hv, nil
+}
