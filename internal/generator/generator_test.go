@@ -15,7 +15,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/drilonrecica/nise-and-go/internal/generator"
@@ -443,35 +442,16 @@ func TestModulesAreSortedAndDeduplicated(t *testing.T) {
 // content comparison reveals. A test that accommodates the defect it
 // guards is worse than no test.
 //
-// TestFileModesAreIndependentOfUmask below drives the same assertion under
-// a deliberately hostile umask.
+// TestFileModesAreIndependentOfUmask, in modes_unix_test.go, drives the
+// same assertion under a deliberately hostile umask. It lives in a
+// build-tagged file because syscall.Umask does not exist on Windows, and a
+// runtime GOOS check would not have stopped the reference from having to
+// resolve at compile time there.
 func TestFileModesAreExplicit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("os.Chmod only toggles the read-only bit on Windows, so Unix permission bits are not meaningful there")
 	}
 	t.Parallel()
-
-	root := filepath.Join(t.TempDir(), "myapp")
-	if _, err := generator.Write(root, defaultOptions()); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	assertExactModes(t, root)
-}
-
-// TestFileModesAreIndependentOfUmask is the regression test for the umask
-// dependency itself: it sets a maximally restrictive umask for the
-// duration of the generation and requires the modes to come out unchanged.
-//
-// It cannot run in parallel with anything, because the umask is
-// process-wide state, so it does not call t.Parallel and restores the
-// previous value before returning.
-func TestFileModesAreIndependentOfUmask(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix umask has no equivalent on Windows")
-	}
-
-	previous := syscall.Umask(0o077)
-	t.Cleanup(func() { syscall.Umask(previous) })
 
 	root := filepath.Join(t.TempDir(), "myapp")
 	if _, err := generator.Write(root, defaultOptions()); err != nil {
