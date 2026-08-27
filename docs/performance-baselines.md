@@ -8,11 +8,17 @@
 - **Build date:** 2026-08-28
 - **Go version:** go1.26.5-X:nodwarf5
 - **GOOS/GOARCH:** linux/amd64
-- **Hardware:** Single-machine measurement (uncontrolled hardware; variance expected)
+- **CPU:** AMD Ryzen 7 (16 cores)
+- **RAM:** 32.0 GB
+- **Kernel:** 7.1.5-200.fc44.x86_64
+- **OS:** Linux
+- **Note:** Single-machine measurement on uncontrolled hardware; variance expected across different systems and conditions
 
 ## Measurement methodology
 
 All measurements run locally in temporary directories under `/tmp`, clean up after themselves, and use the portable `scripts/measure-baselines.sh` script. Each metric reports five or more samples unless otherwise noted.
+
+**Generated application setup:** The script generates a project using `nise new`, then builds the application. Because `github.com/drilonrecica/nise-and-go v0.1.0` is not yet published on the module proxy, the script runs `go mod edit -replace github.com/drilonrecica/nise-and-go=/path/to/nise-and-go` (pointing to the local repository) before `go mod tidy`. This is necessary for the build to succeed and is part of the baseline methodology; it does not affect the measurements themselves (only the application binary's size and startup behavior, which are what we measure).
 
 ### CLI measurements
 
@@ -126,9 +132,9 @@ The script re-runs the entire measurement cycle: it does not assume a warm cache
 
 These measurements track:
 
-- **CLI responsiveness:** `nise` users see it as instant today; this baseline prevents regression.
+- **CLI responsiveness:** `nise version` completes in ~2.9 ms; `nise new` in ~5.0 ms. This baseline prevents unintended regression as features are added.
 - **Generation throughput:** Project creation speed remains consistent as features are added.
-- **Application baseline:** The generated application's binary size and startup time are load-bearing for deployment and user experience.
+- **Application baseline:** The generated application's binary size (10.0 MB), cold startup (9.7 ms to readiness), and idle memory footprint (8.9 MB) are load-bearing for deployment and production experience.
 
 They do not measure:
 

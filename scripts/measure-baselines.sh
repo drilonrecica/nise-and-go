@@ -15,6 +15,7 @@ export LANG=C
 
 output_dir="."
 samples=5
+invocation_dir="$(pwd)"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -33,6 +34,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Resolve output_dir to absolute path before changing directories
+if [[ "$output_dir" != /* ]]; then
+    output_dir="$invocation_dir/$output_dir"
+fi
+mkdir -p "$output_dir"
+
 # Resolve repo root
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -50,12 +57,28 @@ echo ""
 commit=$(cd "$repo_root" && git rev-parse HEAD)
 version=$(cd "$repo_root" && git describe --tags 2>/dev/null || echo "v0.0.0-dev")
 
+# Capture CPU and system info
+cpu_model=$(grep -m1 "^model name" /proc/cpuinfo 2>/dev/null | sed 's/.*: //g' || echo "unknown")
+cpu_cores=$(grep -c "^processor" /proc/cpuinfo 2>/dev/null || echo "unknown")
+total_ram_kb=$(grep "^MemTotal" /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "unknown")
+if [[ "$total_ram_kb" != "unknown" ]]; then
+    total_ram_gb=$(awk "BEGIN {printf \"%.1f\", $total_ram_kb / 1024 / 1024}")
+else
+    total_ram_gb="unknown"
+fi
+kernel_version=$(uname -r 2>/dev/null || echo "unknown")
+os_name=$(uname -s 2>/dev/null || echo "unknown")
+
 echo "=== Environment ==="
 echo "Commit:        $commit"
 echo "Version:       $version"
 echo "Go version:    $(go version | awk '{print $3}')"
 echo "GOOS:          ${GOOS:-$(go env GOOS)}"
 echo "GOARCH:        ${GOARCH:-$(go env GOARCH)}"
+echo "CPU:           $cpu_model ($cpu_cores cores)"
+echo "RAM:           $total_ram_gb GB"
+echo "Kernel:        $kernel_version"
+echo "OS:            $os_name"
 echo "Samples:       $samples"
 echo ""
 
@@ -73,7 +96,14 @@ echo "Built: $nise_bin"
 nise_size_unstripped=$(stat -c%s "$nise_bin" 2>/dev/null || wc -c < "$nise_bin")
 nise_bin_stripped="$work_dir/nise-stripped"
 cp "$nise_bin" "$nise_bin_stripped"
-strip "$nise_bin_stripped" 2>/dev/null || true
+
+# Check for strip binary and error if missing
+if ! command -v strip &> /dev/null; then
+    echo "ERROR: 'strip' binary not found on PATH" >&2
+    exit 1
+fi
+strip "$nise_bin_stripped"
+
 nise_size_stripped=$(stat -c%s "$nise_bin_stripped" 2>/dev/null || wc -c < "$nise_bin_stripped")
 
 echo "Binary size (unstripped): $nise_size_unstripped bytes"
@@ -163,6 +193,7 @@ go mod tidy > /dev/null 2>&1 || true
 gen_app_bin="$gen_project_dir/cmd/testapp/testapp"
 gen_app_size=0
 startup_median=0
+rss_median=0
 
 if go build -o "$gen_app_bin" ./cmd/testapp 2>&1; then
     if [[ -f "$gen_app_bin" ]]; then
@@ -170,20 +201,27 @@ if go build -o "$gen_app_bin" ./cmd/testapp 2>&1; then
         echo "Generated app binary size: $gen_app_size bytes"
 
         # Measure cold startup to /healthz/ready readiness probe
+        # Use widely-spaced ports to minimize TIME_WAIT contention between samples
         echo ""
         echo "=== Measuring generated app cold startup (to readiness probe) ==="
         startup_times=()
         for i in $(seq 1 "$samples"); do
+            # Use a different port range for each sample (9000 + i*100) to avoid contention
+            port=$((9000 + i * 100))
+
+            # Ensure previous process has fully released resources
+            sleep 0.5
+
             start_ns=$(date +%s%N)
 
-            # Start the server in the background (uses default port 8080)
-            PORT=8080 BIND_ADDR=127.0.0.1 "$gen_app_bin" -mode web > /tmp/app_startup_$i.log 2>&1 &
+            # Start the server in the background with the selected port
+            PORT=$port BIND_ADDR=127.0.0.1 "$gen_app_bin" -mode web > "$work_dir/app_startup_$i.log" 2>&1 &
             server_pid=$!
 
             # Poll /healthz/ready until it returns 200, with a timeout
             ready=0
             for attempt in $(seq 1 100); do
-                if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/healthz/ready 2>/dev/null | grep -q "^200\$"; then
+                if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$port/healthz/ready" 2>/dev/null | grep -q "^200\$"; then
                     ready=1
                     break
                 fi
@@ -192,7 +230,7 @@ if go build -o "$gen_app_bin" ./cmd/testapp 2>&1; then
 
             end_ns=$(date +%s%N)
 
-            # Kill the server
+            # Kill the server and wait for it to fully release the port
             kill $server_pid 2>/dev/null || true
             wait $server_pid 2>/dev/null || true
 
@@ -214,18 +252,25 @@ if go build -o "$gen_app_bin" ./cmd/testapp 2>&1; then
         fi
 
         # Measure idle RSS after startup
+        # Use widely-spaced ports to minimize TIME_WAIT contention between samples
         echo ""
         echo "=== Measuring generated app idle RSS ==="
         rss_values=()
         for i in $(seq 1 "$samples"); do
-            # Start the server in the background (uses default port 8080)
-            PORT=8080 BIND_ADDR=127.0.0.1 "$gen_app_bin" -mode web > /tmp/app_rss_$i.log 2>&1 &
+            # Use a different port range for each sample (10000 + i*100) to avoid contention
+            port=$((10000 + i * 100))
+
+            # Ensure previous process has fully released resources
+            sleep 0.5
+
+            # Start the server in the background with the selected port
+            PORT=$port BIND_ADDR=127.0.0.1 "$gen_app_bin" -mode web > "$work_dir/app_rss_$i.log" 2>&1 &
             server_pid=$!
 
             # Wait for readiness
             ready=0
             for attempt in $(seq 1 100); do
-                if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/healthz/ready 2>/dev/null | grep -q "^200\$"; then
+                if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$port/healthz/ready" 2>/dev/null | grep -q "^200\$"; then
                     ready=1
                     break
                 fi
@@ -249,7 +294,7 @@ if go build -o "$gen_app_bin" ./cmd/testapp 2>&1; then
                 printf "  Sample $i: FAILED (readiness probe did not respond)\n"
             fi
 
-            # Kill the server
+            # Kill the server and wait for it to fully release the port
             kill $server_pid 2>/dev/null || true
             wait $server_pid 2>/dev/null || true
         done
@@ -287,9 +332,6 @@ Generated app cold startup (median)       $startup_median     ms
 Generated app idle RSS (median)           $rss_median         MB
 EOF
 
-# Ensure output directory exists
-mkdir -p "$output_dir"
-
 # JSON output for machine parsing
 json_output="$output_dir/baseline-metrics.json"
 cat > "$json_output" << EOF
@@ -300,6 +342,11 @@ cat > "$json_output" << EOF
     "go_version": "$(go version | awk '{print $3}')",
     "goos": "${GOOS:-$(go env GOOS)}",
     "goarch": "${GOARCH:-$(go env GOARCH)}",
+    "cpu_model": "$cpu_model",
+    "cpu_cores": $cpu_cores,
+    "ram_gb": "$total_ram_gb",
+    "kernel": "$kernel_version",
+    "os": "$os_name",
     "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
     "samples": $samples
   },
@@ -318,6 +365,12 @@ cat > "$json_output" << EOF
   }
 }
 EOF
+
+# Verify the JSON file was written
+if [[ ! -f "$json_output" ]]; then
+    echo "ERROR: Failed to write output file: $json_output" >&2
+    exit 1
+fi
 
 echo ""
 echo "Machine-readable output: $json_output"
