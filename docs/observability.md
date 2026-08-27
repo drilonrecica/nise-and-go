@@ -94,16 +94,20 @@ Even with `TrustInbound: true`, an inbound value is only accepted if it passes `
 
 ### The guarantee
 
-`NewJSONHandler` and `NewTextHandler` both wrap their output in `NewRedactingHandler` automatically. This is not something a caller can forget: using either constructor gets you redaction, not something you opt into per call site. `NewRedactingHandler` is also exported directly, for wrapping a different base `slog.Handler`.
+`NewJSONHandler` and `NewTextHandler` both apply central redaction automatically. This is not something a caller can forget: using either constructor gets you redaction, not something you opt into per call site. The handler that implements it is deliberately unexported — `HandlerOptions.Redact` is the only way to configure it, so the package has exactly one supported path to redacted output instead of two independent ones. Pre-1.0, adding an export later is a compatible change; removing one is not, so the minimal surface wins for now.
 
-Redaction replaces the value of any attribute whose **key** matches a deny set — case-insensitive, exact match — with a placeholder (`[REDACTED]` by default, or `RedactOptions.Placeholder`). The built-in deny set (`logging.DefaultDenyKeys()`) is:
+Redaction replaces the value of any attribute whose **key matches a deny fragment** with a placeholder (`[REDACTED]` by default, or `RedactOptions.Placeholder`). Matching is not a literal-key comparison: the key is case-folded, its separators (`_`, `-`, `.`, space) are stripped, and its camelCase boundaries are split, and the result is checked for **containment** of a fragment — not equality with one. This is what lets one fragment, `token`, catch `access_token`, `refresh_token`, and `Auth-Token` alike, and one fragment, `apikey`, catch `api_key`, `api-key`, and `APIKey`. The built-in deny fragments (`logging.DefaultDenyKeys()`) are:
 
 ```
-password  passwd  secret  token  authorization  cookie  set-cookie
-api_key  apikey  session  csrf  private_key  credential
+password  passwd  secret  token  authorization  cookie
+apikey  session  csrf  privatekey  credential
 ```
 
-`RedactOptions.ExtraDenyKeys` extends this list for application-specific field names — for example `access_token`, which does not literally match the default `token` entry because matching is exact, not substring or prefix.
+`RedactOptions.ExtraDenyKeys` extends this set with application-specific fragments, normalized the same way. Prefer a specific fragment over a generic one: `db_password` and `pg_password` already redact under the default `password` fragment, so they need no entry; a genuinely new concept like a national ID number might be added as `"ssn"`.
+
+**One fragment, `session`, is intentionally narrower than the rest.** Plain containment on `session` would also redact `session_count` and `session_start_time` — legitimate operational metrics with no secret in them, and exactly the kind of thing an operator needs visibility into. `session` therefore matches only when it is the key's entire normalized form on its own (a field literally named `session`), or when the key also contains `id`, `key`, or `token` as a separate word — so `session`, `sessionID`, and `session_token` all redact, but `session_count` and `session_start_time` do not. This narrowing applies only to this package's own `session` fragment; a fragment added through `ExtraDenyKeys` always matches by plain containment, so choose a specific one if a generic word would sweep in metrics you want to keep.
+
+**Honest accounting of the trade-off in the other direction:** fragment containment is deliberately biased toward over-redaction everywhere it is *not* narrowed, because the operational cost of losing a rare non-secret field is lower than the cost of a leaked credential. This does redact some benign fields: `token_type` (an OAuth field naming a token's type, not a secret itself), `password_last_changed_at`, `api_key_last_rotated_at`, `authorization_header_present`, and `csrf_check_duration_ms` are all real-shaped operational fields that get swept in solely for containing a deny fragment. If your application logs one of these as a metric you need to see, log it under a differently-shaped key (`auth_token_kind` instead of `token_type`) rather than working around redaction generally.
 
 Redaction is applied on every `WithAttrs` and `Handle` call, so it survives:
 
@@ -127,7 +131,7 @@ Redaction is applied on every `WithAttrs` and `Handle` call, so it survives:
 
 **Redaction is key-based. It has no way to see inside a message string.** `logger.Info("connecting with password=hunter2")` is not redacted by anything in this package, because `hunter2` is not the value of an attribute with a deny-listed key — it is a substring of the message. Nothing here scans message text for secret-shaped content. If your code interpolates a secret into a format string, it will be logged in full, in full view of anyone who can read the log. This is a call-site discipline problem `runtime/logging` cannot solve for you: always pass a sensitive value as an attribute, never as part of the message.
 
-The deny-set match is exact, not substring or prefix. A field named `db_password` is not redacted by the default set (only a field literally named `password`, `secret`, etc. is); add it via `RedactOptions.ExtraDenyKeys`.
+Fragment containment also has a shape it cannot fully close: it is biased toward over- rather than under-redaction (see the accepted false positives above), and a field name built from words this package's fragments do not recognize at all — a company-internal codename for a secret, say — is not redacted unless added via `RedactOptions.ExtraDenyKeys`. Matching is a heuristic over key *names*, not a semantic understanding of what a field holds.
 
 ### `Redact` for connection strings and URLs
 

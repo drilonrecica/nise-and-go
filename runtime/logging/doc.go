@@ -39,12 +39,12 @@
 //
 // # Redaction
 //
-// NewJSONHandler and NewTextHandler both wrap their output in
-// NewRedactingHandler, so central redaction is not something a caller can
-// forget to apply: any attribute whose key is in the deny set (case
-// insensitive, exact match — see DefaultDenyKeys) is replaced before it
-// reaches the encoder, including a key nested inside slog.Group, WithGroup,
-// or a value returned by a slog.LogValuer.
+// NewJSONHandler and NewTextHandler both apply central redaction
+// automatically, so it is not something a caller can forget: any attribute
+// whose key matches the deny set (case-folded, separator- and
+// camelCase-normalized fragment containment — see DefaultDenyKeys) is
+// replaced before it reaches the encoder, including a key nested inside
+// slog.Group, WithGroup, or a value returned by a slog.LogValuer.
 //
 // Redaction is key-based. It has no way to detect a secret that has been
 // written into a message string ("connecting with password hunter2") or
