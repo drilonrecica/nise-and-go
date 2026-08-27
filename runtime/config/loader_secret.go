@@ -30,7 +30,7 @@ func (l *Loader) Secret(name string, opts ...Option) Secret {
 	case fileOK:
 		value, warning, err := readSecretFile(filePath)
 		if err != nil {
-			l.addErr(fmt.Errorf("%s: %s; fix or remove %s", name, err, fileName))
+			l.addErr(fmt.Errorf("%s: %w; fix or remove %s", name, err, fileName))
 			return Secret{}
 		}
 		if warning != "" {
