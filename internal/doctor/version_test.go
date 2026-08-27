@@ -72,6 +72,17 @@ func TestParseVersionRealOutputShapes(t *testing.T) {
 			input: "github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen\nv2.8.0\n",
 			want:  Version{Major: 2, Minor: 8, Patch: 0, Raw: "2.8.0"},
 		},
+		{
+			// Go's own release-candidate spelling: NO separator before
+			// "rc", unlike the hyphenated semver convention. A pattern
+			// written only for "-rc1" silently drops this marker and
+			// reports a plain 1.26.0 — see
+			// TestParseVersionGoReleaseCandidateFailsAtLeastFinalRelease
+			// below for why that used to be a false ok.
+			name:  "go version, an actual go1.26 release-candidate build",
+			input: "go version go1.26rc1 linux/amd64\n",
+			want:  Version{Major: 1, Minor: 26, Patch: 0, Raw: "1.26rc1", Prerelease: "rc1"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -99,14 +110,41 @@ func TestParseVersionTolerance(t *testing.T) {
 		input string
 		want  Version
 	}{
-		{"go-prefixed, no separator", "go1.26.5", Version{1, 26, 5, "1.26.5"}},
-		{"v-prefixed", "v1.2.3", Version{1, 2, 3, "1.2.3"}},
-		{"prerelease suffix", "1.2.3-rc1", Version{1, 2, 3, "1.2.3"}},
-		{"build-metadata suffix", "1.2.3+build.5", Version{1, 2, 3, "1.2.3"}},
-		{"vendor suffix glued to the version with no word boundary", "1.2.3-X:nodwarf5", Version{1, 2, 3, "1.2.3"}},
-		{"missing patch component defaults to zero", "1.2", Version{1, 2, 0, "1.2"}},
-		{"leading and trailing whitespace", "  1.2.3  \n", Version{1, 2, 3, "1.2.3"}},
-		{"embedded in unrelated prose", "some-tool, revision 1.2.3 (stable)", Version{1, 2, 3, "1.2.3"}},
+		{"go-prefixed, no separator", "go1.26.5", Version{Major: 1, Minor: 26, Patch: 5, Raw: "1.26.5"}},
+		{"v-prefixed", "v1.2.3", Version{Major: 1, Minor: 2, Patch: 3, Raw: "1.2.3"}},
+		{
+			"hyphenated prerelease suffix is recognized and kept",
+			"1.2.3-rc1",
+			Version{Major: 1, Minor: 2, Patch: 3, Raw: "1.2.3-rc1", Prerelease: "rc1"},
+		},
+		{
+			"unseparated prerelease suffix (go's own convention) is recognized and kept",
+			"1.2.3rc1",
+			Version{Major: 1, Minor: 2, Patch: 3, Raw: "1.2.3rc1", Prerelease: "rc1"},
+		},
+		{
+			"other recognized prerelease keywords",
+			"2.0.0-beta2",
+			Version{Major: 2, Minor: 0, Patch: 0, Raw: "2.0.0-beta2", Prerelease: "beta2"},
+		},
+		{
+			"prerelease keyword matching is case-insensitive",
+			"1.2.3-RC1",
+			Version{Major: 1, Minor: 2, Patch: 3, Raw: "1.2.3-RC1", Prerelease: "rc1"},
+		},
+		{
+			"build-metadata suffix is not mistaken for a prerelease",
+			"1.2.3+build.5",
+			Version{Major: 1, Minor: 2, Patch: 3, Raw: "1.2.3"},
+		},
+		{
+			"vendor suffix glued to the version with no word boundary is not mistaken for a prerelease",
+			"1.2.3-X:nodwarf5",
+			Version{Major: 1, Minor: 2, Patch: 3, Raw: "1.2.3"},
+		},
+		{"missing patch component defaults to zero", "1.2", Version{Major: 1, Minor: 2, Patch: 0, Raw: "1.2"}},
+		{"leading and trailing whitespace", "  1.2.3  \n", Version{Major: 1, Minor: 2, Patch: 3, Raw: "1.2.3"}},
+		{"embedded in unrelated prose", "some-tool, revision 1.2.3 (stable)", Version{Major: 1, Minor: 2, Patch: 3, Raw: "1.2.3"}},
 	}
 
 	for _, tt := range tests {
@@ -120,6 +158,47 @@ func TestParseVersionTolerance(t *testing.T) {
 				t.Errorf("ParseVersion(%q) = %+v, want %+v", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestParseVersionGoReleaseCandidateFailsAtLeastFinalRelease is the
+// regression test for the reviewer's finding on fix round 1: a Go release
+// candidate (go1.26rc1, Go's actual unseparated spelling — not the
+// hyphenated "1.26-rc1" a semver-shaped pattern would expect) must NOT
+// satisfy AtLeast against the final 1.26.0 release. Before this fix,
+// versionPattern's match stopped at "1.26" (no digit or dot follows
+// "1.26" in "1.26rc1"), silently dropping the "rc1" marker entirely and
+// reporting a plain, "final" 1.26.0 — which then passed AtLeast(1.26.0),
+// telling a developer running an unreleased compiler that their toolchain
+// was fine.
+func TestParseVersionGoReleaseCandidateFailsAtLeastFinalRelease(t *testing.T) {
+	t.Parallel()
+
+	rc, err := ParseVersion("go version go1.26rc1 linux/amd64")
+	if err != nil {
+		t.Fatalf("ParseVersion returned error: %v", err)
+	}
+	final, err := ParseVersion("1.26.0")
+	if err != nil {
+		t.Fatalf("ParseVersion(final) returned error: %v", err)
+	}
+
+	if rc.AtLeast(final) {
+		t.Errorf("go1.26rc1.AtLeast(1.26.0) = true, want false: a release candidate is not the release it names")
+	}
+	if got := rc.Compare(final); got != -1 {
+		t.Errorf("go1.26rc1.Compare(1.26.0) = %d, want -1", got)
+	}
+
+	// The hyphenated semver form must behave identically: this is a
+	// pre-release marker recognized regardless of the separator style,
+	// not a Go-specific special case.
+	hyphenated, err := ParseVersion("1.26.0-rc1")
+	if err != nil {
+		t.Fatalf("ParseVersion(hyphenated) returned error: %v", err)
+	}
+	if hyphenated.AtLeast(final) {
+		t.Errorf("1.26.0-rc1.AtLeast(1.26.0) = true, want false")
 	}
 }
 
@@ -161,14 +240,61 @@ func TestVersionCompareAndAtLeast(t *testing.T) {
 		compare   int
 		aAtLeastB bool
 	}{
-		{"equal", Version{1, 26, 5, "1.26.5"}, Version{1, 26, 5, "1.26.5"}, 0, true},
-		{"raw text ignored in comparison", Version{1, 26, 5, "go1.26.5-vendor"}, Version{1, 26, 5, "1.26.5"}, 0, true},
-		{"greater major", Version{2, 0, 0, "2.0.0"}, Version{1, 99, 99, "1.99.99"}, 1, true},
-		{"lesser major", Version{1, 0, 0, "1.0.0"}, Version{2, 0, 0, "2.0.0"}, -1, false},
-		{"greater minor, equal major", Version{1, 27, 0, "1.27.0"}, Version{1, 26, 5, "1.26.5"}, 1, true},
-		{"lesser minor, equal major", Version{1, 25, 9, "1.25.9"}, Version{1, 26, 0, "1.26.0"}, -1, false},
-		{"greater patch only", Version{1, 26, 6, "1.26.6"}, Version{1, 26, 5, "1.26.5"}, 1, true},
-		{"lesser patch only", Version{1, 26, 4, "1.26.4"}, Version{1, 26, 5, "1.26.5"}, -1, false},
+		{
+			name: "equal", compare: 0, aAtLeastB: true,
+			a: Version{Major: 1, Minor: 26, Patch: 5, Raw: "1.26.5"},
+			b: Version{Major: 1, Minor: 26, Patch: 5, Raw: "1.26.5"},
+		},
+		{
+			name: "raw text ignored in comparison", compare: 0, aAtLeastB: true,
+			a: Version{Major: 1, Minor: 26, Patch: 5, Raw: "go1.26.5-vendor"},
+			b: Version{Major: 1, Minor: 26, Patch: 5, Raw: "1.26.5"},
+		},
+		{
+			name: "greater major", compare: 1, aAtLeastB: true,
+			a: Version{Major: 2, Minor: 0, Patch: 0, Raw: "2.0.0"},
+			b: Version{Major: 1, Minor: 99, Patch: 99, Raw: "1.99.99"},
+		},
+		{
+			name: "lesser major", compare: -1, aAtLeastB: false,
+			a: Version{Major: 1, Minor: 0, Patch: 0, Raw: "1.0.0"},
+			b: Version{Major: 2, Minor: 0, Patch: 0, Raw: "2.0.0"},
+		},
+		{
+			name: "greater minor, equal major", compare: 1, aAtLeastB: true,
+			a: Version{Major: 1, Minor: 27, Patch: 0, Raw: "1.27.0"},
+			b: Version{Major: 1, Minor: 26, Patch: 5, Raw: "1.26.5"},
+		},
+		{
+			name: "lesser minor, equal major", compare: -1, aAtLeastB: false,
+			a: Version{Major: 1, Minor: 25, Patch: 9, Raw: "1.25.9"},
+			b: Version{Major: 1, Minor: 26, Patch: 0, Raw: "1.26.0"},
+		},
+		{
+			name: "greater patch only", compare: 1, aAtLeastB: true,
+			a: Version{Major: 1, Minor: 26, Patch: 6, Raw: "1.26.6"},
+			b: Version{Major: 1, Minor: 26, Patch: 5, Raw: "1.26.5"},
+		},
+		{
+			name: "lesser patch only", compare: -1, aAtLeastB: false,
+			a: Version{Major: 1, Minor: 26, Patch: 4, Raw: "1.26.4"},
+			b: Version{Major: 1, Minor: 26, Patch: 5, Raw: "1.26.5"},
+		},
+		{
+			name: "same major.minor.patch, prerelease sorts below the release", compare: -1, aAtLeastB: false,
+			a: Version{Major: 1, Minor: 26, Patch: 0, Raw: "1.26rc1", Prerelease: "rc1"},
+			b: Version{Major: 1, Minor: 26, Patch: 0, Raw: "1.26.0"},
+		},
+		{
+			name: "the release satisfies AtLeast against its own release candidate", compare: 1, aAtLeastB: true,
+			a: Version{Major: 1, Minor: 26, Patch: 0, Raw: "1.26.0"},
+			b: Version{Major: 1, Minor: 26, Patch: 0, Raw: "1.26rc1", Prerelease: "rc1"},
+		},
+		{
+			name: "two different prerelease tags at the same core compare lexicographically", compare: -1, aAtLeastB: false,
+			a: Version{Major: 1, Minor: 26, Patch: 0, Raw: "1.26.0-alpha1", Prerelease: "alpha1"},
+			b: Version{Major: 1, Minor: 26, Patch: 0, Raw: "1.26.0-beta1", Prerelease: "beta1"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -186,11 +312,26 @@ func TestVersionCompareAndAtLeast(t *testing.T) {
 
 func TestVersionString(t *testing.T) {
 	t.Parallel()
-	v, err := ParseVersion("go version go1.26.5-X:nodwarf5 linux/amd64")
-	if err != nil {
-		t.Fatalf("ParseVersion returned error: %v", err)
-	}
-	if got, want := v.String(), "1.26.5"; got != want {
-		t.Errorf("String() = %q, want %q", got, want)
-	}
+
+	t.Run("plain release", func(t *testing.T) {
+		t.Parallel()
+		v, err := ParseVersion("go version go1.26.5-X:nodwarf5 linux/amd64")
+		if err != nil {
+			t.Fatalf("ParseVersion returned error: %v", err)
+		}
+		if got, want := v.String(), "1.26.5"; got != want {
+			t.Errorf("String() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("release candidate keeps its marker visible", func(t *testing.T) {
+		t.Parallel()
+		v, err := ParseVersion("go version go1.26rc1 linux/amd64")
+		if err != nil {
+			t.Fatalf("ParseVersion returned error: %v", err)
+		}
+		if got, want := v.String(), "1.26rc1"; got != want {
+			t.Errorf("String() = %q, want %q (a developer reading \"found\" text must see this is an RC)", got, want)
+		}
+	})
 }

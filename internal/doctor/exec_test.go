@@ -33,6 +33,30 @@ func TestExecRunnerSuccess(t *testing.T) {
 	}
 }
 
+// TestExecRunnerCapturesStderr proves Runner.Run's shared stdout/stderr
+// buffer (see execRunner.Run's cmd.Stdout = buf; cmd.Stderr = buf) actually
+// captures output a tool sends to stderr, not just stdout. This matters in
+// production: at least one real tool doctor checks could plausibly print
+// its version banner to stderr rather than stdout on some platform, and
+// ParseVersion is run against whatever Run returns regardless of which
+// stream it came from. Nothing else in this suite pins this behavior, so a
+// future refactor that accidentally dropped or discarded cmd.Stderr would
+// not be caught by TestExecRunnerSuccess (which only ever writes to
+// stdout).
+func TestExecRunnerCapturesStderr(t *testing.T) {
+	t.Parallel()
+	requireUnixTool(t, "sh")
+
+	r := NewRunner()
+	out, err := r.Run(context.Background(), time.Second, "sh", "-c", "echo to-stderr 1>&2")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got, want := strings.TrimSpace(out), "to-stderr"; got != want {
+		t.Errorf("Run output = %q, want %q (stderr must be captured, not discarded)", got, want)
+	}
+}
+
 func TestExecRunnerCommandNotFound(t *testing.T) {
 	t.Parallel()
 	r := NewRunner()
