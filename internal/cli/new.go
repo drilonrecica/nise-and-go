@@ -67,6 +67,12 @@ func (r newResult) Human() string {
 	for _, cmd := range r.NextCommands {
 		fmt.Fprintf(&b, "  %s\n", cmd)
 	}
+	if len(r.Notes) > 0 {
+		b.WriteString("\nNote:\n")
+		for _, note := range r.Notes {
+			fmt.Fprintf(&b, "  %s\n", note)
+		}
+	}
 	b.WriteString("\nnise ran none of these. Generation writes files and nothing else:\n")
 	b.WriteString("no network access, no go, no pnpm, no git.")
 	return b.String()
@@ -252,12 +258,20 @@ func runNew(env *Env, opts *newFlags) error {
 	}
 
 	result, writeErr := generator.Write(target, generator.Options{
-		Name:           name,
-		ModulePath:     modulePath,
-		Profile:        selectedProfile,
-		Modules:        selectedModules,
-		CLIVersion:     cliVersion,
-		RuntimeVersion: cliVersion,
+		Name:       name,
+		ModulePath: modulePath,
+		Profile:    selectedProfile,
+		Modules:    selectedModules,
+		CLIVersion: cliVersion,
+		// The two version fields mean different things and must not be
+		// stamped from the same source. cliVersion is the binary that did
+		// the generating, which on a source build is a pseudo-version.
+		// runtimeVersion is "the version of runtime/ the project targets"
+		// (ADR 0010), which is exactly what the generated go.mod requires
+		// — and nise doctor and a future nise upgrade compare that field
+		// against go.mod to make compatibility decisions, so a recipe
+		// disagreeing with go.mod would make them wrongly.
+		RuntimeVersion: generator.NiseModuleVersion,
 	})
 	if writeErr != nil {
 		return renderNewError(writeErr)

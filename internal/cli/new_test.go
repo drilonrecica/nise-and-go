@@ -12,7 +12,9 @@ import (
 	"github.com/drilonrecica/nise-and-go/internal/cli/clierr"
 	"github.com/drilonrecica/nise-and-go/internal/cli/output"
 	"github.com/drilonrecica/nise-and-go/internal/cli/term"
+	"github.com/drilonrecica/nise-and-go/internal/generator"
 	"github.com/drilonrecica/nise-and-go/internal/recipe"
+	"github.com/drilonrecica/nise-and-go/internal/version"
 )
 
 // newEnv builds an Env for runNew with everything injected: no real
@@ -135,6 +137,15 @@ func TestNewGeneratesAProject(t *testing.T) {
 			t.Errorf("output %q does not mention %q", body, want)
 		}
 	}
+	// The pinned framework version is not published yet, so a user told to
+	// run `go mod tidy` and nothing else meets an "unknown revision" error
+	// with no explanation. The replace directive and the reason for it must
+	// both reach a user who never opens the generated README.
+	for _, want := range []string{"go mod edit -replace", "Note:", "not published yet"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("output %q does not carry the pre-release caveat %q", body, want)
+		}
+	}
 	// The next commands are printed, never run: generation opens no
 	// socket and starts no subprocess.
 	if _, err := os.Stat(filepath.Join("myapp", "go.sum")); err == nil {
@@ -160,6 +171,7 @@ func TestNewJSONOutputCarriesTheGeneratedTree(t *testing.T) {
 		Modules      []string `json:"modules"`
 		Files        []string `json:"files"`
 		NextCommands []string `json:"nextCommands"`
+		Notes        []string `json:"notes"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("decoding %q: %v", out.String(), err)
@@ -175,6 +187,12 @@ func TestNewJSONOutputCarriesTheGeneratedTree(t *testing.T) {
 	}
 	if len(got.Files) == 0 || len(got.NextCommands) == 0 {
 		t.Errorf("files = %d, nextCommands = %d; both must be reported", len(got.Files), len(got.NextCommands))
+	}
+	if len(got.Notes) == 0 {
+		t.Error("notes is empty; the pre-release replace caveat must reach a --json consumer too")
+	}
+	if !strings.Contains(strings.Join(got.NextCommands, "\n"), "go mod edit -replace") {
+		t.Errorf("nextCommands = %v, want the replace directive", got.NextCommands)
 	}
 	// --json implies non-interactive even though the terminal looks
 	// interactive: a prompt would corrupt the document stream.
@@ -261,6 +279,44 @@ func TestNewPromptsOnlyOnAnInteractiveTerminal(t *testing.T) {
 		err := runNew(env, &newFlags{})
 		_ = assertCLIError(t, err, clierr.ExitUsage, "new.name_required")
 	})
+}
+
+// TestNewStampsTheTwoVersionFieldsFromDifferentSources is the end-to-end
+// half of the recipe's version contract. cliVersion is the binary that did
+// the generating; runtimeVersion is the runtime the project targets, which
+// is what go.mod requires. nise doctor and a future nise upgrade compare
+// runtimeVersion against go.mod, so the two must agree.
+func TestNewStampsTheTwoVersionFieldsFromDifferentSources(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	env, _ := newEnv(output.ModeHuman, false, "", "myapp", "--yes")
+	if err := runNew(env, &newFlags{}); err != nil {
+		t.Fatalf("runNew: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join("myapp", "nise.json"))
+	if err != nil {
+		t.Fatalf("reading the recipe: %v", err)
+	}
+	r, err := recipe.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("parsing the recipe: %v", err)
+	}
+
+	if r.RuntimeVersion != generator.NiseModuleVersion {
+		t.Errorf("runtimeVersion = %q, want %q", r.RuntimeVersion, generator.NiseModuleVersion)
+	}
+	if r.CLIVersion != version.Get().Version {
+		t.Errorf("cliVersion = %q, want this binary's own version %q", r.CLIVersion, version.Get().Version)
+	}
+
+	goMod, err := os.ReadFile(filepath.Join("myapp", "go.mod"))
+	if err != nil {
+		t.Fatalf("reading go.mod: %v", err)
+	}
+	if !strings.Contains(string(goMod), generator.NiseModulePath+" "+r.RuntimeVersion) {
+		t.Errorf("go.mod does not require the runtime version the recipe records (%q):\n%s", r.RuntimeVersion, goMod)
+	}
 }
 
 func TestNewRefusesANonEmptyTarget(t *testing.T) {

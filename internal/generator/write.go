@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -71,6 +72,8 @@ type Result struct {
 	// Generation deliberately runs none of them: it opens no socket and
 	// starts no subprocess.
 	NextCommands []string `json:"nextCommands"`
+	// Notes are the caveats that apply to NextCommands. See Notes.
+	Notes []string `json:"notes"`
 }
 
 // Write generates the project described by opts into root.
@@ -93,16 +96,18 @@ func Write(root string, opts Options) (*Result, error) {
 		return nil, err
 	}
 
-	if err := os.MkdirAll(root, DirMode); err != nil {
-		return nil, fmt.Errorf("creating %s: %w", root, err)
+	if err := makeDir(root); err != nil {
+		return nil, err
+	}
+	for _, rel := range planDirectories(files) {
+		if err := makeDir(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+			return nil, err
+		}
 	}
 
 	paths := make([]string, 0, len(files))
 	for _, f := range files {
 		full := filepath.Join(root, filepath.FromSlash(f.Path))
-		if err := os.MkdirAll(filepath.Dir(full), DirMode); err != nil {
-			return nil, fmt.Errorf("creating %s: %w", filepath.Dir(full), err)
-		}
 		// #nosec G306 -- FileMode is 0o644 deliberately. These are a new
 		// project's source files, which every tool the developer runs next
 		// (go, pnpm, git, an editor) must be able to read, and which carry
@@ -114,6 +119,19 @@ func Write(root string, opts Options) (*Result, error) {
 		// actually needs.
 		if err := os.WriteFile(full, f.Content, FileMode); err != nil {
 			return nil, fmt.Errorf("writing %s: %w", f.Path, err)
+		}
+		// os.WriteFile's mode argument is masked by the process umask, so
+		// the file just written is 0o600 under `umask 077` and 0o644 under
+		// `umask 022`. That is a generated tree whose contents are
+		// identical on two machines but whose modes are not, which the
+		// determinism rule does not allow, and which a recursive content
+		// diff cannot see. Chmod is not masked, so it is what actually
+		// fixes the mode.
+		//
+		// #nosec G302 -- see the G306 justification above; the two rules
+		// object to the same deliberate 0o644.
+		if err := os.Chmod(full, FileMode); err != nil {
+			return nil, fmt.Errorf("setting the mode of %s: %w", f.Path, err)
 		}
 		paths = append(paths, f.Path)
 	}
@@ -131,20 +149,99 @@ func Write(root string, opts Options) (*Result, error) {
 		Modules:      modules,
 		Files:        paths,
 		NextCommands: NextCommands(normalized.Name),
+		Notes:        Notes(),
 	}, nil
 }
+
+// planDirectories returns every directory the plan needs, relative to the
+// project root, sorted. Lexicographic order puts a parent before its own
+// children ("internal" sorts before "internal/app"), so creating them in
+// this order never needs MkdirAll's implicit parent creation and never
+// leaves an intermediate directory whose mode was set by the umask instead
+// of by DirMode.
+func planDirectories(files []File) []string {
+	seen := make(map[string]struct{})
+	var dirs []string
+	for _, f := range files {
+		for dir := path.Dir(f.Path); dir != "." && dir != "/"; dir = path.Dir(dir) {
+			if _, ok := seen[dir]; ok {
+				break
+			}
+			seen[dir] = struct{}{}
+			dirs = append(dirs, dir)
+		}
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+// makeDir creates one directory and forces its mode.
+//
+// os.MkdirAll applies the process umask to its mode argument, so a
+// directory created under `umask 077` is 0o700 rather than DirMode. Chmod
+// is not masked. Without the second call, two machines with different
+// umasks generate trees that differ in a way no content comparison reveals.
+//
+// On Windows os.Chmod can only toggle the read-only bit, so the Unix
+// permission bits are not meaningful there; that is a property of the
+// platform, not a gap in this call.
+func makeDir(dir string) error {
+	if err := os.MkdirAll(dir, DirMode); err != nil {
+		return fmt.Errorf("creating %s: %w", dir, err)
+	}
+	// #nosec G301 -- DirMode is 0o755 deliberately, for the same reason
+	// FileMode is 0o644: a generated project's directories must be
+	// traversable by every tool the developer runs next and by a container
+	// user other than the one that generated the tree.
+	if err := os.Chmod(dir, DirMode); err != nil {
+		return fmt.Errorf("setting the mode of %s: %w", dir, err)
+	}
+	return nil
+}
+
+// ReplacePathPlaceholder stands in for the path to a local checkout of the
+// framework in the pre-release replace directive. It is a literal
+// placeholder, never a resolved path: a real absolute path in generated
+// output or in generated advice would be machine-specific, which the
+// determinism rule forbids.
+const ReplacePathPlaceholder = "/path/to/your/nise-and-go"
 
 // NextCommands returns the exact commands to run in a freshly generated
 // project, in order. Generation performs none of them itself: it never runs
 // go, pnpm, or git, and never opens a network connection, so the user runs
 // the network-touching steps knowingly.
+//
+// The second command is the pre-release replace directive; see Notes for
+// why it is there and when it goes away.
 func NextCommands(name string) []string {
 	return []string{
 		"cd " + name,
+		"go mod edit -replace " + NiseModulePath + "=" + ReplacePathPlaceholder,
 		"go mod tidy",
 		"pnpm --dir frontend install",
 		"pnpm --dir frontend build",
 		"go run ./cmd/" + name,
+	}
+}
+
+// Notes returns the caveats a user has to know before running
+// NextCommands.
+//
+// There is exactly one, and it is temporary: no tagged release of the
+// framework module carries runtime/ yet, so the pinned NiseModuleVersion
+// does not resolve from the module proxy and `go mod tidy` fails with
+// "unknown revision" until the replace directive is in place. Printing this
+// alongside the commands, rather than only in the generated README, is what
+// stops a user from meeting that failure with no explanation — a
+// known-broken first step presented as a working one is worse than either a
+// working step or an honest warning.
+func Notes() []string {
+	return []string{
+		"Pre-release: " + NiseModulePath + " " + NiseModuleVersion + " is not published yet,",
+		"so `go mod tidy` cannot resolve it without the replace directive above.",
+		"Point it at a local checkout of the framework. Once " + NiseModuleVersion + " is",
+		"tagged and on the module proxy, drop that command and delete the replace",
+		"line it wrote into go.mod.",
 	}
 }
 

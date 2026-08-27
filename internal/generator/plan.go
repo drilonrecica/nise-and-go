@@ -58,7 +58,10 @@ type Options struct {
 	// so a golden test can pin it.
 	CLIVersion string
 	// RuntimeVersion is the version of runtime/ the project targets. An
-	// empty value defaults to CLIVersion.
+	// empty value defaults to NiseModuleVersion, which is the version the
+	// generated go.mod actually requires — ADR 0010 defines this field as
+	// the runtime the project targets, so it has to agree with go.mod
+	// rather than with the version of the binary that did the generating.
 	RuntimeVersion string
 }
 
@@ -80,7 +83,7 @@ func (o Options) normalize() (Options, error) {
 		out.Profile = recipe.ProfileGoChiPostgresSvelte
 	}
 	if out.RuntimeVersion == "" {
-		out.RuntimeVersion = out.CLIVersion
+		out.RuntimeVersion = NiseModuleVersion
 	}
 
 	out.Modules = slices.Clone(o.Modules)
@@ -131,6 +134,10 @@ type templateData struct {
 	PnpmVersion    string
 	PackageManager string
 	FrontendDeps   []Dependency
+	// ReplacePlaceholder is the literal stand-in for a local framework
+	// checkout in the pre-release replace directive. It is never a
+	// resolved path — see ReplacePathPlaceholder.
+	ReplacePlaceholder string
 }
 
 // newTemplateData builds the template data for already-normalized options.
@@ -140,20 +147,21 @@ func newTemplateData(opts Options) templateData {
 		modules = append(modules, string(m))
 	}
 	return templateData{
-		AppName:        opts.Name,
-		ModulePath:     opts.ModulePath,
-		Profile:        string(opts.Profile),
-		Modules:        modules,
-		NiseModule:     NiseModulePath,
-		NiseVersion:    NiseModuleVersion,
-		ChiVersion:     ChiVersion,
-		GoVersion:      GoDirective,
-		GoImageTag:     GoImageTag,
-		NodeVersion:    NodeVersion,
-		NodeMajor:      NodeMajor,
-		PnpmVersion:    PnpmVersion,
-		PackageManager: "pnpm@" + PnpmVersion,
-		FrontendDeps:   FrontendDependencies(),
+		AppName:            opts.Name,
+		ModulePath:         opts.ModulePath,
+		Profile:            string(opts.Profile),
+		Modules:            modules,
+		NiseModule:         NiseModulePath,
+		NiseVersion:        NiseModuleVersion,
+		ChiVersion:         ChiVersion,
+		GoVersion:          GoDirective,
+		GoImageTag:         GoImageTag,
+		NodeVersion:        NodeVersion,
+		NodeMajor:          NodeMajor,
+		PnpmVersion:        PnpmVersion,
+		PackageManager:     "pnpm@" + PnpmVersion,
+		FrontendDeps:       FrontendDependencies(),
+		ReplacePlaceholder: ReplacePathPlaceholder,
 	}
 }
 
