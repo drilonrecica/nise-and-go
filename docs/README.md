@@ -19,6 +19,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Security headers and Content Security Policy](security-headers.md)
 - [CLI and distribution](cli-and-distribution.md)
 - [CLI output contract](cli-output.md)
+- [`nise doctor`](commands/doctor.md)
 - [Toolchain](toolchain.md)
 - [Dependency allowlist](dependencies.md)
 - [Supported platforms](supported-platforms.md)
