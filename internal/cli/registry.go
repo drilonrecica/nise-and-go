@@ -24,6 +24,7 @@ func Commands() []*Command {
 		versionCommand(),
 		doctorCommand(),
 		agentsCommand(),
+		testCommand(),
 	}
 }
 
