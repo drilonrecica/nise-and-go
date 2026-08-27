@@ -105,7 +105,7 @@ func TestGeneratedTreeMatchesGolden(t *testing.T) {
 
 			goldenPath := filepath.Join("testdata", "golden", tc.golden)
 			if *updateGolden {
-				if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
+				if err := os.MkdirAll(filepath.Dir(goldenPath), 0o750); err != nil {
 					t.Fatalf("creating testdata: %v", err)
 				}
 				if err := os.WriteFile(goldenPath, []byte(got), 0o644); err != nil {
@@ -269,7 +269,7 @@ func TestWriteRefusesNonEmptyTarget(t *testing.T) {
 		t.Parallel()
 
 		root := filepath.Join(t.TempDir(), "myapp")
-		if err := os.MkdirAll(root, 0o755); err != nil {
+		if err := os.MkdirAll(root, 0o750); err != nil {
 			t.Fatalf("setup: %v", err)
 		}
 		existing := filepath.Join(root, "important.txt")
@@ -300,7 +300,7 @@ func TestWriteRefusesNonEmptyTarget(t *testing.T) {
 		t.Parallel()
 
 		root := filepath.Join(t.TempDir(), "myapp")
-		if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(root, ".git"), 0o750); err != nil {
 			t.Fatalf("setup: %v", err)
 		}
 		_, err := generator.Write(root, defaultOptions())
@@ -331,7 +331,7 @@ func TestWriteRefusesNonEmptyTarget(t *testing.T) {
 		t.Parallel()
 
 		root := filepath.Join(t.TempDir(), "myapp")
-		if err := os.MkdirAll(root, 0o755); err != nil {
+		if err := os.MkdirAll(root, 0o750); err != nil {
 			t.Fatalf("setup: %v", err)
 		}
 		if _, err := generator.Write(root, defaultOptions()); err != nil {
@@ -474,28 +474,33 @@ func TestFileModesAreExplicit(t *testing.T) {
 func treeManifest(t *testing.T, root string) string {
 	t.Helper()
 
-	var lines []string
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	// Paths are collected during the walk and read afterwards, so no
+	// filesystem operation happens inside the walk callback.
+	var files []string
+	if err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
-			return nil
+		if !d.IsDir() {
+			files = append(files, p)
 		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walking %s: %v", root, err)
+	}
+
+	lines := make([]string, 0, len(files))
+	for _, p := range files {
 		rel, err := filepath.Rel(root, p)
 		if err != nil {
-			return err
+			t.Fatalf("relativizing %s: %v", p, err)
 		}
 		data, err := os.ReadFile(p) // #nosec G304 -- p comes from walking a directory this test created.
 		if err != nil {
-			return err
+			t.Fatalf("reading %s: %v", p, err)
 		}
 		sum := sha256.Sum256(data)
 		lines = append(lines, fmt.Sprintf("%s  %s", hex.EncodeToString(sum[:]), path.Clean(filepath.ToSlash(rel))))
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walking %s: %v", root, err)
 	}
 	sort.Strings(lines)
 	return strings.Join(lines, "\n") + "\n"
