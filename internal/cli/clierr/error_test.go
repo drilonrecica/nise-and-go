@@ -63,7 +63,7 @@ func TestWithDetailRedactsSecretShapedKeys(t *testing.T) {
 	// "dsn" itself is not a deny fragment; this documents that WithDetail
 	// only catches key-shaped secrets, not secret-shaped values under an
 	// innocuous key. Structured detail keys should be chosen accordingly.
-	if details["dsn"] != "postgres://u:p@host/db" {
+	if details["dsn"] != "postgres://u:p@host/db" { //nolint:gosec // fabricated test fixture, not a real credential
 		t.Errorf("details[dsn] was altered unexpectedly: %q", details["dsn"])
 	}
 }

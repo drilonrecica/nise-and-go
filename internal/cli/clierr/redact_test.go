@@ -53,7 +53,7 @@ func TestScrubChainText(t *testing.T) {
 		in   string
 		want string
 	}{
-		{
+		{ //nolint:gosec // fabricated test fixture, not a real credential
 			name: "postgres URL with credentials",
 			in:   "dial postgres://alice:s3cr3t@db.internal:5432/app: refused",
 			want: "dial postgres://" + RedactPlaceholder + "@db.internal:5432/app: refused",
