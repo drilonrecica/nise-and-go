@@ -96,7 +96,7 @@ docs-check: ## Fail if any relative Markdown link in docs/** or a root *.md file
 	files="$$(git ls-files -- 'docs' ':(glob)*.md')"; \
 	for f in $$files; do \
 		dir="$$(dirname "$$f")"; \
-		targets="$$(grep -oE '\]\([^)]+\)' "$$f" | sed -E 's/^\]\(//; s/\)$$//')" || true; \
+		targets="$$(sed -E 's/`[^`]*`//g' "$$f" | grep -oE '\]\([^)]+\)' | sed -E 's/^\]\(//; s/\)$$//')" || true; \
 		for t in $$targets; do \
 			case "$$t" in \
 				http://*|https://*|mailto:*|//*) continue ;; \

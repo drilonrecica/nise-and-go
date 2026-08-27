@@ -68,3 +68,33 @@ linters:
       # rule here would switch revive into "explicit rules only" mode and
       # silently disable the rest of the default set.
       severity: warning
+  exclusions:
+    rules:
+      # gosec G304 ("Potential file inclusion via variable") exists to catch
+      # a filesystem path built from untrusted input reaching os.Open/
+      # os.ReadFile/os.Create — the path-traversal defect class. gosec G306
+      # ("Expect WriteFile permissions to be 0600 or less") exists to catch
+      # production code writing a file world- or group-readable when it
+      # should not be. Both are Critical-class findings under Constraints
+      # §7/§8 in *production* code.
+      #
+      # Neither threat is present in a `_test.go` file that builds its own
+      # path under t.TempDir() and writes a fixture it is about to read back
+      # in the same test process: the path is never attacker-controlled, and
+      # the file's permissions and lifetime are the test's own, not a
+      # production artifact. Flagging every such fixture path/permission as
+      # a security finding would only produce the "forest of suppression
+      # comments" the top-of-file rule warns against, and each rote #nosec
+      # added to a test dilutes the signal of a real one appearing in
+      # production code.
+      #
+      # This exclusion is therefore scoped three ways at once — file suffix
+      # (_test.go only), linter (gosec only), and rule ID (G304/G306 only,
+      # via the text match on gosec's own message prefix) — so every other
+      # gosec rule, and G304/G306 themselves in non-test code, stay at full
+      # strength. See docs/checks.md for the fuller write-up and the
+      # verification that a production 0o644 write still fires G306.
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "G304|G306"
