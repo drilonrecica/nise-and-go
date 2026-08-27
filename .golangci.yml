@@ -1,0 +1,70 @@
+# Nise & Go golangci-lint configuration.
+#
+# Deliberately small, curated linter set: every enabled linter is justified
+# below by the concrete defect class it catches in *this* codebase. Do not
+# enable a linter that would force suppression comments across the tree —
+# either the code changes or the linter does not belong here.
+#
+# Pinned tool version: golangci-lint v2.11.3 (docs/toolchain.md;
+# docs/adr/0008-toolchain-and-dependencies.md explains why this is a
+# documented version pin rather than a go.mod `tool` directive). CI installs
+# that exact version explicitly. This file's `version: "2"` schema was
+# confirmed against the installed v2.11.3 binary with
+# `golangci-lint config verify`, not assumed from a newer release's docs.
+#
+# `copyloopvar` is deliberately not enabled: it flags `for _, v := range x { use(&v) }`-
+# style loop-variable capture bugs, a defect class Go 1.22 eliminated by
+# giving every loop iteration its own variable. This module's `go.mod`
+# directive is `go 1.26.0`, well past that change, so the bug copyloopvar
+# exists to catch cannot occur here.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    # errcheck: an unchecked error return is a silently swallowed failure.
+    # Constraints §7 (fail closed) and §8 (secrets never surface via a
+    # swallowed error path) both depend on errors being handled, not dropped.
+    - errcheck
+    # govet: the standard suspicious-construct analyzers (printf format
+    # mismatches, struct tag errors, lock-by-value copies, unreachable
+    # code) — bugs that compile cleanly but misbehave at runtime.
+    - govet
+    # ineffassign: an assignment whose value is never read afterward means
+    # either dead code or a bug where the wrong variable was updated.
+    - ineffassign
+    # staticcheck: broad, low-false-positive analysis (nil dereferences,
+    # impossible conditions, deprecated stdlib API use) beyond govet's scope.
+    - staticcheck
+    # unused: unused types, functions, variables, and constants left behind
+    # by refactors — dead private surface that misleads future readers.
+    - unused
+    # bodyclose: an unclosed http.Response.Body leaks a pooled connection.
+    # Nise's CLI and generated runtime make outbound HTTP calls in later
+    # slices (health checks, dev-loop proxying); catching this early is
+    # cheaper than auditing every call site once the surface grows.
+    - bodyclose
+    # errorlint: catches errors.Is/As/wrapping mistakes (comparing wrapped
+    # errors with ==, type-asserting instead of errors.As) that silently
+    # defeat the Go 1.13 error-wrapping chain.
+    - errorlint
+    # gosec: security-relevant static analysis (weak crypto, command
+    # injection, path traversal, hardcoded credentials, unsafe file
+    # permissions). Constraints §7 and §8 make these Critical, not style.
+    - gosec
+    # misspell: misspelled English words in comments and string literals,
+    # which would otherwise ship verbatim into doc comments and CLI output.
+    - misspell
+    # revive: revive's own default rule set (not enable-all-rules) —
+    # exported identifiers without doc comments, misplaced package
+    # comments, error string conventions. Constraints §13 requires a doc
+    # comment on every exported identifier in runtime/; this is the
+    # automated half of that rule.
+    - revive
+  settings:
+    revive:
+      # No explicit `rules:` list: per revive's own documented behavior,
+      # omitting `rules` keeps its default rule set active. Listing even one
+      # rule here would switch revive into "explicit rules only" mode and
+      # silently disable the rest of the default set.
+      severity: warning
