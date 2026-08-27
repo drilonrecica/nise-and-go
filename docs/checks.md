@@ -75,6 +75,38 @@ Contributors install a matching `golangci-lint` locally via their platform
 package manager or the project's install script; `docs/toolchain.md` is the
 source of truth for which version.
 
+#### Test-file exclusion: gosec G304 and G306
+
+`.golangci.yml` excludes gosec rules `G304` (file inclusion via variable) and
+`G306` (WriteFile permissions) inside `_test.go` files only, scoped by path
+(`_test\.go`), linter (`gosec`), and rule ID (`G304|G306` matched against the
+issue text) simultaneously — every other gosec rule, and G304/G306
+themselves in non-test code, stay at full strength.
+
+This is a scoping decision, not an instance of "a check is never weakened to
+make a change pass" above. The two rules exist to catch a specific
+production threat each: G304 catches a filesystem path built from untrusted
+input, G306 catches production code writing a world- or group-readable file.
+A `_test.go` file that builds its own path under `t.TempDir()` and writes a
+fixture it is about to read back in the same test process has neither
+property — the path is never attacker-controlled, and the file's
+permissions and lifetime are the test's own. Leaving the rules on for tests
+would not catch a real defect there; it would only force a `#nosec` onto
+every table-driven test that touches `t.TempDir()`, and each rote
+suppression comment added to a test dilutes the signal of a real one
+appearing in production code — exactly what enabling a linter is supposed
+to prevent, not cause. The exclusion was verified to still fire on
+production code: a `0o644` `os.WriteFile` or a variable-derived `os.Open`
+outside a `_test.go` file is still reported (verified against a throwaway
+module during this task; see `.superpowers/sdd/execution-plan/task-4-report.md`
+fix round 1 for the exact commands).
+
+The exclusion was added only after this exact pair of rule IDs, in this
+exact file-suffix scope, was individually justified above — not as a
+reflex response to seeing findings disappear. A broader exclusion (all of
+gosec in test files, or G304/G306 everywhere) was considered and rejected
+for that reason.
+
 ### `make test` / `make test-race` — Go tests
 
 Protects against: regressions and, under `-race`, data races. `go test -race`
@@ -140,9 +172,18 @@ What it does:
    flagged, and — same mechanism — the check can never be tricked by an
    ignored path, since `git ls-files` only lists tracked files in the first
    place.
-2. For each file, `grep -oE '\]\([^)]+\)'` extracts every `](target)`
-   occurrence (covers both `[text](target)` links and `![alt](target)`
-   images), and `sed` strips the leading `](` and trailing `)`.
+2. Each file first has every backtick-delimited inline code span stripped
+   (`sed -E 's/`[^`]*`//g'`), then `grep -oE '\]\([^)]+\)'` extracts every
+   remaining `](target)` occurrence (covers both `[text](target)` links and
+   `![alt](target)` images), and `sed` strips the leading `](` and trailing
+   `)`. The backtick-stripping pass exists because a page that *documents*
+   Markdown link syntax as literal text — this page is exactly such a page —
+   would otherwise have its own examples misread as real links; a real
+   link's target is never itself written inside backticks in this
+   repository's docs, only (occasionally) its link text, e.g.
+   `` [`docs/toolchain.md`](toolchain.md) `` in ADR 0008, which the strip
+   leaves untouched because the backticks there wrap only the `[...]` part,
+   not the `](...)` part.
 3. A target starting with `http://`, `https://`, `mailto:`, `//`, or `#` is
    skipped (external links and same-page anchors are not this check's job).
 4. Otherwise, everything from the first `#` onward is stripped (an in-page
