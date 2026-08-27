@@ -28,9 +28,16 @@ import (
 // visible at runtime in [Policy.Waivers].
 type Option func(*builder)
 
-// WithReportOnly sends the policy in the Content-Security-Policy-Report-Only
+// AllowReportOnly sends the policy in the Content-Security-Policy-Report-Only
 // header instead of Content-Security-Policy, so violations are reported but
 // nothing is blocked.
+//
+// It is an Allow option, not a With one, because it does not weaken one
+// directive — it suspends the entire Content-Security-Policy. A report-only
+// policy that reaches production and stays there looks in every other respect
+// like a strict one, which is exactly the shape of mistake this package's
+// naming exists to make visible. The reason should say what is being rolled
+// out and when enforcement resumes.
 //
 // This is the safe way to change a policy on a running application: deploy
 // the new policy report-only alongside the enforced old one on a canary,
@@ -43,8 +50,11 @@ type Option func(*builder)
 // whichever this policy is, the other one is deleted from the response. To
 // enforce one policy while reporting a stricter candidate, build two policies
 // and mount both middlewares.
-func WithReportOnly() Option {
-	return func(b *builder) { b.reportOnly = true }
+func AllowReportOnly(reason string) Option {
+	return func(b *builder) {
+		b.reportOnly = true
+		b.waive("content-security-policy", "report-only, not enforced", reason)
+	}
 }
 
 // WithReportURI sends CSP violation reports to uri, which must be a

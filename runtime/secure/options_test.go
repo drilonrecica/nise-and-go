@@ -100,6 +100,7 @@ func TestAllowOptionsRequireANonEmptyReason(t *testing.T) {
 			"AllowCrossOriginResources":  secure.AllowCrossOriginResources(reason, secure.ResourceCrossOrigin),
 			"AllowReferrerPolicy":        secure.AllowReferrerPolicy(reason, secure.ReferrerUnsafeURL),
 			"AllowPermission":            secure.AllowPermission(reason, "camera", "self"),
+			"AllowReportOnly":            secure.AllowReportOnly(reason),
 		}
 		for name, opt := range options {
 			t.Run(name+"/"+strings.TrimSpace(reason)+"empty", func(t *testing.T) {

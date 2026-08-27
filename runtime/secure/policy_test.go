@@ -209,14 +209,14 @@ func TestReportOnlyEmitsOnlyTheReportOnlyHeader(t *testing.T) {
 
 	p, err := secure.NewDocumentPolicy(
 		secure.Production,
-		secure.WithReportOnly(),
+		secure.AllowReportOnly("rolling out a tightened connect-src; enforce after the canary week"),
 		secure.WithReportURI("/api/v1/csp-reports"),
 	)
 	if err != nil {
 		t.Fatalf("NewDocumentPolicy: %v", err)
 	}
 	if !p.ReportOnly() {
-		t.Error("ReportOnly() = false after WithReportOnly()")
+		t.Error("ReportOnly() = false after AllowReportOnly()")
 	}
 
 	h := serve(t, p, nil)

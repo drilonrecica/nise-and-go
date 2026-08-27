@@ -107,7 +107,7 @@ if !ok {
 fmt.Fprintf(w, `<script nonce=%q>…</script>`, nonce)
 ```
 
-Each nonce is 128 bits from `crypto/rand`, minted on the first `Nonce(ctx)` call and identical for every later call on the same request. Minting is lazy on purpose: a handler serving a hashed, immutable build asset never asks, so its response neither spends randomness nor leaves shared caches. A response that *does* carry a nonce is sent `Cache-Control: no-store`, because a nonce a shared cache hands to a second visitor is a nonce an attacker can read and reuse.
+Each nonce is 128 bits from `crypto/rand`, minted on the first `Nonce(ctx)` call and identical for every later call on the same request. Minting is lazy on purpose: a handler serving a hashed, immutable build asset never asks, so its response neither spends randomness nor leaves shared caches. A response that *does* carry a nonce is sent `Cache-Control: no-store`, because a nonce a shared cache hands to a second visitor is a nonce an attacker can read and reuse. A handler's own directive is kept only if it already says `no-store` — `private, no-store, max-age=0` survives, `public, max-age=3600` does not.
 
 ## What the frontend must do
 
@@ -176,7 +176,7 @@ if got := documentPolicy.Waivers(); len(got) != 0 {
 
 | Option | Effect | Waiver |
 |---|---|---|
-| `WithReportOnly()` | Report violations, block nothing | no |
+| `AllowReportOnly(reason)` | Report violations, block nothing at all | yes |
 | `WithReportURI(uri)` | Send reports to a same-origin path or an https URL | no |
 | `WithScriptHashes(…)` | Allow exact inline scripts by hash | no |
 | `WithStyleHashes(…)` | Allow exact inline style elements by hash | no |
@@ -200,14 +200,16 @@ Options that only make sense for a document policy fail construction on an API p
 
 ## Rolling out a policy change
 
-`WithReportOnly()` sends the policy in `Content-Security-Policy-Report-Only`, so violations are reported and nothing is blocked. The enforcing header and the report-only header are never sent together: whichever the policy is, the other is deleted from the response.
+`AllowReportOnly(reason)` sends the policy in `Content-Security-Policy-Report-Only`, so violations are reported and nothing is blocked. The enforcing header and the report-only header are never sent together: whichever the policy is, the other is deleted from the response.
+
+It is an `Allow` option rather than a `With` one because it does not weaken a directive — it suspends the whole CSP. A report-only policy that reaches production and stays there looks in every other respect like a strict one, so it is recorded as a waiver like any other weakening.
 
 The rollout:
 
-1. Build the candidate policy with `WithReportOnly()` and `WithReportURI("/api/v1/csp-reports")`, and deploy it to a canary alongside the enforced current policy.
+1. Build the candidate policy with `AllowReportOnly(reason)` and `WithReportURI("/api/v1/csp-reports")`, and deploy it to a canary alongside the enforced current policy.
 2. Collect for long enough to cover the screens people use rarely — enrollment, TOTP setup, upload management, the admin pages. A CSP break in a monthly workflow does not show up in a day.
 3. Read the reports, fix the application or add the narrowest option that covers the gap.
-4. Remove `WithReportOnly()`.
+4. Remove `AllowReportOnly`.
 
 To enforce one policy while reporting a stricter candidate, build two policies and mount both middlewares.
 
