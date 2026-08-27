@@ -93,6 +93,11 @@ func (s Secret) LogValue() slog.Value {
 // warning string, instead of an error, when the file is readable by group or
 // other on a Unix platform; the check is skipped on Windows.
 func readSecretFile(path string) (value string, warning string, err error) {
+	// #nosec G304 -- path is the value of a "_FILE" environment variable, the
+	// same trust boundary as every other setting Loader reads from the
+	// process environment; it is never derived from an inbound request. If a
+	// future caller ever threads a request-derived path into this function,
+	// that caller becomes responsible for validating it before doing so.
 	f, openErr := os.Open(path)
 	if openErr != nil {
 		if os.IsNotExist(openErr) {
@@ -100,7 +105,13 @@ func readSecretFile(path string) (value string, warning string, err error) {
 		}
 		return "", "", fmt.Errorf("file %q could not be opened: %w", path, openErr)
 	}
-	defer f.Close()
+	defer func() {
+		// Best-effort close of a read-only handle: the file's contents were
+		// already read (or the function already failed) by the time this
+		// runs, so a close error changes nothing about the result and is not
+		// worth surfacing as a load failure.
+		_ = f.Close()
+	}()
 
 	info, statErr := f.Stat()
 	if statErr != nil {
