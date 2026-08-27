@@ -89,6 +89,36 @@ func TestWrapErrorString(t *testing.T) {
 	}
 }
 
+// TestErrorStringScrubsUnderlyingText reproduces the reported leak:
+// Error() previously printed the wrapped error's text verbatim, unlike
+// Chain() and HumanLines(), which both scrub it. Error() is exactly the
+// spelling a future caller reaches for with a bare %v or %s — often
+// without knowing a scrubbed alternative (Chain) exists — so it must not
+// be the one rendering path that leaks a credential.
+func TestErrorStringScrubsUnderlyingText(t *testing.T) {
+	t.Parallel()
+	underlying := errors.New("dial postgres://admin:s3cr3t@db:5432/app: refused")
+	e := Wrap(underlying, ExitPrecondition, "c", "r")
+
+	got := e.Error()
+	if strings.Contains(got, "admin:s3cr3t") {
+		t.Errorf("Error() = %q, leaked credentials from the wrapped error", got)
+	}
+	want := "c: dial postgres://" + RedactPlaceholder + "@db:5432/app: refused"
+	if got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+
+	// %v and %s must not bypass the scrub either — Error() is the only
+	// method fmt's formatting verbs ever call.
+	if v := fmt.Sprintf("%v", e); strings.Contains(v, "admin:s3cr3t") {
+		t.Errorf("%%v = %q, leaked credentials", v)
+	}
+	if s := fmt.Sprintf("%s", e); strings.Contains(s, "admin:s3cr3t") {
+		t.Errorf("%%s = %q, leaked credentials", s)
+	}
+}
+
 func TestNewErrorStringOmitsWrappedPart(t *testing.T) {
 	t.Parallel()
 	e := New(ExitUsage, "unknown command", "run help")
