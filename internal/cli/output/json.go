@@ -10,9 +10,12 @@ import (
 // jsonWriter renders exactly one JSON document per Result or Error call, on
 // stdout, and nothing else. This file must never contain an ANSI escape
 // literal — json_source_test.go greps this exact file for one and fails the
-// build's test suite if it finds one — and every document this type writes
-// passes through stripANSI as a second, independent line of defense (see
-// stripANSI below and TestJSONWriterNeverEmitsANSI in json_test.go).
+// build's test suite if it finds one — and every string value this type
+// writes has any ESC (0x1b) rune removed from its actual content before
+// encoding (see sanitizeANSI below and TestJSONWriterNeverEmitsANSI in
+// json_test.go), not merely scrubbed from the encoded bytes afterward —
+// see sanitizeANSI's doc comment for why that distinction is the whole
+// fix.
 //
 // Line/Verbosef/Success/Banner are no-ops: JSON mode carries no human prose
 // at all, by design (see docs/cli-output.md). Spinner returns a handle that
@@ -48,27 +51,53 @@ func (w *jsonWriter) Error(err error) {
 	w.writeDoc(ce.JSONEnvelope(w.verbose))
 }
 
-// writeDoc encodes v and writes it as one line to stdout, after stripping
-// any ESC byte from the encoded bytes. HTML-escaping is disabled: nise's
-// JSON output is read by scripts and jq, not embedded in an HTML page, so
-// "<", ">", and "&" should read as themselves rather than as \uXXXX
-// escapes. Encode failure itself becomes a (still ANSI-free) JSON error
-// document rather than a panic or a silently empty line, since a command
-// author's Result type failing to marshal is a bug this writer should
-// surface, not hide.
+// writeDoc encodes v, sanitized, and writes it as one line to stdout.
+// HTML-escaping is disabled: nise's JSON output is read by scripts and jq,
+// not embedded in an HTML page, so "<", ">", and "&" should read as
+// themselves rather than as \uXXXX escapes. Encode failure itself becomes
+// a JSON error document rather than a panic or a silently empty line,
+// since a command author's Result type failing to marshal is a bug this
+// writer should surface, not hide.
 func (w *jsonWriter) writeDoc(v any) {
-	b := encodeJSONLine(v)
+	b := encodeSanitized(v)
 	if b == nil {
-		b = encodeJSONLine(map[string]string{
+		b = encodeSanitized(map[string]string{
 			"error": "internal: failed to encode JSON output",
 		})
 	}
-	w.stdout.writeString(string(stripANSI(b)))
+	w.stdout.writeString(string(b))
+}
+
+// encodeSanitized encodes v as a single JSON document (one line, no HTML
+// escaping) with every string value first passed through sanitizeANSI, or
+// returns nil if v could not be round-tripped through JSON at all.
+//
+// This is a marshal → decode (with UseNumber, to avoid float64 precision
+// loss on any large integer a future command emits) → sanitize → marshal
+// round trip, not a single-pass reflect walk over v's original Go type.
+// The round trip is what makes sanitization simple and exhaustively
+// correct: after the first decode, every value in the tree is one of
+// exactly six concrete kinds (nil, bool, json.Number, string,
+// map[string]any, []any), so sanitizeANSI never needs to handle an
+// arbitrary caller-defined struct, pointer, or custom MarshalJSON — by the
+// time it runs, JSON's own type system has already done that work.
+func encodeSanitized(v any) []byte {
+	first := encodeJSONLine(v)
+	if first == nil {
+		return nil
+	}
+	var generic any
+	dec := json.NewDecoder(bytes.NewReader(first))
+	dec.UseNumber()
+	if err := dec.Decode(&generic); err != nil {
+		return nil
+	}
+	return encodeJSONLine(sanitizeANSI(generic))
 }
 
 // encodeJSONLine returns v encoded as a single JSON document followed by
 // exactly one newline (json.Encoder.Encode's own behavior), or nil if v
-// could not be encoded — the only case writeDoc needs to distinguish.
+// could not be encoded.
 func encodeJSONLine(v any) []byte {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -79,30 +108,64 @@ func encodeJSONLine(v any) []byte {
 	return buf.Bytes()
 }
 
-// stripANSI returns b with every ESC (0x1b) byte removed. This is the
-// structural backstop for the "--json never emits ANSI" guarantee: even if
-// every other safeguard (no color helper exists in this file; Line/Success/
-// Banner are no-ops; clierr.Error never stores pre-colored text) were
-// somehow bypassed by a future change, a byte that made it into v's
-// marshaled JSON would still never reach stdout with its escape byte
-// intact.
-func stripANSI(b []byte) []byte {
+// sanitizeANSI walks a value decoded from JSON (so v is always nil, bool,
+// json.Number, string, map[string]any, or []any — see encodeSanitized) and
+// returns an equivalent value with every ESC (0x1b) rune removed from
+// every string it contains, at any depth.
+//
+// This must run BEFORE the sanitized value is re-encoded, not after —
+// running a byte-level strip on already-encoded JSON bytes (the previous
+// approach) cannot work, because encoding/json escapes a raw ESC byte
+// inside a string into the six-byte literal text "\u001b" before the byte
+// ever reaches the output; there is no longer a 0x1b byte in the wire
+// bytes for a post-encode scan to find, even though a JSON *decoder*
+// reading that text back (exactly what `nise --json ... | jq -r .field`
+// does) reconstructs the real ESC byte from the escape sequence. Removing
+// the rune from the string's actual content, before that string is ever
+// encoded, means the escape sequence is never produced in the first
+// place — jq (or any other JSON-aware consumer) gets a string that
+// genuinely has no ESC byte in it, not just wire bytes that don't spell
+// one out literally.
+func sanitizeANSI(v any) any {
+	switch t := v.(type) {
+	case string:
+		return stripANSIRunes(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = sanitizeANSI(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = sanitizeANSI(val)
+		}
+		return out
+	default:
+		// nil, bool, json.Number: none can contain an ESC rune.
+		return v
+	}
+}
+
+// stripANSIRunes returns s with every ESC (0x1b) rune removed.
+func stripANSIRunes(s string) string {
 	hasEsc := false
-	for _, c := range b {
-		if c == 0x1b {
+	for _, r := range s {
+		if r == 0x1b {
 			hasEsc = true
 			break
 		}
 	}
 	if !hasEsc {
-		return b
+		return s
 	}
-	out := make([]byte, 0, len(b))
-	for _, c := range b {
-		if c == 0x1b {
+	var b []rune
+	for _, r := range s {
+		if r == 0x1b {
 			continue
 		}
-		out = append(out, c)
+		b = append(b, r)
 	}
-	return out
+	return string(b)
 }

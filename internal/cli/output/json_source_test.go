@@ -26,10 +26,11 @@ func TestJSONWriterSourceContainsNoANSILiteral(t *testing.T) {
 		t.Error("json.go contains a literal ESC (0x1b) byte")
 	}
 	// The Go source spelling of that byte, other than inside this test's
-	// own doc comment / the stripANSI implementation that exists
-	// specifically to strip it — both are expected and fine; this test
-	// only runs against json.go, never against itself.
+	// own doc comment / the stripANSIRunes and sanitizeANSI comparisons
+	// that exist specifically to remove it (both written as the "0x1b"
+	// numeric literal, never the "\x1b" string/rune escape spelling) —
+	// this test only runs against json.go, never against itself.
 	if strings.Contains(src, `"\x1b`) || strings.Contains(src, `'\x1b`) {
-		t.Error(`json.go contains an "\x1b" (or '\x1b') escape-sequence literal outside of stripANSI's own byte comparison`)
+		t.Error(`json.go contains an "\x1b" (or '\x1b') escape-sequence literal outside of its own byte/rune comparisons`)
 	}
 }

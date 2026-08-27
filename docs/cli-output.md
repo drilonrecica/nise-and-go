@@ -94,18 +94,33 @@ reach stdout in JSON mode, by construction:**
 1. The JSON writer's prose methods (`Line`, `Verbosef`, `Success`,
    `Banner`) are no-ops. There is no color-formatting code in the file
    that implements JSON output at all.
-2. Every document the JSON writer emits passes through a byte-level
-   `stripANSI` pass immediately before it reaches stdout, deleting any ESC
-   (`0x1b`) byte regardless of where it came from. This is deliberate
-   defense in depth: even a hypothetical future command that mistakenly
-   handed a pre-colored human string to a JSON result cannot leak it.
+2. Every string value in a document the JSON writer emits is sanitized —
+   every ESC (`0x1b`) rune removed from its actual content — **before**
+   that document is JSON-encoded, not scrubbed from the encoded bytes
+   afterward. That distinction is load-bearing: an earlier version of this
+   guarantee scrubbed the already-encoded bytes for a raw `0x1b` byte, but
+   `encoding/json` always escapes a control character inside a string into
+   the six-character textual sequence `\u001b` before it reaches the wire
+   — so a post-encode byte scan finds nothing, while the escaped text
+   still decodes right back into a real ESC byte for any consumer that
+   actually parses the JSON, such as `nise --json ... | jq -r .field`.
+   The current implementation instead decodes the document (via
+   `encoding/json`'s own decoder, with `UseNumber` to avoid float64
+   precision loss on any large integer) into a generic value, strips ESC
+   runes from every string at every depth, and re-encodes that sanitized
+   value — so the escape sequence is never produced to begin with. This
+   is deliberate defense in depth: even a hypothetical future command
+   that mistakenly handed a pre-colored human string to a JSON result
+   cannot leak it.
 3. A source-scanning test (`internal/cli/output/json_source_test.go`)
    greps the JSON writer's own source file for an ANSI escape-sequence
    literal on every test run, so a future change that pastes color-
    handling code into that file fails the build's test suite immediately.
 4. A runtime test (`TestJSONWriterNeverEmitsANSI`) feeds the JSON writer a
    result value with an ANSI code already embedded in a string field and
-   asserts the escape byte does not survive to stdout.
+   asserts the output contains neither a raw ESC byte nor its `\u001b`
+   textual escape spelling — checking only for the raw byte would pass
+   trivially, since valid JSON text never contains one either way.
 
 Six later commands (`doctor`, `new`, `dev`, `check`, `test`, `generate`)
 are expected to print through this same writer; none of them can regress
