@@ -22,6 +22,14 @@ func TestValidateResourceNameAccepts(t *testing.T) {
 		{"ORDER", "order"},
 		{"invoice2", "invoice2"},
 		{"a", "a"},
+		// A name that merely starts with a Windows reserved device name is
+		// not itself reserved: "console" and "nullable" are legal
+		// directory names on Windows, so the check below must match the
+		// whole canonicalized name, never a prefix.
+		{"console", "console"},
+		{"nullable", "nullable"},
+		{"comedy", "comedy"},
+		{"lpt10", "lpt10"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
@@ -56,6 +64,20 @@ func TestValidateResourceNameRejects(t *testing.T) {
 		{"reserved excluded dir", "util"},
 		{"reserved ownership dir", "store"},
 		{"reserved ownership dir 2", "embedded"},
+		{"path separator", "invoice/line"},
+		{"path separator backslash", `invoice\line`},
+		{"dot dot", ".."},
+		{"embedded newline", "invoice\nline"},
+		{"windows device name con", "con"},
+		{"windows device name con uppercase", "CON"},
+		{"windows device name con mixed case", "Con"},
+		{"windows device name prn", "prn"},
+		{"windows device name aux", "aux"},
+		{"windows device name nul", "nul"},
+		{"windows device name com1", "com1"},
+		{"windows device name com9", "com9"},
+		{"windows device name lpt1", "lpt1"},
+		{"windows device name lpt9 uppercase", "LPT9"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
