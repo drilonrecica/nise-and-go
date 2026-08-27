@@ -11,14 +11,37 @@ import (
 )
 
 // styledResult simulates a future command mistakenly handing a
-// pre-ANSI-colored string to Result. jsonWriter must still emit zero ESC
-// bytes: this is the regression TestJSONWriterNeverEmitsANSI exists to
-// catch, independent of json_source_test.go's static source scan.
+// pre-ANSI-colored string to Result. jsonWriter must still emit no ANSI
+// escape, in any form: this is the regression TestJSONWriterNeverEmitsANSI
+// exists to catch, independent of json_source_test.go's static source
+// scan.
 type styledResult struct {
 	Label string `json:"label"`
 }
 
 func (s styledResult) Human() string { return s.Label }
+
+// jsonOutputHasANSI reports whether b — raw JSON bytes as written by
+// jsonWriter — could reconstruct an ANSI escape byte once decoded by any
+// JSON-aware consumer (jq, a script's own json.Unmarshal, ...).
+//
+// A raw ESC (0x1b) byte never actually appears in valid JSON text —
+// encoding/json always escapes a control character inside a string into a
+// six-character textual sequence before it reaches the wire — so checking
+// only for the raw byte (as this package's tests originally did) proves
+// nothing about whether the string's real content is ANSI-free: it always
+// passes, encoded or not, which is exactly the gap review found in the
+// pre-fix stripANSI. The meaningful check is the textual escape sequence
+// itself, since that is what a JSON decoder turns back into a real ESC
+// byte for whoever reads the field.
+func jsonOutputHasANSI(b []byte) bool {
+	if bytes.ContainsRune(b, 0x1b) {
+		return true
+	}
+	lower := bytes.ToLower(b)
+	needle := []byte{'\\', 'u', '0', '0', '1', 'b'}
+	return bytes.Contains(lower, needle)
+}
 
 func TestJSONWriterResultParsesAsJSONWithNoANSI(t *testing.T) {
 	t.Parallel()
@@ -28,8 +51,8 @@ func TestJSONWriterResultParsesAsJSONWithNoANSI(t *testing.T) {
 	w.Result(fixtureResult{Name: "doctor"})
 
 	out := buf.Bytes()
-	if bytes.ContainsRune(out, 0x1b) {
-		t.Fatalf("Result output contains an ESC byte: %q", out)
+	if jsonOutputHasANSI(out) {
+		t.Fatalf("Result output contains an ANSI escape: %q", out)
 	}
 	var got map[string]any
 	if err := json.Unmarshal(out, &got); err != nil {
@@ -49,8 +72,8 @@ func TestJSONWriterErrorParsesAsJSONWithNoANSI(t *testing.T) {
 	w.Error(ce)
 
 	out := buf.Bytes()
-	if bytes.ContainsRune(out, 0x1b) {
-		t.Fatalf("Error output contains an ESC byte: %q", out)
+	if jsonOutputHasANSI(out) {
+		t.Fatalf("Error output contains an ANSI escape: %q", out)
 	}
 	var env clierr.Envelope
 	if err := json.Unmarshal(out, &env); err != nil {
@@ -67,9 +90,15 @@ func TestJSONWriterErrorParsesAsJSONWithNoANSI(t *testing.T) {
 // TestJSONWriterNeverEmitsANSI is the regression test the brief asks for:
 // even a Result value whose string field already contains a raw ANSI
 // escape sequence (simulating a future command that reused a human-styled
-// string in JSON mode) must not reach stdout with that escape byte intact.
-// If a future change to writeDoc or stripANSI removes this backstop, this
-// test fails.
+// string in JSON mode) must not reach stdout in any form that would
+// reconstruct into a real ESC byte for a consumer decoding the JSON.
+// Checking only for a raw 0x1b byte in the wire bytes is not enough,
+// because encoding/json always escapes one into a six-character textual
+// sequence, which round-trips right back into a real ESC byte the moment
+// anything actually parses the JSON — jsonOutputHasANSI checks both forms
+// for exactly this reason. Review verified this test actually catches a
+// regression by short-circuiting the sanitization step and re-running it,
+// which then failed as expected before this fix.
 func TestJSONWriterNeverEmitsANSI(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
@@ -79,33 +108,131 @@ func TestJSONWriterNeverEmitsANSI(t *testing.T) {
 	w.Result(styledResult{Label: styled})
 
 	out := buf.Bytes()
-	if bytes.ContainsRune(out, 0x1b) {
-		t.Fatalf("stripANSI failed to remove an ESC byte from Result output: %q", out)
+	if jsonOutputHasANSI(out) {
+		t.Fatalf("sanitizeANSI failed to remove an ESC rune from Result output: %q", out)
 	}
 	if !bytes.Contains(out, []byte("done")) {
-		t.Fatalf("stripped output lost the surrounding text: %q", out)
+		t.Fatalf("sanitized output lost the surrounding text: %q", out)
 	}
 }
 
-func TestStripANSI(t *testing.T) {
+// TestJSONWriterNeverEmitsANSINested proves sanitizeANSI reaches strings
+// nested inside maps and slices, not just a Result's top-level fields —
+// the shape a future command's structured output (e.g. doctor's per-tool
+// check list) will actually take.
+func TestJSONWriterNeverEmitsANSINested(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	w := New(ModeJSON, Options{}, &buf, &bytes.Buffer{})
+
+	styled := nestedStyledResult{
+		Items: []nestedItem{
+			{Name: "one", Note: "\x1b[32mok\x1b[0m"},
+			{Name: "two", Note: "plain"},
+		},
+	}
+	w.Result(styled)
+
+	out := buf.Bytes()
+	if jsonOutputHasANSI(out) {
+		t.Fatalf("sanitizeANSI missed a nested ESC rune: %q", out)
+	}
+	if !bytes.Contains(out, []byte("ok")) {
+		t.Fatalf("sanitized output lost nested surrounding text: %q", out)
+	}
+}
+
+type nestedItem struct {
+	Name string `json:"name"`
+	Note string `json:"note"`
+}
+
+type nestedStyledResult struct {
+	Items []nestedItem `json:"items"`
+}
+
+func (n nestedStyledResult) Human() string { return "" }
+
+func TestSanitizeANSI(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		in   []byte
-		want []byte
+		in   any
+		want any
 	}{
-		{"no escape bytes", []byte(`{"a":1}`), []byte(`{"a":1}`)},
-		{"escape byte removed", []byte("\x1b[31mred\x1b[0m"), []byte("[31mred[0m")},
-		{"empty input", nil, []byte{}},
+		{"plain string", "hello", "hello"},
+		{"string with ESC", "\x1b[31mred\x1b[0m", "[31mred[0m"},
+		{"bool passes through", true, true},
+		{"nil passes through", nil, nil},
+		{
+			name: "nested map and slice",
+			in: map[string]any{
+				"a": "\x1b[1mbold\x1b[0m",
+				"b": []any{"\x1b[2mdim\x1b[0m", "clean"},
+			},
+			want: map[string]any{
+				"a": "[1mbold[0m",
+				"b": []any{"[2mdim[0m", "clean"},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := stripANSI(tt.in)
-			if !bytes.Equal(got, tt.want) {
-				t.Errorf("stripANSI(%q) = %q, want %q", tt.in, got, tt.want)
+			got := sanitizeANSI(tt.in)
+			gotJSON, _ := json.Marshal(got)
+			wantJSON, _ := json.Marshal(tt.want)
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("sanitizeANSI(%#v) = %s, want %s", tt.in, gotJSON, wantJSON)
 			}
 		})
+	}
+}
+
+func TestStripANSIRunes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no escape runes", "hello", "hello"},
+		{"escape rune removed", "\x1b[31mred\x1b[0m", "[31mred[0m"},
+		{"empty input", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := stripANSIRunes(tt.in)
+			if got != tt.want {
+				t.Errorf("stripANSIRunes(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEncodeSanitizedPreservesLargeIntegers proves the marshal → decode
+// (UseNumber) → sanitize → marshal round trip in encodeSanitized does not
+// lose precision on an integer bigger than float64 can represent exactly
+// — the risk any round-trip-through-interface{} approach normally carries,
+// avoided here specifically by decoding with UseNumber rather than into a
+// plain float64.
+func TestEncodeSanitizedPreservesLargeIntegers(t *testing.T) {
+	t.Parallel()
+	type bigNum struct {
+		N int64 `json:"n"`
+	}
+	// 2^53 + 1: the smallest positive integer a float64 cannot represent
+	// exactly.
+	const want = 9007199254740993
+	b := encodeSanitized(bigNum{N: want})
+
+	var got bigNum
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("json.Unmarshal(%s): %v", b, err)
+	}
+	if got.N != want {
+		t.Errorf("N = %d, want %d (precision lost in the sanitize round trip)", got.N, want)
 	}
 }
 
