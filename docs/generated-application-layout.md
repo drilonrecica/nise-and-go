@@ -31,6 +31,8 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
 ```text
 <app>/
 ├── AGENTS.md                          [nise]  static instructions for external coding tools
+├── .nise/
+│   └── architecture.json              [nise]  machine-readable layout and module map for coding tools
 ├── README.md                          [app]   the application's own readme
 ├── nise.json                          [nise]  project recipe: profile, modules, versions (ADR 0010)
 ├── go.mod                             [app]   application module; the application may add dependencies
@@ -114,6 +116,8 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
 ```
 
 ## Where things live and why
+
+**`.nise/` holds machine-readable tool metadata.** `.nise/architecture.json` is the deterministic, versioned description of this project's directory layout, ownership markers, module selection, and features that an external coding tool reads instead of parsing `AGENTS.md`'s prose. `nise new` writes it, and `nise agents` regenerates it; both go through the same code, so the two cannot drift. It is `[nise]`-owned. JSON has no comment syntax, so it carries the ownership header as a `generated` field, the same accommodation `nise.json` gets, plus a `contentHash` field that lets regeneration detect a hand edit rather than silently overwrite it. It lives under a dot-directory — the idiom `.git/`, `.vscode/`, and `.idea/` already use — rather than at the project root, because the documented root-level tree above reserves no slot for a machine-only artifact.
 
 **Three top-level artifact trees.** `api/`, `db/`, and `frontend/` hold the artifacts a contributor edits without writing Go — the OpenAPI document, the SQL migrations, and the Svelte application. Everything Go-shaped is under `cmd/` and `internal/`.
 
@@ -229,6 +233,6 @@ Slice 1 delivers a project that boots. `nise new` writes the root files, `api/`,
 
 The full authenticated application shell — sidebar, navigation, theme and language controls, authentication screens, tables, and the component set described in [Generated frontend](frontend.md) — arrives with milestone M6. The directories above are where it lands; nothing in this layout moves when it does.
 
-The core services arrive with the slices that build them: `internal/features/{auth,authz,audit}/` in Slice 3 (M5) and `internal/platform/jobs/` and `internal/platform/mail/` in Slice 4 (M8). Until then `internal/features/` is created holding only a `.gitkeep`, because version control cannot carry an empty directory, and `internal/app/modules.gen.go` is written with an empty module selection.
+The core services arrive with the slices that build them: `internal/features/{auth,authz,audit}/` in Slice 3 (M5) and `internal/platform/jobs/` and `internal/platform/mail/` in Slice 4 (M8). Until then `internal/features/` is created holding only a `README.md` naming what will live there and the rules that place it, because version control cannot carry an empty directory and a file with an ownership header is preferable to one without. Every other directory this layout reserves for a later milestone — `api/`, `db/`, `internal/platform/database/` — is created the same way, so there is no mix of placeholder conventions. `internal/app/modules.gen.go` is written with an empty module selection.
 
 Custom features are populated by `nise generate` from Slice 2 onward.
