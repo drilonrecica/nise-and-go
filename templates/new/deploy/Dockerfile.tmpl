@@ -1,0 +1,33 @@
+# Generated once by nise; owned by this application. Nise will not overwrite it.
+#
+# Build from the repository root:
+#   docker build -f deploy/Dockerfile -t {{.AppName}} .
+#
+# Three stages: the frontend is built with Node, its output is embedded by
+# the Go build, and the runtime image carries only the static binary and a
+# non-root user.
+
+FROM node:{{.NodeMajor}}-bookworm-slim AS frontend
+WORKDIR /src
+RUN corepack enable && corepack prepare {{.PackageManager}} --activate
+COPY frontend/package.json frontend/pnpm-lock.yaml* ./frontend/
+RUN pnpm --dir frontend install --frozen-lockfile
+COPY frontend ./frontend
+RUN pnpm --dir frontend build
+
+FROM golang:{{.GoImageTag}} AS build
+WORKDIR /src
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+COPY --from=frontend /src/internal/platform/webui/embedded/client ./internal/platform/webui/embedded/client
+RUN go build -trimpath -ldflags="-s -w" -o /out/{{.AppName}} ./cmd/{{.AppName}}
+
+FROM gcr.io/distroless/static-debian12:nonroot
+WORKDIR /
+COPY --from=build /out/{{.AppName}} /{{.AppName}}
+USER nonroot:nonroot
+EXPOSE 8080
+ENV APP_ENV=production BIND_ADDR=0.0.0.0 ALLOW_PUBLIC_BIND=true PORT=8080
+ENTRYPOINT ["/{{.AppName}}"]

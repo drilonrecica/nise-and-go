@@ -1,0 +1,24 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+
+# internal/features/
+
+One directory per vertical slice. A feature owns its handlers, use cases,
+SQL, domain rules, and tests: `domain.go`, `usecase.go`, `handler.go`,
+`queries/`, `store/`, and its own tests. Its frontend half is
+`frontend/src/routes/(app)/<plural>/` plus
+`frontend/src/lib/features/<feature>/`.
+
+Two rules hold across every feature:
+
+- **The use case owns the transaction boundary.** Handlers do transport
+  work; the `store` package runs queries and never begins a business
+  transaction of its own.
+- **A feature depends on another feature only through an interface the
+  consumer declares**, satisfied by the other feature's use case. A feature
+  never imports another feature's `store` package.
+
+This directory is empty today. The core features — sessions and
+authentication, authorization, and the audit log — arrive with the
+authentication milestone, and custom features are written by
+`nise generate feature` from the generation milestone onward. Nothing in the
+layout moves when they land.

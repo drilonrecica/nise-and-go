@@ -1,0 +1,43 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+
+# deploy/
+
+Deployment artifacts for `{{.AppName}}`.
+
+| File | What it is |
+|---|---|
+| `Dockerfile` | Three-stage build: the frontend with Node, the binary with Go embedding it, and a non-root distroless runtime image carrying nothing else. |
+| `compose.yaml` | A local run of that image. |
+
+## Building the image
+
+```sh
+docker build -f deploy/Dockerfile -t {{.AppName}} .
+```
+
+Build from the repository root, not from this directory: the Dockerfile
+copies both `frontend/` and the Go tree, and the frontend build writes into
+`internal/platform/webui/embedded/client/`, which the Go build then embeds.
+
+## Configuration
+
+The image sets `APP_ENV=production`, which turns on the fail-closed startup
+checks in `internal/platform/config`. It also sets `BIND_ADDR=0.0.0.0` and
+`ALLOW_PUBLIC_BIND=true`, because a container must bind every interface to
+be reachable and the configuration refuses to do that in production without
+the explicit opt-in. Every other variable is in `.env.example` at the
+repository root.
+
+A production image must **not** carry `OPERATOR_TOKEN` in this file. Supply
+it through your orchestrator's secret store, either as the variable itself
+or as `OPERATOR_TOKEN_FILE` naming a mounted file.
+
+## Process modes
+
+The same image runs every process this application has. `-mode web` binds
+the HTTP port and never starts the worker; `-mode worker` starts the worker
+and never binds a port; `-mode all` (the default) runs both.
+
+```sh
+docker run --rm -p 8080:8080 {{.AppName}} -mode web
+```

@@ -1,0 +1,9 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// The whole application is prerendered to one static fallback page and
+// hydrated in the browser: adapter-static writes index.html, the Go binary
+// embeds it, and client-side routing takes over from there. Server-side
+// rendering is off because there is no Node server in the deployment — the
+// single Go binary serves the built assets.
+export const prerender = true;
+export const ssr = false;

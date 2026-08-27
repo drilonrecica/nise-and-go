@@ -1,0 +1,33 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Command {{.AppName}} is this application's single binary. Every process the
+// deployment runs — the web server, the background worker, or both — is
+// this binary in a different mode.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"{{.ModulePath}}/internal/app"
+)
+
+func main() {
+	mode := flag.String("mode", "", `process mode: "all", "web", or "worker" (default: $APP_MODE, or "all")`)
+	flag.Parse()
+
+	// The signal handler lives here, not in runtime/lifecycle: deciding
+	// when to shut down is the application's job, and a runtime package
+	// that installed its own would be hidden lifecycle behavior.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := app.Run(ctx, *mode); err != nil {
+		fmt.Fprintf(os.Stderr, "{{.AppName}}: %v\n", err)
+		os.Exit(1)
+	}
+}

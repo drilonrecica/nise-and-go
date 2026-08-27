@@ -1,0 +1,29 @@
+/* Generated once by nise; owned by this application. Nise will not overwrite it. */
+
+@import 'tailwindcss';
+
+/*
+ * SvelteKit's client runtime creates an accessibility announcer,
+ * <div id="svelte-announcer">, carrying a hard-coded inline style attribute
+ * with the standard visually-hidden declarations. This application's
+ * Content Security Policy has no style-src-attr 'unsafe-inline', so that
+ * attribute is blocked and the announcer's route names would render
+ * visibly on every client-side navigation. Restoring the geometry from
+ * this external stylesheet — which style-src 'self' allows — is the fix.
+ * Do not replace it with a policy waiver.
+ */
+#svelte-announcer {
+	position: absolute !important;
+	left: 0 !important;
+	top: 0 !important;
+	clip: rect(0 0 0 0) !important;
+	clip-path: inset(50%) !important;
+	overflow: hidden !important;
+	white-space: nowrap !important;
+	width: 1px !important;
+	height: 1px !important;
+}
+
+:root {
+	color-scheme: light dark;
+}

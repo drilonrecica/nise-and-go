@@ -1,0 +1,33 @@
+# Generated once by nise; owned by this application. Nise will not overwrite it.
+#
+# Run from the repository root:
+#   docker compose -f deploy/compose.yaml up --build
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      APP_ENV: production
+      APP_MODE: all
+      BIND_ADDR: 0.0.0.0
+      ALLOW_PUBLIC_BIND: "true"
+      PORT: "8080"
+      LOG_FORMAT: json
+      LOG_LEVEL: info
+      DEBUG: "false"
+    healthcheck:
+      # The image carries no shell and no curl, so the healthcheck runs the
+      # application binary itself. Replace this with your orchestrator's
+      # own HTTP probe against /healthz/ready where you have one.
+      test: ["CMD", "/{{.AppName}}", "-mode", "web", "-help"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+# PostgreSQL and the other supporting services are added here with the
+# database milestone. {{.AppName}} has no database dependency yet, so
+# declaring one now would be a service nothing connects to.

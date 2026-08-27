@@ -1,0 +1,15 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+
+# internal/platform/database/
+
+The PostgreSQL connection pool and the migration runner live here: pool
+construction and configuration, the readiness check that pings it, and the
+Goose runner that applies `db/migrations/`.
+
+This directory is empty today. `{{.AppName}}` has no database yet. When it
+gains one, two seams are already waiting for it:
+
+- `internal/app/app.go` builds the `health.Prober` from an explicit slice of
+  checks. The pool's ping check is added there, as one more element.
+- `runtime/observability`'s `PoolMetrics` accepts a `PoolStatsFunc`. The
+  pool reports through it; nothing else changes.
