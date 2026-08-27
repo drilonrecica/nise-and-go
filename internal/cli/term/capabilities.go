@@ -28,8 +28,18 @@ type Capabilities struct {
 	// TermDumb reports whether TERM is exactly "dumb", the traditional
 	// signal for a terminal with no editing or color capability.
 	TermDumb bool
-	// CLIColor reports whether CLICOLOR is set to a value other than "0".
-	CLIColor bool
+	// CLIColorEnabled reports whether CLICOLOR is set to a value other
+	// than "0" (and non-empty). See CLIColorDisabled for the other half
+	// of this tri-state: CLICOLOR being unset and CLICOLOR being set to
+	// exactly "0" both leave CLIColorEnabled false, so a single bool
+	// cannot tell them apart — that ambiguity is exactly what let
+	// CLICOLOR=0 silently fail to disable color before this field
+	// existed (ColorEnabled's "otherwise → true" default fired for both
+	// cases identically).
+	CLIColorEnabled bool
+	// CLIColorDisabled reports whether CLICOLOR is set to exactly "0",
+	// the other half of the CLICOLOR tri-state (unset / "0" / other).
+	CLIColorDisabled bool
 	// CLIColorForce reports whether CLICOLOR_FORCE is set to a non-empty
 	// value other than "0". Per the informal convention, this forces color
 	// on even when output is not a terminal.
@@ -49,7 +59,8 @@ type Capabilities struct {
 //  3. TERM=dumb → false.
 //  4. stdout is not a terminal → false.
 //  5. CLICOLOR set to "0" → false.
-//  6. otherwise → true.
+//  6. CLICOLOR set to any other non-empty value → true.
+//  7. otherwise (CLICOLOR unset) → true.
 //
 // Callers that also support a --no-color flag or a --json mode must apply
 // those on top of this result themselves; ColorEnabled only reports what the
@@ -64,7 +75,9 @@ func (c Capabilities) ColorEnabled() bool {
 		return false
 	case !c.StdoutIsTerminal:
 		return false
-	case c.CLIColor:
+	case c.CLIColorDisabled:
+		return false
+	case c.CLIColorEnabled:
 		return true
 	default:
 		return true
@@ -128,7 +141,8 @@ func Detect(stdout, stderr FileStat, getenv func(string) string) Capabilities {
 		StderrIsTerminal: isTerminal(stderr),
 		NoColor:          isSet(getenv("NO_COLOR")),
 		TermDumb:         getenv("TERM") == "dumb",
-		CLIColor:         isSet(getenv("CLICOLOR")) && getenv("CLICOLOR") != "0",
+		CLIColorEnabled:  isSet(getenv("CLICOLOR")) && getenv("CLICOLOR") != "0",
+		CLIColorDisabled: getenv("CLICOLOR") == "0",
 		CLIColorForce:    isSet(getenv("CLICOLOR_FORCE")) && getenv("CLICOLOR_FORCE") != "0",
 		CI:               isSet(getenv("CI")),
 	}
