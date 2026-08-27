@@ -26,16 +26,63 @@ are printed instead, so every network-touching step is one the user typed.
 ```
 Next:
   cd myapp
+  go mod edit -replace github.com/drilonrecica/nise-and-go=/path/to/your/nise-and-go
   go mod tidy
   pnpm --dir frontend install
   pnpm --dir frontend build
   go run ./cmd/myapp
+
+Note:
+  Pre-release: github.com/drilonrecica/nise-and-go v0.1.0 is not published yet,
+  so `go mod tidy` cannot resolve it without the replace directive above.
+  Point it at a local checkout of the framework. Once v0.1.0 is
+  tagged and on the module proxy, drop that command and delete the replace
+  line it wrote into go.mod.
 ```
 
 The generated `go.mod` therefore carries pinned `require` lines and no
-`go.sum`, and the generated `package.json` carries exact versions (never a
+`go.sum` (see [the pinned framework version](#the-pinned-framework-version-is-not-published-yet) for the one caveat that applies to it today), and the generated `package.json` carries exact versions (never a
 range) and a `packageManager` field, so `go mod tidy` and `pnpm install`
 resolve to exactly what generation intended.
+
+## The pinned framework version is not published yet
+
+`nise new` writes `require github.com/drilonrecica/nise-and-go v0.1.0` into
+the generated `go.mod`. **No tagged release of that module carries the
+`runtime/` packages yet**, so in a fresh project `go mod tidy` fails:
+
+```
+go: github.com/drilonrecica/nise-and-go@v0.1.0: reading .../go.mod at revision v0.1.0: unknown revision v0.1.0
+```
+
+This is a pre-alpha condition, not a permanent workflow. Until the first
+tagged release, a generated project needs one extra command pointing the
+module at a local checkout of the framework:
+
+```sh
+go mod edit -replace github.com/drilonrecica/nise-and-go=/path/to/your/nise-and-go
+```
+
+The command is printed by `nise new` itself, in both human and `--json`
+output (`nextCommands` and `notes`), and the generated `README.md` opens
+with a "Before the first build" section stating the same thing. It is
+deliberately duplicated in all three places: a first step that is known to
+fail must not be presented anywhere as one that works.
+
+The path in every one of those places is the literal placeholder
+`/path/to/your/nise-and-go`, never a resolved path — an absolute path in
+generated output would be machine-specific, which the determinism rule
+forbids.
+
+When `v0.1.0` is tagged and on the module proxy, the replace line is deleted
+from `go.mod` and nothing else about a generated project changes. Publishing
+that tag belongs to the release milestone; `nise new` will drop the extra
+command and this section at the same time.
+
+Why the version is pinned rather than resolved: generation performs no
+network access, so it cannot ask what the newest version is, and a version
+resolved at generation time would make two runs on different days produce
+different output.
 
 ## Flags
 
@@ -165,7 +212,13 @@ machine.
 - Collections are sorted before they are emitted; nothing is written in map
   iteration order.
 - File modes are fixed literals — `0644` for files, `0755` for directories —
-  never inherited from the process umask.
+  never inherited from the process umask. `os.WriteFile` and `os.MkdirAll`
+  both mask their mode argument, so generation follows each with an explicit
+  `os.Chmod`, which is not masked. Without that, the same project generated
+  under `umask 077` would be `0600`/`0700` — identical in content and
+  different on disk, which a recursive content diff cannot see.
+  `TestFileModesAreIndependentOfUmask` generates under `umask 077` and
+  requires exact equality.
 - Every file is written with LF line endings and exactly one trailing
   newline, including on Windows and including from a checkout of this
   repository made with `core.autocrlf` enabled.
@@ -180,6 +233,7 @@ recipe and a recipe with every module selected.
 
 ```text
 myapp/
+├── .dockerignore                 [app]   keeps node_modules and stale builds out of the image
 ├── .env.example                  [app]   every variable, with safe placeholders
 ├── .gitignore                    [app]
 ├── .nise/architecture.json       [nise]  machine-readable layout map for coding tools
@@ -231,7 +285,7 @@ myapp/
 
 ```
 
-36 files. Ownership markers are from
+37 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Every generated file declares the same thing in a header

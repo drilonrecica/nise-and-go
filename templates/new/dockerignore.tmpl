@@ -1,0 +1,36 @@
+# Generated once by nise; owned by this application. Nise will not overwrite it.
+#
+# The Dockerfile's `COPY . .` would otherwise pull the whole working tree
+# into the build stage, including a local node_modules of the wrong platform
+# and a local frontend build that the multi-stage build is about to replace.
+
+# Frontend tooling. The image's own frontend stage installs from
+# frontend/pnpm-lock.yaml; a host node_modules is the wrong architecture
+# more often than not, and copying it in is slow as well as wrong.
+frontend/node_modules/
+frontend/.svelte-kit/
+
+# The frontend build output. The image's frontend stage produces it and
+# copies it in explicitly, so a stale local build must not leak into the
+# binary. The committed placeholder beside it is deliberately NOT ignored:
+# it is what makes the Go build work before the frontend stage lands.
+internal/platform/webui/embedded/client/
+
+# Local build artifacts and version control.
+bin/
+.git/
+.github/
+*.out
+*.test
+
+# Secrets and local environment. .env.example is placeholders only and is
+# kept so the image build can be inspected against it.
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -11,9 +11,11 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/drilonrecica/nise-and-go/internal/generator"
@@ -431,10 +433,21 @@ func TestModulesAreSortedAndDeduplicated(t *testing.T) {
 }
 
 // TestFileModesAreExplicit checks that generated files and directories
-// carry the fixed modes, not whatever the process umask happened to be.
+// carry exactly the fixed modes.
+//
+// The comparison is equality, not a subset check. An earlier version of
+// this test reasoned that "a restrictive umask can only clear bits" and
+// asserted got&^want == 0, which passes on 0o600 under `umask 077` — the
+// precise behavior the determinism rule forbids, since two machines with
+// different umasks would then produce trees that differ in a way no
+// content comparison reveals. A test that accommodates the defect it
+// guards is worse than no test.
+//
+// TestFileModesAreIndependentOfUmask below drives the same assertion under
+// a deliberately hostile umask.
 func TestFileModesAreExplicit(t *testing.T) {
-	if os.Getenv("GOOS") == "windows" {
-		t.Skip("file modes are not meaningful on Windows")
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod only toggles the read-only bit on Windows, so Unix permission bits are not meaningful there")
 	}
 	t.Parallel()
 
@@ -442,7 +455,37 @@ func TestFileModesAreExplicit(t *testing.T) {
 	if _, err := generator.Write(root, defaultOptions()); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
+	assertExactModes(t, root)
+}
 
+// TestFileModesAreIndependentOfUmask is the regression test for the umask
+// dependency itself: it sets a maximally restrictive umask for the
+// duration of the generation and requires the modes to come out unchanged.
+//
+// It cannot run in parallel with anything, because the umask is
+// process-wide state, so it does not call t.Parallel and restores the
+// previous value before returning.
+func TestFileModesAreIndependentOfUmask(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix umask has no equivalent on Windows")
+	}
+
+	previous := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(previous) })
+
+	root := filepath.Join(t.TempDir(), "myapp")
+	if _, err := generator.Write(root, defaultOptions()); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	assertExactModes(t, root)
+}
+
+// assertExactModes requires every file under root to be exactly FileMode
+// and every directory, root included, to be exactly DirMode.
+func assertExactModes(t *testing.T, root string) {
+	t.Helper()
+
+	checked := 0
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -455,16 +498,160 @@ func TestFileModesAreExplicit(t *testing.T) {
 		if d.IsDir() {
 			want = generator.DirMode
 		}
-		// A restrictive umask can only clear bits, so compare what the
-		// process actually produced against the intent, allowing for the
-		// umask having removed group and other write.
-		if got := info.Mode().Perm(); got&^want != 0 {
-			t.Errorf("%s has mode %04o, which exceeds the intended %04o", p, got, want)
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s has mode %04o, want exactly %04o", p, got, want)
 		}
+		checked++
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("walking the generated tree: %v", err)
+	}
+	if checked == 0 {
+		t.Fatal("walked no entries at all")
+	}
+}
+
+// TestNextCommandsCarryTheReplaceCaveat pins the disclosure of the one
+// known-broken first step. The pinned framework version is not published,
+// so `go mod tidy` fails without a replace directive; a user who is told to
+// run tidy and nothing else meets an "unknown revision" error with no
+// explanation.
+func TestNextCommandsCarryTheReplaceCaveat(t *testing.T) {
+	t.Parallel()
+
+	commands := generator.NextCommands("myapp")
+	joined := strings.Join(commands, "\n")
+
+	if !strings.Contains(joined, "go mod edit -replace "+generator.NiseModulePath+"=") {
+		t.Errorf("NextCommands does not include the replace directive:\n%s", joined)
+	}
+	replaceAt, tidyAt := -1, -1
+	for i, c := range commands {
+		if strings.Contains(c, "-replace") {
+			replaceAt = i
+		}
+		if strings.Contains(c, "go mod tidy") {
+			tidyAt = i
+		}
+	}
+	if replaceAt < 0 || tidyAt < 0 || replaceAt > tidyAt {
+		t.Errorf("the replace directive must come before `go mod tidy`; got replace=%d tidy=%d", replaceAt, tidyAt)
+	}
+
+	notes := strings.Join(generator.Notes(), " ")
+	for _, want := range []string{generator.NiseModuleVersion, "not published", "drop"} {
+		if !strings.Contains(strings.ToLower(notes), strings.ToLower(want)) {
+			t.Errorf("Notes does not mention %q:\n%s", want, notes)
+		}
+	}
+}
+
+// TestReplacePlaceholderIsNotARealPath guards the determinism rule against
+// the obvious mistake in the caveat above: resolving the framework checkout
+// to a real absolute path would be machine-specific advice baked into
+// generated output.
+func TestReplacePlaceholderIsNotARealPath(t *testing.T) {
+	t.Parallel()
+
+	if _, err := os.Stat(generator.ReplacePathPlaceholder); err == nil {
+		t.Errorf("ReplacePathPlaceholder %q exists on this machine, so it is a real path and not a placeholder", generator.ReplacePathPlaceholder)
+	}
+
+	files, err := generator.Plan(defaultOptions())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	var readme string
+	for _, f := range files {
+		if f.Path == "README.md" {
+			readme = string(f.Content)
+		}
+	}
+	if readme == "" {
+		t.Fatal("no README.md in the plan")
+	}
+	if !strings.Contains(readme, generator.ReplacePathPlaceholder) {
+		t.Error("the generated README does not carry the replace placeholder")
+	}
+	if !strings.Contains(readme, "not published yet") {
+		t.Error("the generated README does not say the pinned framework version is unpublished")
+	}
+}
+
+// TestRecipeRuntimeVersionMatchesGoMod is the invariant ADR 0010 defines:
+// runtimeVersion is the version of runtime/ the project targets, which is
+// what go.mod requires — not the version of the binary that generated the
+// project. nise doctor and a future nise upgrade compare the two.
+func TestRecipeRuntimeVersionMatchesGoMod(t *testing.T) {
+	t.Parallel()
+
+	opts := defaultOptions()
+	opts.CLIVersion = "v0.0.0-20260827195219-237478b37291+dirty"
+
+	r, err := opts.Recipe()
+	if err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if r.RuntimeVersion != generator.NiseModuleVersion {
+		t.Errorf("runtimeVersion = %q, want %q (the version go.mod requires)", r.RuntimeVersion, generator.NiseModuleVersion)
+	}
+	if r.CLIVersion != opts.CLIVersion {
+		t.Errorf("cliVersion = %q, want the generating binary's own version %q", r.CLIVersion, opts.CLIVersion)
+	}
+
+	files, err := generator.Plan(opts)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	for _, f := range files {
+		if f.Path != "go.mod" {
+			continue
+		}
+		want := generator.NiseModulePath + " " + r.RuntimeVersion
+		if !strings.Contains(string(f.Content), want) {
+			t.Errorf("go.mod does not require %q:\n%s", want, f.Content)
+		}
+		return
+	}
+	t.Fatal("no go.mod in the plan")
+}
+
+// TestDockerignoreKeepsTheBuildContextClean checks the entries that matter:
+// the Dockerfile's COPY . . would otherwise pull a host node_modules and a
+// stale local frontend build into the image, and must still carry the
+// committed embed placeholder.
+func TestDockerignoreKeepsTheBuildContextClean(t *testing.T) {
+	t.Parallel()
+
+	files, err := generator.Plan(defaultOptions())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	var body string
+	for _, f := range files {
+		if f.Path == ".dockerignore" {
+			body = string(f.Content)
+		}
+	}
+	if body == "" {
+		t.Fatal("no .dockerignore in the plan")
+	}
+
+	for _, want := range []string{
+		"frontend/node_modules/",
+		"frontend/.svelte-kit/",
+		"internal/platform/webui/embedded/client/",
+		".git/",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf(".dockerignore does not exclude %q", want)
+		}
+	}
+	// Excluding the placeholder would break the Go build stage, which
+	// compiles before the frontend output is copied in.
+	if strings.Contains(body, "placeholder.html") {
+		t.Error(".dockerignore excludes the committed embed placeholder, which the Go build stage needs")
 	}
 }
 

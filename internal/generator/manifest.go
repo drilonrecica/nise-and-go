@@ -51,18 +51,20 @@ type templateFile struct {
 // templateFiles is every template nise new renders, sorted by output path.
 //
 // The mapping is explicit rather than derived from the template's own path
-// for two reasons. Three output paths cannot be spelled as template paths
+// for two reasons. Four output paths cannot be spelled as template paths
 // at all: ".gitignore" and ".env.example" would be swallowed by this
-// repository's own .gitignore, and cmd/<app>/main.go's directory is not
-// known until generation time. And an explicit table is the thing a reviewer
-// can read to know what a generated project contains, which a suffix-
-// stripping rule is not.
+// repository's own .gitignore, ".dockerignore" follows the same naming
+// convention so that all three generated dotfiles are spelled one way, and
+// cmd/<app>/main.go's directory is not known until generation time. And an
+// explicit table is the thing a reviewer can read to know what a generated
+// project contains, which a suffix-stripping rule is not.
 //
 // TestEveryTemplateIsInTheManifest asserts this list and the embedded
 // filesystem name exactly the same set of files, so a template added
 // without a manifest entry fails the build rather than being silently
 // skipped.
 var templateFiles = []templateFile{
+	{Template: "dockerignore.tmpl", Output: ".dockerignore", Owner: OwnerApp},
 	{Template: "env.example.tmpl", Output: ".env.example", Owner: OwnerApp},
 	{Template: "gitignore.tmpl", Output: ".gitignore", Owner: OwnerApp},
 	{Template: "Makefile.tmpl", Output: "Makefile", Owner: OwnerApp},
