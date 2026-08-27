@@ -11,7 +11,7 @@ import (
 // receives (following WithAttrs/WithGroup/group nesting, and resolving any
 // slog.LogValuer) into a map keyed by dot-joined path, recording the value
 // that ultimately reached it. Tests use it to assert on exactly what a
-// handler downstream of NewRedactingHandler would see, independent of the
+// handler downstream of the redacting handler would see, independent of the
 // JSON or text rendering this package also happens to ship.
 type captureHandler struct {
 	prefix string
@@ -65,11 +65,11 @@ func flattenAttrs(prefix string, attrs []slog.Attr) map[string]string {
 	return out
 }
 
-func TestNewRedactingHandler_DefaultDenyKeys(t *testing.T) {
+func TestRedactingHandler_DefaultDenyKeys(t *testing.T) {
 	for _, key := range DefaultDenyKeys() {
 		t.Run(key, func(t *testing.T) {
 			capture := newCaptureHandler()
-			h := NewRedactingHandler(capture, RedactOptions{})
+			h := newRedactingHandler(capture, RedactOptions{})
 			logger := slog.New(h)
 			logger.Info("event", key, "super-secret-value")
 
@@ -80,9 +80,9 @@ func TestNewRedactingHandler_DefaultDenyKeys(t *testing.T) {
 	}
 }
 
-func TestNewRedactingHandler_CaseInsensitive(t *testing.T) {
+func TestRedactingHandler_CaseInsensitive(t *testing.T) {
 	capture := newCaptureHandler()
-	h := NewRedactingHandler(capture, RedactOptions{})
+	h := newRedactingHandler(capture, RedactOptions{})
 	logger := slog.New(h)
 	logger.Info("event", "PaSsWoRd", "hunter2")
 
@@ -91,9 +91,9 @@ func TestNewRedactingHandler_CaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestNewRedactingHandler_NonDenyListedKeyPasses(t *testing.T) {
+func TestRedactingHandler_NonDenyListedKeyPasses(t *testing.T) {
 	capture := newCaptureHandler()
-	h := NewRedactingHandler(capture, RedactOptions{})
+	h := newRedactingHandler(capture, RedactOptions{})
 	logger := slog.New(h)
 	logger.Info("event", "user_id", "u_123")
 
@@ -102,20 +102,89 @@ func TestNewRedactingHandler_NonDenyListedKeyPasses(t *testing.T) {
 	}
 }
 
-func TestNewRedactingHandler_ExtraDenyKeys(t *testing.T) {
+func TestRedactingHandler_ExtraDenyKeys(t *testing.T) {
+	// "ssn" matches none of the default fragments, so this specifically
+	// exercises ExtraDenyKeys rather than incidentally passing because a
+	// default fragment already covers it.
 	capture := newCaptureHandler()
-	h := NewRedactingHandler(capture, RedactOptions{ExtraDenyKeys: []string{"access_token"}})
+	h := newRedactingHandler(capture, RedactOptions{ExtraDenyKeys: []string{"ssn"}})
 	logger := slog.New(h)
-	logger.Info("event", "access_token", "abc.def.ghi")
+	logger.Info("event", "employee_ssn", "123-45-6789")
 
-	if got := capture.got["access_token"]; got != RedactPlaceholder {
+	if got := capture.got["employee_ssn"]; got != RedactPlaceholder {
 		t.Errorf("got %q, want %q", got, RedactPlaceholder)
 	}
 }
 
-func TestNewRedactingHandler_CustomPlaceholder(t *testing.T) {
+func TestRedactingHandler_WithoutExtraDenyKeyPasses(t *testing.T) {
+	// The companion of TestRedactingHandler_ExtraDenyKeys: without the extra
+	// fragment, "ssn"-shaped keys are not part of any default fragment and
+	// must pass through unredacted, proving the previous test's redaction
+	// came from ExtraDenyKeys and not from an accidental default match.
 	capture := newCaptureHandler()
-	h := NewRedactingHandler(capture, RedactOptions{Placeholder: "***"})
+	h := newRedactingHandler(capture, RedactOptions{})
+	logger := slog.New(h)
+	logger.Info("event", "employee_ssn", "123-45-6789")
+
+	if got := capture.got["employee_ssn"]; got != "123-45-6789" {
+		t.Errorf("got %q, want the value unredacted without ExtraDenyKeys", got)
+	}
+}
+
+// TestRedactingHandler_CompoundFieldNames pins the six real-shaped compound
+// key names a naive exact-match deny set misses: db_password, access_token,
+// refresh_token, pg_password, api-key, and sessionID. Every one of them must
+// redact under the default deny set with no ExtraDenyKeys configured.
+func TestRedactingHandler_CompoundFieldNames(t *testing.T) {
+	names := []string{
+		"db_password",
+		"access_token",
+		"refresh_token",
+		"pg_password",
+		"api-key",
+		"sessionID",
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			capture := newCaptureHandler()
+			h := newRedactingHandler(capture, RedactOptions{})
+			logger := slog.New(h)
+			logger.Info("event", name, "super-secret-value")
+
+			if got := capture.got[name]; got != RedactPlaceholder {
+				t.Errorf("got %s=%q, want %q (compound field names must redact under the default deny set)", name, got, RedactPlaceholder)
+			}
+		})
+	}
+}
+
+// TestRedactingHandler_SessionFalsePositives pins the two false-positive
+// cases the bounded "session" fragment is specifically designed to avoid: an
+// operator-relevant counter and a timestamp field, neither of which is a
+// secret, must pass through unredacted even though both start with
+// "session".
+func TestRedactingHandler_SessionFalsePositives(t *testing.T) {
+	names := map[string]string{
+		"session_count":      "42",
+		"session_start_time": "2026-08-27T12:30:45Z",
+	}
+	for name, value := range names {
+		t.Run(name, func(t *testing.T) {
+			capture := newCaptureHandler()
+			h := newRedactingHandler(capture, RedactOptions{})
+			logger := slog.New(h)
+			logger.Info("event", name, value)
+
+			if got := capture.got[name]; got != value {
+				t.Errorf("got %s=%q, want %q unredacted (legitimate operational metric)", name, got, value)
+			}
+		})
+	}
+}
+
+func TestRedactingHandler_CustomPlaceholder(t *testing.T) {
+	capture := newCaptureHandler()
+	h := newRedactingHandler(capture, RedactOptions{Placeholder: "***"})
 	logger := slog.New(h)
 	logger.Info("event", "password", "hunter2")
 
@@ -124,12 +193,12 @@ func TestNewRedactingHandler_CustomPlaceholder(t *testing.T) {
 	}
 }
 
-// TestNewRedactingHandler_NestedThreeGroupsDeep is named directly for the
+// TestRedactingHandler_NestedThreeGroupsDeep is named directly for the
 // brief's required case: a deny-set key nested three groups deep, reached
 // through repeated slog.Logger.WithGroup calls, must still be redacted.
-func TestNewRedactingHandler_NestedThreeGroupsDeep(t *testing.T) {
+func TestRedactingHandler_NestedThreeGroupsDeep(t *testing.T) {
 	capture := newCaptureHandler()
-	h := NewRedactingHandler(capture, RedactOptions{})
+	h := newRedactingHandler(capture, RedactOptions{})
 	logger := slog.New(h).WithGroup("a").WithGroup("b").WithGroup("c")
 	logger.Info("event", "password", "hunter2", "safe", "value")
 
@@ -141,11 +210,11 @@ func TestNewRedactingHandler_NestedThreeGroupsDeep(t *testing.T) {
 	}
 }
 
-// TestNewRedactingHandler_NestedGroupValue covers a deny-set key nested
+// TestRedactingHandler_NestedGroupValue covers a deny-set key nested
 // inside a single slog.Group attribute value (rather than via WithGroup).
-func TestNewRedactingHandler_NestedGroupValue(t *testing.T) {
+func TestRedactingHandler_NestedGroupValue(t *testing.T) {
 	capture := newCaptureHandler()
-	h := NewRedactingHandler(capture, RedactOptions{})
+	h := newRedactingHandler(capture, RedactOptions{})
 	logger := slog.New(h)
 	logger.Info("event", slog.Group("db",
 		slog.String("host", "db.internal"),
@@ -177,9 +246,9 @@ func (c credentialValuer) LogValue() slog.Value {
 	)
 }
 
-func TestNewRedactingHandler_LogValuerReturningSecretShapedKey(t *testing.T) {
+func TestRedactingHandler_LogValuerReturningSecretShapedKey(t *testing.T) {
 	capture := newCaptureHandler()
-	h := NewRedactingHandler(capture, RedactOptions{})
+	h := newRedactingHandler(capture, RedactOptions{})
 	logger := slog.New(h)
 	logger.Info("login attempt", "creds", credentialValuer{Username: "alice", Password: "hunter2"})
 
@@ -198,9 +267,9 @@ type denyShapedValuer struct{ value string }
 
 func (d denyShapedValuer) LogValue() slog.Value { return slog.StringValue(d.value) }
 
-func TestNewRedactingHandler_DenyListedKeyWithLogValuerValue(t *testing.T) {
+func TestRedactingHandler_DenyListedKeyWithLogValuerValue(t *testing.T) {
 	capture := newCaptureHandler()
-	h := NewRedactingHandler(capture, RedactOptions{})
+	h := newRedactingHandler(capture, RedactOptions{})
 	logger := slog.New(h)
 	logger.Info("event", "token", denyShapedValuer{value: "abc.def.ghi"})
 

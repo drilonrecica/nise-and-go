@@ -22,9 +22,9 @@ type HandlerOptions struct {
 
 // NewJSONHandler returns a slog.Handler that writes one JSON object per
 // record to w, intended for production. Every attribute passes through
-// central redaction (NewRedactingHandler) before it reaches the JSON
-// encoder, so redaction cannot be bypassed by an attribute added after
-// construction — see NewRedactingHandler for exactly what that covers.
+// central redaction before it reaches the JSON encoder — see DefaultDenyKeys
+// and RedactOptions for exactly what that covers — so redaction cannot be
+// bypassed by an attribute added after construction.
 //
 // NewJSONHandler never calls slog.SetDefault. The caller decides whether and
 // how the returned handler becomes a *slog.Logger's handler, typically with
@@ -35,5 +35,5 @@ func NewJSONHandler(w io.Writer, opts HandlerOptions) slog.Handler {
 		level = slog.LevelInfo
 	}
 	base := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level})
-	return NewRedactingHandler(base, opts.Redact)
+	return newRedactingHandler(base, opts.Redact)
 }

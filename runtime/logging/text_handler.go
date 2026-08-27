@@ -45,7 +45,7 @@ func NewTextHandler(w io.Writer, opts TextOptions) slog.Handler {
 		level: level,
 		color: opts.Color,
 	}
-	return NewRedactingHandler(base, opts.Redact)
+	return newRedactingHandler(base, opts.Redact)
 }
 
 // textHandler implements slog.Handler directly. Central redaction is applied
