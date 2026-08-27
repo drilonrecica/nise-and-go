@@ -1,0 +1,118 @@
+name: CI
+
+# Runs on every push and every pull request, per docs/checks.md. This
+# workflow does not build or publish release binaries (M10) and does not run
+# a vulnerability scan (M9-002) — both are later-milestone scope; see
+# docs/checks.md for why they are deliberately absent here.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Keep in sync with docs/toolchain.md and .tool-versions by hand; nothing
+  # in this repository enforces that the three agree (see ADR 0008).
+  GO_VERSION: "1.26.5"
+  GOLANGCI_LINT_VERSION: "2.11.3"
+
+jobs:
+  lint:
+    name: Format, vet, and lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      # golangci-lint is pinned by documented version, not a go.mod `tool`
+      # directive — see docs/adr/0008-toolchain-and-dependencies.md for the
+      # measured go.sum growth that pinning rejected. `go install` resolves
+      # and checksum-verifies the exact pinned release through the Go module
+      # proxy without touching this repository's own go.mod or go.sum.
+      - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v${{ env.GOLANGCI_LINT_VERSION }}
+
+      - name: gofmt -s (fmt-check)
+        run: make fmt-check
+
+      - name: go vet
+        run: make vet
+
+      - name: golangci-lint (lint)
+        run: make lint
+
+  test:
+    name: Test
+    strategy:
+      fail-fast: false
+      matrix:
+        # See docs/supported-platforms.md for exactly which OS/architecture
+        # combination each of these three runner labels exercises, and which
+        # release-target combinations they do NOT exercise.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: go test
+        run: make test
+
+      - name: go test -race
+        run: make test-race
+
+  generation-diff:
+    name: Generation diff
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: make generate-diff
+        run: make generate-diff
+
+  docs-check:
+    name: Docs check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # No Go toolchain step: docs-check is git + grep + sed, deliberately
+      # dependency-free (see docs/checks.md).
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: make docs-check
+        run: make docs-check
