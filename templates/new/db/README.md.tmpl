@@ -1,0 +1,13 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+
+# db/
+
+Readable SQL migrations live here, as `migrations/NNNNN_snake_case.sql` with
+a zero-padded sequential prefix, alongside `embed.go`, which embeds them
+into the binary. Sequential prefixes rather than timestamps: generation must
+produce byte-identical output on every machine.
+
+This directory is empty today. `{{.AppName}}` has no database yet — no
+connection pool, no migration runner, and no tables. They arrive with the
+database milestone, and `internal/platform/database/` is where the pool and
+the migration runner will live.

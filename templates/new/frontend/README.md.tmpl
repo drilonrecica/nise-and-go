@@ -1,0 +1,63 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+
+# frontend/
+
+The SvelteKit application for `{{.AppName}}`. It is an ordinary pnpm
+project: no Go files live here, and nothing in it is Nise-specific except
+where this page says otherwise.
+
+```sh
+pnpm install     # once
+pnpm dev         # Vite dev server, hot reload
+pnpm build       # production build — see below
+pnpm check       # svelte-check type checking
+```
+
+## `pnpm build` writes outside this directory
+
+This is the one surprise, and it is deliberate:
+
+```
+frontend/  →  ../internal/platform/webui/embedded/client/
+```
+
+`go:embed` cannot reach outside the directory of the package that declares
+it, so the built application has to land inside the Go package that embeds
+it. Pointing `adapter-static` at that directory is how this project keeps
+`frontend/` free of Go files and `internal/platform/webui/` free of frontend
+sources. The output path is set in `svelte.config.js`.
+
+The adapter **deletes its output directory before every build**. Nothing may
+be committed inside `embedded/client/`; the committed placeholder that keeps
+`go build` working in a fresh clone is its sibling,
+`embedded/placeholder.html`.
+
+## Two settings that must stay at their defaults
+
+- **`kit.csp` is unset.** The Go server sends the single authoritative
+  Content Security Policy as a response header. SvelteKit would emit a
+  second one as a `<meta http-equiv>` tag for prerendered output, where
+  `frame-ancestors` and `report-uri` are ignored and the two policies apply
+  as their intersection.
+- **`kit.inlineStyleThreshold` is 0.** Raising it inlines stylesheets into
+  the page, which `style-src 'self'` blocks.
+
+## No inline `style` attribute
+
+The policy has no `style-src-attr 'unsafe-inline'`. Use a class or Svelte's
+`style:` directive, which compiles to CSSOM property writes that CSP does
+not govern. Avoid `<Component --token="value" />` too: it wraps the
+component in an element carrying an inline `style` attribute. Set the custom
+property from a stylesheet rule instead.
+
+`app.css` restores the geometry of SvelteKit's own accessibility announcer,
+whose inline style attribute the policy blocks. Do not remove that rule.
+
+## What is deliberately absent
+
+This is a minimal but real SvelteKit project: it installs, builds,
+type-checks, and renders one page served by the Go binary. The application
+shell — navigation, theme and language controls, authentication screens,
+tables, and the component set — arrives with a later milestone, as do the
+Vitest component suite and the Playwright end-to-end suite. This tree is
+where all of it lands.

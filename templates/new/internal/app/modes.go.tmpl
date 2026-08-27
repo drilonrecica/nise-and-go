@@ -1,0 +1,46 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package app
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+
+	"github.com/drilonrecica/nise-and-go/runtime/lifecycle"
+
+	"{{.ModulePath}}/internal/platform/config"
+)
+
+// resolveMode decides which process mode this invocation runs. The -mode
+// flag wins when it was given; otherwise APP_MODE, already parsed and
+// validated by config.Load, decides. An unrecognized value is an error, not
+// a fallback: guessing would start a deployment with the wrong components
+// running.
+func resolveMode(cfg config.Config, override string) (lifecycle.Mode, error) {
+	if override == "" {
+		return cfg.Mode, nil
+	}
+	mode, err := lifecycle.ParseMode(override)
+	if err != nil {
+		return "", fmt.Errorf("-mode: %w", err)
+	}
+	return mode, nil
+}
+
+// newWorker builds the background-processing component that lifecycle.Mode
+// "all" and "worker" run.
+//
+// This application registers no background jobs yet, so the loop does
+// nothing but wait for its context to be canceled and then return. It is a
+// real Runnable rather than a nil one on purpose: "nise new" wires the
+// component and its shutdown path now, so adding the first job is adding a
+// case to this loop rather than re-plumbing the process.
+func newWorker(logger *slog.Logger) *lifecycle.Worker {
+	return lifecycle.NewWorker(func(ctx context.Context) error {
+		logger.Info("worker started", slog.Int("registered_jobs", 0))
+		<-ctx.Done()
+		logger.Info("worker stopped")
+		return nil
+	})
+}

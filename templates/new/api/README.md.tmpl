@@ -1,0 +1,14 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+
+# api/
+
+`api/openapi.yaml` lives here: the authoritative transport contract for this
+application's JSON API. It is hand-edited, and both the Go server bindings
+(`internal/platform/httpapi/openapigen/`) and the TypeScript models
+(`frontend/src/lib/api/schema.d.ts`) are generated from it.
+
+This directory is empty today. `{{.AppName}}` has no HTTP API yet: the
+OpenAPI document, the generated bindings, and the typed frontend client
+arrive with the API milestone. The router that will mount them is
+`internal/platform/httpapi/router.go`, which marks the mount point in a
+comment.

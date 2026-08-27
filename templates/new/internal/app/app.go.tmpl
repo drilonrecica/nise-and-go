@@ -1,0 +1,140 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package app wires this application's components together and runs the
+// process.
+//
+// Every dependency is constructed here, in Run, and passed to whatever
+// needs it as a parameter. There is no container, no service locator, no
+// registry populated by an import side effect, and no package-level mutable
+// state: the whole object graph is readable top to bottom in one function.
+package app
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+
+	rtconfig "github.com/drilonrecica/nise-and-go/runtime/config"
+	"github.com/drilonrecica/nise-and-go/runtime/health"
+	"github.com/drilonrecica/nise-and-go/runtime/lifecycle"
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/observability"
+
+	"{{.ModulePath}}/internal/platform/config"
+	"{{.ModulePath}}/internal/platform/httpapi"
+	"{{.ModulePath}}/internal/platform/webui"
+)
+
+// Run starts the application and blocks until it stops.
+//
+// ctx carries the shutdown signal: main installs the signal handler and
+// cancels ctx, because runtime/lifecycle deliberately installs none of its
+// own. modeOverride is the -mode flag's value; an empty string means the
+// APP_MODE environment variable decides.
+func Run(ctx context.Context, modeOverride string) error {
+	cfg, warnings, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading configuration: %w", err)
+	}
+
+	logger := newLogger(cfg)
+	for _, w := range warnings {
+		logger.Warn("configuration warning", slog.String("detail", w))
+	}
+
+	mode, err := resolveMode(cfg, modeOverride)
+	if err != nil {
+		return err
+	}
+
+	// Fail closed in production: a production binary with no frontend
+	// build embedded would serve the development placeholder to real
+	// users, so it refuses to start instead.
+	ui, err := webui.New(cfg.Env == rtconfig.Production)
+	if err != nil {
+		return fmt.Errorf("loading the embedded frontend: %w", err)
+	}
+	if !ui.Built() {
+		logger.Warn("serving the placeholder page: no frontend build is embedded",
+			slog.String("fix", "pnpm --dir frontend install && pnpm --dir frontend build"))
+	}
+
+	registry := observability.NewRegistry()
+	httpMetrics, err := observability.NewHTTPMetrics(registry)
+	if err != nil {
+		return fmt.Errorf("registering HTTP metrics: %w", err)
+	}
+
+	// The gate starts closed so that the startup and readiness probes both
+	// report unavailable until wiring has finished.
+	gate := health.NewGate(false)
+
+	// No dependency checks are registered yet. A check is added here, as an
+	// explicit element of this slice, when the thing it probes exists — a
+	// database pool, a cache, an outbound dependency.
+	prober := health.NewProber(nil)
+
+	handler, err := httpapi.New(httpapi.Deps{
+		Config:   cfg,
+		Logger:   logger,
+		Gate:     gate,
+		Prober:   prober,
+		Registry: registry,
+		Metrics:  httpMetrics,
+		UI:       ui,
+	})
+	if err != nil {
+		return fmt.Errorf("building the HTTP handler: %w", err)
+	}
+
+	server := lifecycle.NewHTTPServer(cfg.Addr(), handler, gate, lifecycle.WithLogger(logger))
+	worker := newWorker(logger)
+
+	group, err := lifecycle.NewGroup(mode, server, worker)
+	if err != nil {
+		return fmt.Errorf("selecting process components: %w", err)
+	}
+
+	logger.Info("starting",
+		slog.String("mode", string(mode)),
+		slog.String("env", string(cfg.Env)),
+		slog.String("addr", cfg.Addr()),
+		slog.Bool("frontend_embedded", ui.Built()),
+		slog.Any("modules", SelectedModules()),
+	)
+
+	// Initialization is complete: open the gate so the startup probe
+	// passes and the readiness probe starts consulting the prober.
+	gate.Set(true)
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- group.Run(context.WithoutCancel(ctx)) }()
+
+	select {
+	case err := <-runErr:
+		return err
+	case <-ctx.Done():
+		logger.Info("shutdown signal received, draining")
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lifecycle.DefaultShutdownTimeout)
+		defer cancel()
+		if err := group.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("shutting down: %w", err)
+		}
+		<-runErr
+		logger.Info("stopped")
+		return nil
+	}
+}
+
+// newLogger builds the process logger. runtime/logging never constructs a
+// logger, never reads an environment variable to choose a level, and never
+// calls slog.SetDefault — that decision is made here, once, and the
+// resulting logger is passed to everything that needs one.
+func newLogger(cfg config.Config) *slog.Logger {
+	opts := logging.HandlerOptions{Level: cfg.LogLevel}
+	if cfg.LogFormat == "text" {
+		return slog.New(logging.NewTextHandler(os.Stdout, logging.TextOptions{HandlerOptions: opts}))
+	}
+	return slog.New(logging.NewJSONHandler(os.Stdout, opts))
+}

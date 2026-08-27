@@ -1,0 +1,83 @@
+package generator
+
+// The versions a generated project is pinned to. Every one of them is a
+// literal here rather than a value read from the environment, the build, or
+// the network: generation must produce byte-identical output on every
+// machine, and a version resolved at generation time would make the output
+// depend on when it ran.
+//
+// Bumping any of these is a deliberate edit with a corresponding line in
+// docs/dependencies.md, the same way adding a dependency is.
+const (
+	// NiseModulePath is the framework module a generated application
+	// imports runtime/ from.
+	NiseModulePath = "github.com/drilonrecica/nise-and-go"
+
+	// NiseModuleVersion is the framework version the generated go.mod
+	// requires. It is deliberately separate from the recipe's
+	// runtimeVersion field: the recipe records the version of the nise
+	// binary that generated the project, which for a source build is the
+	// non-module string "dev", while go.mod needs a resolvable module
+	// version.
+	NiseModuleVersion = "v0.1.0"
+
+	// ChiVersion pins the HTTP router, the one non-Nise Go dependency a
+	// generated project starts with.
+	ChiVersion = "v5.3.2"
+
+	// GoDirective is the go directive written into the generated go.mod.
+	// It is the three-component form `go mod tidy` produces, so the first
+	// tidy in a new project does not rewrite the file nise just wrote.
+	GoDirective = "1.26.0"
+
+	// GoImageTag is the golang container image tag the generated
+	// Dockerfile builds with.
+	GoImageTag = "1.26"
+
+	// NodeVersion is the minimum Node version the generated frontend
+	// declares in its engines field.
+	NodeVersion = "22.22.2"
+
+	// NodeMajor is the node container image tag the generated Dockerfile
+	// builds the frontend with.
+	NodeMajor = "22"
+
+	// PnpmVersion is the pnpm version the generated package.json pins
+	// through its packageManager field, so Corepack activates exactly this
+	// one per project.
+	PnpmVersion = "10.33.0"
+)
+
+// Dependency is one pinned frontend package.
+type Dependency struct {
+	// Name is the npm package name.
+	Name string
+	// Version is an exact version, never a range: a generated project is
+	// reproducible from the moment it is created, before a lockfile exists.
+	Version string
+}
+
+// frontendDependencies is the generated package.json's devDependencies, in
+// the order they are written. The order is fixed here rather than derived
+// from a map, because map iteration order is exactly the kind of thing that
+// makes generated output differ between two runs.
+var frontendDependencies = []Dependency{
+	{Name: "@sveltejs/adapter-static", Version: "3.0.10"},
+	{Name: "@sveltejs/kit", Version: "2.70.3"},
+	{Name: "@sveltejs/vite-plugin-svelte", Version: "7.3.0"},
+	{Name: "@tailwindcss/vite", Version: "4.3.3"},
+	{Name: "svelte", Version: "5.56.10"},
+	{Name: "svelte-check", Version: "4.7.6"},
+	{Name: "tailwindcss", Version: "4.3.3"},
+	{Name: "typescript", Version: "6.0.3"},
+	{Name: "vite", Version: "8.2.2"},
+}
+
+// FrontendDependencies returns the pinned frontend packages, in the order
+// they are written into the generated package.json. The returned slice is a
+// copy; callers may modify it.
+func FrontendDependencies() []Dependency {
+	out := make([]Dependency, len(frontendDependencies))
+	copy(out, frontendDependencies)
+	return out
+}

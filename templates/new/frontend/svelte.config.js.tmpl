@@ -1,0 +1,38 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import adapter from '@sveltejs/adapter-static';
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
+
+/**
+ * `pnpm build` writes OUTSIDE this directory, into the Go package that
+ * embeds it. That is deliberate: `go:embed` cannot reach outside the
+ * directory of the package that declares it, and this project keeps
+ * `frontend/` free of Go files and `internal/platform/webui/` free of
+ * frontend sources. See ../README.md and internal/platform/webui/webui.go.
+ *
+ * Two settings are deliberately left at their defaults and must stay there:
+ *
+ *   - `kit.csp` is unset. For prerendered output SvelteKit would emit its
+ *     policy as a <meta http-equiv> tag, where `frame-ancestors` and
+ *     `report-uri` are ignored, and two policies would then apply as their
+ *     intersection. The Go response header is the single authoritative
+ *     Content Security Policy.
+ *   - `kit.inlineStyleThreshold` is 0. Raising it inlines stylesheets into
+ *     the page, which the strict `style-src 'self'` policy blocks.
+ *
+ * @type {import('@sveltejs/kit').Config}
+ */
+const config = {
+	preprocess: vitePreprocess(),
+	kit: {
+		adapter: adapter({
+			pages: '../internal/platform/webui/embedded/client',
+			assets: '../internal/platform/webui/embedded/client',
+			fallback: 'index.html',
+			precompress: false,
+			strict: true
+		})
+	}
+};
+
+export default config;

@@ -1,0 +1,38 @@
+# Generated once by nise; owned by this application. Nise will not overwrite it.
+
+# Go targets are named explicitly rather than as ./... : frontend/ sits
+# inside this Go module, so ./... and `gofmt -l .` would both walk
+# frontend/node_modules/, and an npm package that happens to ship a .go file
+# would show up as a package of this application.
+GO_PACKAGES := ./cmd/... ./internal/...
+GO_FMT_DIRS := cmd internal
+BINARY := bin/{{.AppName}}
+
+.PHONY: help build run test fmt lint web-install web-build all
+
+help: ## List the available targets.
+	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*?## ' $(MAKEFILE_LIST) \
+		| awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
+
+all: fmt lint test build ## Format, lint, test, and build.
+
+build: ## Build the application binary into bin/.
+	go build -o $(BINARY) ./cmd/{{.AppName}}
+
+run: ## Run the application from source in the default process mode.
+	go run ./cmd/{{.AppName}}
+
+test: ## Run the Go test suite with the race detector.
+	go test -race $(GO_PACKAGES)
+
+fmt: ## Format Go source in place.
+	gofmt -s -w $(GO_FMT_DIRS)
+
+lint: ## Vet the Go packages. Add golangci-lint here if you adopt it.
+	go vet $(GO_PACKAGES)
+
+web-install: ## Install the frontend's dependencies.
+	pnpm --dir frontend install
+
+web-build: ## Build the frontend into internal/platform/webui/embedded/client/.
+	pnpm --dir frontend build
