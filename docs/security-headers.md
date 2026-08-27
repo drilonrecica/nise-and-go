@@ -119,9 +119,28 @@ Three requirements on the generated SvelteKit project, all in `[app]`-owned file
 
 **Write no literal `style` attribute** in `app.html` or in a component. Use a class or the `style:` directive; `style:` compiles to CSSOM property writes, which CSP does not govern. Svelte 5 transitions are safe — they animate through the Web Animations API, which CSP does not govern either. (The SvelteKit configuration docs still say transitions require inline styles. That describes Svelte 4 and is stale.)
 
+**Prefer a stylesheet rule to Svelte's component-level custom-property syntax.** Writing `<Component --token="value" />` makes Svelte wrap the component in a `<svelte-css-wrapper>` element carrying `style="display: contents; --token: value"`. That is an inline style attribute, so it is reported under a policy without `style-src-attr 'unsafe-inline'`. This matters because CSS custom properties are the theming primitive for generated applications, so it is exactly the syntax an author reaches for.
+
+Measured on the probe build: **the theming still works** — the token resolves and the wrapper still computes to `display: contents` — because Svelte applies both through CSSOM after creating the element, and CSP does not govern CSSOM writes. What it costs is **two `style-src-attr` violation reports per component instance**, scaling linearly: a page with three such components reported six, plus the announcer's two.
+
+So this is a report-volume problem, not a broken-theming problem. Do **not** reach for `AllowInlineStyleAttributes` to silence it — that permanently weakens the policy of every generated application in order to quiet reports about something that is working. Set the custom property from a stylesheet rule or a class instead:
+
+```css
+/* app.css — a token scoped by class, no inline style attribute */
+.theme-brand { --accent: oklch(55% 0.2 264); }
+```
+
+```svelte
+<Component class="theme-brand" />
+```
+
+Measured on Svelte 5.56.10, and **not** confirmed against the M6 shell, which may use the wrapper syntax in components Nise generates. It is part of what the M6 test below has to settle.
+
 ## The one residual
 
 SvelteKit's client runtime creates its own accessibility announcer, `<div id="svelte-announcer">`, with a hard-coded inline `style` attribute holding the standard visually-hidden declarations. It is framework code; an application cannot remove it, and the strict policy blocks the attribute. That produces two `style-src-attr` violation reports per page load.
+
+This is the only residual with a *functional* consequence, and only if it is left unhandled. The `<svelte-css-wrapper>` reports described above are noise rather than breakage, and any literal `style` attribute an application writes itself is avoidable.
 
 Nothing is functionally or visually wrong, provided the generated `frontend/src/app.css` restores the geometry from the external stylesheet — which `style-src 'self'` allows:
 
@@ -244,8 +263,13 @@ The evidence in [ADR 0013](adr/0013-security-headers-and-csp.md) comes from a re
 
 The test that closes it, to be added to the generated application's end-to-end suite when the shell exists:
 
-> Serve the built shell from the application binary with the production document policy enforced. In the browser, register a `securitypolicyviolation` listener before the first navigation. Sign in and exercise the shell: sidebar collapse, the mobile drawer, a dialog, a dropdown menu, a tooltip, a toast, a data table's sort and pagination, the theme toggle, and the language switch. Then assert that **no recorded violation names a `violatedDirective` other than `style-src-attr`**, and that **every `style-src-attr` violation has a `sourceFile` inside SvelteKit's own runtime and corresponds to `#svelte-announcer`**.
+> Serve the built shell from the application binary with the production document policy **enforced** (not report-only). In the browser, register a `securitypolicyviolation` listener **before the first navigation**. Sign in and exercise the shell: sidebar collapse, the mobile drawer, a dialog, a dropdown menu, a tooltip, a toast, a data table's sort and pagination, the theme toggle, and the language switch. Then assert:
+>
+> 1. **No recorded violation names a `violatedDirective` other than `style-src-attr`.** Any `script-src`, `style-src`, `style-src-elem`, `connect-src`, `img-src`, or `font-src` violation is a failure.
+> 2. **Every `style-src-attr` violation is attributable to framework-generated markup** — SvelteKit's `#svelte-announcer`, or a `<svelte-css-wrapper>` from the component custom-property syntax — and none to a literal `style` attribute in a file Nise generated.
+> 3. **The theme actually applies**, asserted on computed style rather than on the absence of violations: read a token-driven color off a rendered component and require the token's value, not the `var()` fallback. This is the assertion that would catch a future Svelte version applying the wrapper styles through the parsed attribute instead of through CSSOM, which would turn today's harmless report into silently broken theming.
+> 4. **Record the violation count.** It should be a small constant plus two per `<svelte-css-wrapper>` instance. A count that grows with interaction means something re-renders an inline style attribute on every update, which is a report-volume problem worth fixing at the source.
 
-A failing assertion means one of two things, and the test should say which: a component library needs inline style attributes, in which case `AllowInlineStyleAttributes` becomes a documented default with a recorded waiver; or something reintroduced inline script or `eval`, which is a defect to fix rather than a policy to relax.
+A failing assertion means one of three things, and the test should say which: a component library needs inline style attributes, in which case `AllowInlineStyleAttributes` becomes a documented default with a recorded waiver; the theming assertion failed, which is a Svelte behavior change and a defect to fix in the components rather than a policy to relax; or something reintroduced inline script or `eval`, which is a defect to fix.
 
 A cheap static guard is worth adding alongside it: fail generation, or `nise check`, if a generated `.svelte` file or `app.html` contains a literal `style="` attribute.
