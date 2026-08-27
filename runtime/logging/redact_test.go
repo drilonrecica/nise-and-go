@@ -208,6 +208,43 @@ func TestRedactingHandler_AcceptedFalsePositivesStillRedact(t *testing.T) {
 	}
 }
 
+// TestRedactingHandler_DocumentedRenameClaims pins every rename claim
+// docs/observability.md makes about escaping a deny fragment, in both
+// directions: a rename the doc says still redacts must still redact, and a
+// rename the doc recommends as safe must not redact. This exists because a
+// prior version of the doc recommended "num_cookies_sent" and
+// "auth_token_kind" as safe renames without verifying them — both still
+// redact, since "cookie" is a substring of "cookies" and "token" is a
+// substring of "auth_token_kind" — so any future doc edit that adds a rename
+// claim must add its assertion here rather than asserting it in prose alone.
+func TestRedactingHandler_DocumentedRenameClaims(t *testing.T) {
+	tests := []struct {
+		name       string
+		key        string
+		wantRedact bool
+	}{
+		{"num_cookies_sent still redacts (cookie is a substring of cookies)", "num_cookies_sent", true},
+		{"auth_token_kind still redacts (token is a substring of it)", "auth_token_kind", true},
+		{"auth_scheme is a genuinely safe rename for token_type", "auth_scheme", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capture := newCaptureHandler()
+			h := newRedactingHandler(capture, RedactOptions{})
+			logger := slog.New(h)
+			logger.Info("event", tt.key, "42")
+
+			got := capture.got[tt.key]
+			if tt.wantRedact && got != RedactPlaceholder {
+				t.Errorf("got %s=%q, want %q (doc claims this key still redacts)", tt.key, got, RedactPlaceholder)
+			}
+			if !tt.wantRedact && got != "42" {
+				t.Errorf("got %s=%q, want unredacted %q (doc recommends this as a safe rename)", tt.key, got, "42")
+			}
+		})
+	}
+}
+
 func TestRedactingHandler_CustomPlaceholder(t *testing.T) {
 	capture := newCaptureHandler()
 	h := newRedactingHandler(capture, RedactOptions{Placeholder: "***"})
