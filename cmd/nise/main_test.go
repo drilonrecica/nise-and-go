@@ -65,14 +65,18 @@ func TestRunUnknownCommand(t *testing.T) {
 func TestRunNoArguments(t *testing.T) {
 	t.Parallel()
 
+	// A bare "nise" is treated as a help request, not a usage error: it
+	// prints the same root help as "nise help" and exits 0. See
+	// internal/cli's dispatch tests for the full help-rendering contract;
+	// this test only pins main's wiring of that behavior.
 	code, stdout, stderr := runCLI(t)
-	if code == 0 {
-		t.Error("run(no args) exit code = 0, want non-zero")
+	if code != 0 {
+		t.Errorf("run(no args) exit code = %d, want 0", code)
 	}
-	if stdout != "" {
-		t.Errorf("run(no args) stdout = %q, want empty", stdout)
+	if !strings.Contains(stdout, "Usage:") {
+		t.Errorf("run(no args) stdout = %q, want it to contain usage help", stdout)
 	}
-	if stderr == "" {
-		t.Error("run(no args) stderr is empty, want an error message")
+	if stderr != "" {
+		t.Errorf("run(no args) stderr = %q, want empty", stderr)
 	}
 }
