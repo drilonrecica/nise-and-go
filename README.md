@@ -46,7 +46,8 @@ Generation is deterministic. Generated business features and frontend components
 - Opaque server-side sessions and granular authorization.
 - PostgreSQL migrations, typed SQL, and real integration tests.
 - PostgreSQL-backed background jobs.
-- Email, file-storage, audit, and notification foundations.
+- Audit-log, background-job, and email foundations in every application.
+- Optional compile-time modules: organizations, TOTP, in-app notifications, and file uploads.
 - A complete authenticated Svelte application shell.
 - Security, quality, performance, release, backup, and deployment conventions.
 
@@ -72,6 +73,7 @@ Generation is deterministic. Generated business features and frontend components
 - [CLI and distribution](docs/cli-and-distribution.md)
 - [Deployment](docs/deployment.md)
 - [Versioning and compatibility](docs/versioning.md)
+- [Public roadmap](docs/roadmap.md)
 - [Architecture decisions](docs/adr/README.md)
 
 ## Roadmap

@@ -1,5 +1,6 @@
-# Private planning and agent context. Never commit this directory.
+# Private planning and agent context. Never commit these.
 privateDocs/
+CLAUDE.md
 
 # Local environment and secrets
 .env

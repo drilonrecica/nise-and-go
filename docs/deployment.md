@@ -11,6 +11,10 @@ Applications produce:
 
 OCI deployment is the documented default. Coolify is the first blessed recipe, with portable Docker Compose examples. Kubernetes is outside V1 scope.
 
+## Reverse proxy
+
+The application expects TLS to terminate at a reverse proxy such as the one Coolify provides. Client-address and protocol headers are honored only from explicitly configured trusted proxies. Browser sessions use `__Host-` cookies, so the browser-facing edge must serve HTTPS.
+
 ## Process modes
 
 Small applications run `all` mode. Larger deployments may run the same image separately as `web` and `worker` processes.
