@@ -19,6 +19,22 @@ Build from the repository root, not from this directory: the Dockerfile
 copies both `frontend/` and the Go tree, and the frontend build writes into
 `internal/platform/webui/embedded/client/`, which the Go build then embeds.
 
+The frontend stage runs `pnpm install --frozen-lockfile`, so
+`frontend/pnpm-lock.yaml` must be committed first. Run
+`pnpm --dir frontend install` once and commit the lockfile it writes; a
+reproducible image needs a resolved dependency graph, and the alternative —
+resolving afresh on every build — would make two builds of the same commit
+differ.
+
+## Health
+
+The runtime image is distroless and carries no shell, so nothing inside it
+can probe itself. Point your orchestrator at the three endpoints instead:
+`/healthz/startup`, `/healthz/live`, and `/healthz/ready`. Shutdown fails
+readiness first and then waits a drain period, so give the container a
+termination grace period longer than that drain (the default is 5 seconds of
+drain plus up to 30 seconds for in-flight requests).
+
 ## Configuration
 
 The image sets `APP_ENV=production`, which turns on the fail-closed startup
