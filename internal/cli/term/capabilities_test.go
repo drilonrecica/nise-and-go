@@ -102,14 +102,14 @@ func TestDetect(t *testing.T) {
 			want: Capabilities{TermDumb: true},
 		},
 		{
-			name: "CLICOLOR=0 is not CLIColor",
+			name: "CLICOLOR=0 sets CLIColorDisabled, not CLIColorEnabled",
 			env:  map[string]string{"CLICOLOR": "0"},
-			want: Capabilities{},
+			want: Capabilities{CLIColorDisabled: true},
 		},
 		{
-			name: "CLICOLOR=1 sets CLIColor",
+			name: "CLICOLOR=1 sets CLIColorEnabled",
 			env:  map[string]string{"CLICOLOR": "1"},
-			want: Capabilities{CLIColor: true},
+			want: Capabilities{CLIColorEnabled: true},
 		},
 		{
 			name: "CLICOLOR_FORCE=0 does not force",
@@ -160,8 +160,16 @@ func TestColorEnabledPrecedence(t *testing.T) {
 		{"NO_COLOR beats a terminal", Capabilities{StdoutIsTerminal: true, NoColor: true}, false},
 		{"TERM=dumb beats a terminal", Capabilities{StdoutIsTerminal: true, TermDumb: true}, false},
 		{"not a terminal, no overrides", Capabilities{StdoutIsTerminal: false}, false},
-		{"CLICOLOR set on a terminal", Capabilities{StdoutIsTerminal: true, CLIColor: true}, true},
+		{"CLICOLOR set on a terminal", Capabilities{StdoutIsTerminal: true, CLIColorEnabled: true}, true},
 		{"plain terminal defaults to color", Capabilities{StdoutIsTerminal: true}, true},
+		// Regression: CLICOLOR=0 must disable color even on an
+		// interactive terminal. Verified live before this fix: a real
+		// TTY with CLICOLOR=0 still returned ColorEnabled() == true,
+		// because Capabilities had no way to distinguish "CLICOLOR
+		// unset" from "CLICOLOR=0" — both produced CLIColor: false and
+		// fell through to the same "otherwise → true" default.
+		{"CLICOLOR=0 disables color even on a terminal", Capabilities{StdoutIsTerminal: true, CLIColorDisabled: true}, false},
+		{"CLICOLOR=0 off a terminal is still false (already false, but must not become force-true)", Capabilities{StdoutIsTerminal: false, CLIColorDisabled: true}, false},
 	}
 
 	for _, tt := range tests {
