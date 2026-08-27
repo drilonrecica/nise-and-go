@@ -332,3 +332,158 @@ func TestExecuteGlobalFlagsWorkAfterCommandName(t *testing.T) {
 		t.Fatalf("stdout did not parse as JSON: %v (%q)", err, stdout)
 	}
 }
+
+// TestExecuteDoubleDashStopsGlobalFlagExtraction reproduces the reported
+// bug: "nise <cmd> -- --verbose arg" must hand the command everything
+// after "--" verbatim, not silently swallow "--verbose" as nise's own
+// global flag and switch on verbose mode. This matters for any command
+// that forwards trailing arguments to a subprocess (the planned dev and
+// test commands both need it).
+func TestExecuteDoubleDashStopsGlobalFlagExtraction(t *testing.T) {
+	t.Parallel()
+	code, stdout, stderr := runFixture([]string{"echoargs", "--", "--verbose", "extra"})
+	if code != int(clierr.ExitOK) {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "--verbose|extra") {
+		t.Errorf("stdout = %q, want it to contain the literal, unstripped %q", stdout, "--verbose|extra")
+	}
+}
+
+// TestExecuteDoubleDashBeforeCommandFlags proves "--" also protects a
+// leaf's OWN flags from being mistaken for anything past that point —
+// only global extraction is exercised above; this confirms the leaf's own
+// flag.FlagSet.Parse (which has its own native "--" handling) sees nothing
+// surprising either.
+func TestExecuteDoubleDashBeforeCommandFlags(t *testing.T) {
+	t.Parallel()
+	code, stdout, _ := runFixture([]string{"greet", "--", "--name", "world"})
+	if code != int(clierr.ExitOK) {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	// Everything after "--" is positional for greet's own flag set (Go's
+	// flag package stops parsing flags at "--"), so --name is never
+	// consumed as greet's own flag either — it shows up as a plain
+	// positional argument, and the greeting is empty.
+	if !strings.Contains(stdout, "hello ") {
+		t.Errorf("stdout = %q", stdout)
+	}
+}
+
+// TestExecuteValueFlagArgumentIsNotStolenByGlobalExtraction reproduces the
+// reported "argument stealing" bug: a value that happens to look like a
+// reserved global flag spelling, when it is genuinely the value of one of
+// the command's own value-consuming flags, must reach that flag intact —
+// not be silently vacuumed up as the global flag of the same name (which
+// previously left the value-consuming flag with no argument at all and
+// failed the whole command with a confusing flag-parsing error).
+func TestExecuteValueFlagArgumentIsNotStolenByGlobalExtraction(t *testing.T) {
+	t.Parallel()
+	code, stdout, stderr := runFixture([]string{"greet", "--name", "--json"})
+	if code != int(clierr.ExitOK) {
+		t.Fatalf("exit code = %d, stderr = %q, want 0 (the literal string \"--json\" as --name's value, not global JSON mode)", code, stderr)
+	}
+	if stdout != "hello --json\n" {
+		t.Errorf("stdout = %q, want %q — --json must be preserved as --name's literal value", stdout, "hello --json\n")
+	}
+}
+
+// TestExecuteValueFlagStolenValueDoesNotFlipMode is the stronger form of
+// the test above: it also proves the output MODE itself was not
+// incorrectly switched to JSON by the same stray "--json" token, since
+// extractGlobalFlagsAware recomputes the writer from the aware pass, not
+// the initial blind one.
+func TestExecuteValueFlagStolenValueDoesNotFlipMode(t *testing.T) {
+	t.Parallel()
+	code, stdout, _ := runFixture([]string{"greet", "--name", "--json"})
+	if code != int(clierr.ExitOK) {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if strings.HasPrefix(strings.TrimSpace(stdout), "{") {
+		t.Errorf("stdout = %q, looks like JSON — the stolen --json token flipped output mode", stdout)
+	}
+}
+
+// TestExecuteReservedFlagCollisionIsALoudFailure reproduces the reported
+// silent-shadowing bug: a command that defines its own "--quiet" flag
+// must never be allowed to run in a way where the command's own variable
+// silently stays false while the *global* --quiet activates instead. It
+// must fail loudly, every time, regardless of whether --quiet was even
+// passed on this particular invocation.
+func TestExecuteReservedFlagCollisionIsALoudFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"invoked without the colliding flag", []string{"shadow"}},
+		{"invoked with the colliding flag", []string{"shadow", "--quiet"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// A fresh root per subtest: shadowCommand's NewFlagSet closes
+			// over one "var quiet bool", and two parallel subtests
+			// dispatching against the SAME *Command would race on it —
+			// exactly the kind of shared-fixture bug this file must not
+			// have, since production Commands() is always rebuilt fresh
+			// per Execute() call for the same reason.
+			root := []*Command{shadowCommand()}
+			var out, errOut bytes.Buffer
+			code := execute(tt.args, IO{Stdout: &out, Stderr: &errOut, Getenv: emptyGetenv}, root)
+			if code == int(clierr.ExitOK) {
+				t.Fatalf("exit code = 0, want a loud failure (got stdout=%q)", out.String())
+			}
+			if out.String() != "" {
+				t.Errorf("stdout = %q, want empty — the command must never actually run", out.String())
+			}
+			if !strings.Contains(errOut.String(), "quiet") {
+				t.Errorf("stderr = %q, want it to name the colliding flag", errOut.String())
+			}
+		})
+	}
+}
+
+// TestExecuteReservedFlagCollisionViaHelp proves the same loud failure
+// happens for "nise help shadow" and "nise shadow --help" — a command
+// this broken should not even render help successfully, since its own
+// flag listing is part of what's broken.
+func TestExecuteReservedFlagCollisionViaHelp(t *testing.T) {
+	t.Parallel()
+	root := []*Command{shadowCommand()}
+
+	for _, args := range [][]string{{"help", "shadow"}, {"shadow", "--help"}} {
+		var out, errOut bytes.Buffer
+		code := execute(args, IO{Stdout: &out, Stderr: &errOut, Getenv: emptyGetenv}, root)
+		if code == int(clierr.ExitOK) {
+			t.Errorf("args=%v: exit code = 0, want a loud failure", args)
+		}
+		if !strings.Contains(errOut.String(), "quiet") {
+			t.Errorf("args=%v: stderr = %q, want it to name the colliding flag", args, errOut.String())
+		}
+	}
+}
+
+// TestExecuteDoubleDashBeforeAnyLeafIsKnown isolates extractGlobalFlags's
+// own "--" handling (as opposed to extractGlobalFlagsAware's, which also
+// stops at "--" but only runs once a leaf is already resolved). The
+// --quiet/--verbose conflict check runs on the very first, blind
+// extraction pass, before any command is resolved — so if that pass
+// didn't stop at "--", "nise ping --quiet -- --verbose" would
+// (wrongly) see both flags set and reject the combination before ever
+// reaching ping, even though the user's actual --verbose here is a
+// literal argument after "--", not nise's own global flag.
+func TestExecuteDoubleDashBeforeAnyLeafIsKnown(t *testing.T) {
+	t.Parallel()
+	code, stdout, stderr := runFixture([]string{"ping", "--quiet", "--", "--verbose"})
+	if code != int(clierr.ExitOK) {
+		t.Fatalf("exit code = %d, stderr = %q, want 0 (no false --quiet/--verbose conflict)", code, stderr)
+	}
+	if stdout != "pong\n" {
+		t.Errorf("stdout = %q, want %q (--quiet suppresses only progress output, never Result)", stdout, "pong\n")
+	}
+}

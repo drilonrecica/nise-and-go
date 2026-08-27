@@ -25,12 +25,58 @@ command name:
 `--quiet` and `--verbose` together is a usage error (exit 2), not a silent
 precedence — a command needs to know which one the user actually meant, and
 guessing which one wins would surprise someone eventually. A command's own
-flags must not reuse these five names; global flags are stripped from the
-argument list before a command ever sees its own flags.
+flags must not reuse these five names (plus `-h` and `version`) — this is
+enforced, not just documented; see
+[Reserved flag names are enforced, not just documented](#reserved-flag-names-are-enforced-not-just-documented).
 
 `--version` is also recognized anywhere in the argument list, as a legacy
 alias for the `version` command, preserved from the CLI's original
 single-command entry point. Prefer `nise version`.
+
+### `--` stops global-flag recognition
+
+A literal `--` token, wherever it appears, stops nise from recognizing any
+further global flag in the argument list — `--` itself and everything
+after it are passed through completely unstripped to the resolved
+command's own flag parsing and, from there, to `Env.Args`. This is what
+lets a command such as the planned `dev` or `test` forward its own
+trailing arguments to a subprocess without nise's own `--quiet`/`--json`/
+etc. spellings being silently swallowed out of them:
+
+```
+$ nise test -- --verbose ./...
+```
+
+hands the test runner `--verbose ./...` verbatim; it does not turn on
+nise's own `--verbose` mode. This matches how Go's own `flag` package
+treats `--` (it also stops flag parsing there), so a `--` surviving
+nise's own extraction lands exactly where a command's value flag expects
+to see it.
+
+### Reserved flag names are enforced, not just documented
+
+A command's own flag definitions must not use any of the seven reserved
+names (`json`, `quiet`, `verbose`, `no-color`, `help`, `h`, `version`):
+`extractGlobalFlags` strips a reserved spelling out of the argument list
+before any command's own `flag.FlagSet` ever sees it, so a command that
+also defined, say, `--quiet` could never actually receive it — the global
+flag would silently win instead, leaving the command's own variable at
+its zero value with no error anywhere.
+
+This is checked at dispatch time (`internal/cli.reservedFlagCollisions`,
+run against every resolved command's `flag.FlagSet` before it is parsed
+or run) and by a test that walks the entire production command registry
+(`internal/cli.TestCommandsHaveNoReservedFlagCollisions`). A command
+shaped like this fails loudly — `ExitError`, naming the colliding flag —
+on every invocation, whether or not that particular invocation happened
+to pass the colliding flag.
+
+A related, subtler case is also handled: a value that merely *looks like*
+a reserved spelling, but is genuinely the value of one of the command's
+own non-boolean flags (for example `nise gen --name --json`, where
+`--json` is `--name`'s value, not a request for JSON output), is
+preserved as that flag's literal value rather than being misread as the
+global flag of the same name.
 
 ## Precedence
 
