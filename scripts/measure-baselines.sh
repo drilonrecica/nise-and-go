@@ -169,24 +169,103 @@ if go build -o "$gen_app_bin" ./cmd/testapp 2>&1; then
         gen_app_size=$(stat -c%s "$gen_app_bin" 2>/dev/null || wc -c < "$gen_app_bin")
         echo "Generated app binary size: $gen_app_size bytes"
 
-        # Measure startup time (help invocation, since we can't start full server without DB)
+        # Measure cold startup to /healthz/ready readiness probe
         echo ""
-        echo "=== Measuring generated app startup ==="
+        echo "=== Measuring generated app cold startup (to readiness probe) ==="
         startup_times=()
         for i in $(seq 1 "$samples"); do
             start_ns=$(date +%s%N)
-            timeout 1 "$gen_app_bin" --help > /dev/null 2>&1 || true
+
+            # Start the server in the background (uses default port 8080)
+            PORT=8080 BIND_ADDR=127.0.0.1 "$gen_app_bin" -mode web > /tmp/app_startup_$i.log 2>&1 &
+            server_pid=$!
+
+            # Poll /healthz/ready until it returns 200, with a timeout
+            ready=0
+            for attempt in $(seq 1 100); do
+                if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/healthz/ready 2>/dev/null | grep -q "^200\$"; then
+                    ready=1
+                    break
+                fi
+                sleep 0.01
+            done
+
             end_ns=$(date +%s%N)
-            startup_ms=$(awk "BEGIN {printf \"%.3f\", ($end_ns - $start_ns) / 1000000}")
-            startup_times+=("$startup_ms")
-            printf "  Sample $i: %.3f ms\n" "$startup_ms"
+
+            # Kill the server
+            kill $server_pid 2>/dev/null || true
+            wait $server_pid 2>/dev/null || true
+
+            if [[ $ready -eq 1 ]]; then
+                startup_ms=$(awk "BEGIN {printf \"%.3f\", ($end_ns - $start_ns) / 1000000}")
+                startup_times+=("$startup_ms")
+                printf "  Sample $i: %.3f ms\n" "$startup_ms"
+            else
+                printf "  Sample $i: FAILED (readiness probe did not respond)\n"
+            fi
         done
 
-        startup_median=$(printf '%s\n' "${startup_times[@]}" | sort -n | awk '{a[NR]=$1} END {if (NR % 2 == 1) print a[(NR+1)/2]; else print (a[NR/2] + a[NR/2+1])/2}')
-        echo "Median: $startup_median ms (NOTE: --help invocation only, not full server startup)"
+        if [[ ${#startup_times[@]} -gt 0 ]]; then
+            startup_median=$(printf '%s\n' "${startup_times[@]}" | sort -n | awk '{a[NR]=$1} END {if (NR % 2 == 1) print a[(NR+1)/2]; else print (a[NR/2] + a[NR/2+1])/2}')
+            echo "Median: $startup_median ms"
+        else
+            startup_median=0
+            echo "Median: FAILED (no successful samples)"
+        fi
+
+        # Measure idle RSS after startup
+        echo ""
+        echo "=== Measuring generated app idle RSS ==="
+        rss_values=()
+        for i in $(seq 1 "$samples"); do
+            # Start the server in the background (uses default port 8080)
+            PORT=8080 BIND_ADDR=127.0.0.1 "$gen_app_bin" -mode web > /tmp/app_rss_$i.log 2>&1 &
+            server_pid=$!
+
+            # Wait for readiness
+            ready=0
+            for attempt in $(seq 1 100); do
+                if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/healthz/ready 2>/dev/null | grep -q "^200\$"; then
+                    ready=1
+                    break
+                fi
+                sleep 0.01
+            done
+
+            if [[ $ready -eq 1 ]]; then
+                # Let it settle for 100ms
+                sleep 0.1
+
+                # Read RSS from /proc/pid/status (VmRSS is in KiB)
+                rss_kb=$(awk '/^VmRSS:/ {print $2}' /proc/$server_pid/status 2>/dev/null || echo "0")
+                if [[ "$rss_kb" != "0" ]]; then
+                    rss_mb=$(awk "BEGIN {printf \"%.1f\", $rss_kb / 1024}")
+                    rss_values+=("$rss_mb")
+                    printf "  Sample $i: %.1f MB\n" "$rss_mb"
+                else
+                    printf "  Sample $i: FAILED (could not read RSS)\n"
+                fi
+            else
+                printf "  Sample $i: FAILED (readiness probe did not respond)\n"
+            fi
+
+            # Kill the server
+            kill $server_pid 2>/dev/null || true
+            wait $server_pid 2>/dev/null || true
+        done
+
+        if [[ ${#rss_values[@]} -gt 0 ]]; then
+            rss_median=$(printf '%s\n' "${rss_values[@]}" | sort -n | awk '{a[NR]=$1} END {if (NR % 2 == 1) print a[(NR+1)/2]; else print (a[NR/2] + a[NR/2+1])/2}')
+            echo "Median: $rss_median MB"
+        else
+            rss_median=0
+            echo "Median: FAILED (no successful samples)"
+        fi
     fi
 else
-    echo "WARNING: Generated app build failed; skipping startup measurements"
+    echo "WARNING: Generated app build failed; skipping startup and RSS measurements"
+    startup_median=0
+    rss_median=0
 fi
 echo ""
 
@@ -204,7 +283,8 @@ nise version latency (warm median)        $version_latency_median     ms
 nise new duration (median)                $new_median         ms
   (min/max)                               $new_min/$new_max         ms
 Generated app binary size                 $gen_app_size       bytes
-Generated app startup (--help, median)    $startup_median     ms
+Generated app cold startup (median)       $startup_median     ms
+Generated app idle RSS (median)           $rss_median         MB
 EOF
 
 # Ensure output directory exists
@@ -233,7 +313,8 @@ cat > "$json_output" << EOF
   },
   "generated_app": {
     "binary_size_bytes": $gen_app_size,
-    "startup_ms_median": $startup_median
+    "startup_ms_median": $startup_median,
+    "rss_mb_median": $rss_median
   }
 }
 EOF
