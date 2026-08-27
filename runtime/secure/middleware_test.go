@@ -432,3 +432,64 @@ func TestReportOnlyIsARecordedWaiver(t *testing.T) {
 		t.Errorf("waiver detail = %q, want it to say the policy is not enforced", waivers[0].Detail)
 	}
 }
+
+// TestMiddlewareRejectsAnUnconstructedPolicy covers the composite-literal
+// route into the same defect the nil check closes.
+//
+// Policy is exported with only unexported fields, which stops an application
+// from setting one but not from writing secure.Policy{}, nor from declaring
+// a struct field of type secure.Policy and passing its address. Such a value
+// is non-nil, so the nil check alone let it through: it produced an empty
+// Content-Security-Policy, no Strict-Transport-Security, and no
+// X-Frame-Options, while Waivers() returned an empty slice — so the
+// assertion this package documents as the proof that a policy is unweakened
+// passed on a policy that enforced nothing.
+func TestMiddlewareRejectsAnUnconstructedPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]func() *secure.Policy{
+		"nil pointer":        func() *secure.Policy { return nil },
+		"composite literal":  func() *secure.Policy { return &secure.Policy{} },
+		"zero struct field":  func() *secure.Policy { var p secure.Policy; return &p },
+		"copied zero policy": func() *secure.Policy { p := secure.Policy{}; q := p; return &q },
+	}
+	for name, makePolicy := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				if recover() == nil {
+					t.Error("Middleware accepted an unconstructed Policy; it would serve every response unprotected")
+				}
+			}()
+			secure.Middleware(makePolicy())
+		})
+	}
+}
+
+// TestConstructedPolicyIsAccepted is the companion to the test above: the
+// guard must not reject a policy a constructor really produced.
+func TestConstructedPolicyIsAccepted(t *testing.T) {
+	t.Parallel()
+
+	for _, deployment := range []secure.Deployment{secure.Development, secure.Production} {
+		for name, build := range map[string]func(secure.Deployment) (*secure.Policy, error){
+			"document": func(d secure.Deployment) (*secure.Policy, error) {
+				return secure.NewDocumentPolicy(d)
+			},
+			"api": func(d secure.Deployment) (*secure.Policy, error) {
+				return secure.NewAPIPolicy(d)
+			},
+		} {
+			t.Run(string(deployment)+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				p, err := build(deployment)
+				if err != nil {
+					t.Fatalf("building policy: %v", err)
+				}
+				if got := serve(t, p, nil).Get(secure.HeaderCSP); got == "" {
+					t.Error("a constructed policy produced no Content-Security-Policy")
+				}
+			})
+		}
+	}
+}
