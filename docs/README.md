@@ -12,6 +12,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Runtime packages](runtime-packages.md)
 - [Configuration](configuration.md)
 - [Observability](observability.md)
+- [Operations: runtime HTTP lifecycle](operations-runtime.md)
 - [Generated frontend](frontend.md)
 - [Security model](security.md)
 - [CLI and distribution](cli-and-distribution.md)
