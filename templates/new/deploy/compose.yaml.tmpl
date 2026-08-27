@@ -19,14 +19,12 @@ services:
       LOG_FORMAT: json
       LOG_LEVEL: info
       DEBUG: "false"
-    healthcheck:
-      # The image carries no shell and no curl, so the healthcheck runs the
-      # application binary itself. Replace this with your orchestrator's
-      # own HTTP probe against /healthz/ready where you have one.
-      test: ["CMD", "/{{.AppName}}", "-mode", "web", "-help"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
+
+# No healthcheck is declared. The runtime image is distroless: it carries no
+# shell and no curl, so a Compose healthcheck would have to run the
+# application binary against itself, which proves nothing an exited process
+# does not already prove. Probe /healthz/ready from outside instead — that is
+# the endpoint your load balancer and your orchestrator should both use.
 
 # PostgreSQL and the other supporting services are added here with the
 # database milestone. {{.AppName}} has no database dependency yet, so
