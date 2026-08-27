@@ -409,16 +409,46 @@ func AllowReferrerPolicy(reason string, p ReferrerPolicy) Option {
 	}
 }
 
-// AllowPermission grants a browser capability that the default
-// Permissions-Policy denies, or adds an origin to one it already grants.
+// AllowPermission sets the Permissions-Policy allowlist for one browser
+// capability.
 //
 // allowlist entries are Permissions-Policy allowlist items: self, src, or a
 // quoted origin such as `"https://example.com"`. An empty allowlist denies
-// the feature to everyone, which is what the defaults already do. The
-// wildcard * is refused: granting a capability to every possible embedder is
-// never what an application that also denies framing means to say.
+// the feature to everyone. The wildcard * is refused: granting a capability
+// to every possible embedder is never what an application that also denies
+// framing means to say.
+//
+// # It replaces, it does not extend
+//
+// The allowlist given here becomes the feature's whole allowlist. That is
+// deliberate. A Permissions-Policy allowlist is a complete statement of who
+// may use a capability, and an extending option could only ever widen one —
+// there would be no way to narrow a capability the defaults already grant,
+// so tightening fullscreen from (self) to () would be impossible to express.
+// Because the defaults are fully enumerated in this package's documentation,
+// a caller can always see what they are replacing.
+//
+// Calling it twice for the same feature therefore keeps the last call rather
+// than accumulating, which is worth knowing if options are assembled
+// conditionally.
+//
+// # A waiver is recorded only when the call actually grants something
+//
+// Not every call to this option weakens the policy: an empty allowlist on an
+// already-denied feature changes nothing, and tightening fullscreen from
+// (self) to () strengthens it. A [Waiver] is recorded only when the new
+// allowlist contains an entry the feature did not already allow. Recording
+// one for a call that grants nothing would dilute exactly the signal the
+// waiver list exists to carry — see [Option].
+//
+// The reason is required either way, because the call site should say why the
+// capability policy changed at all.
 func AllowPermission(reason string, feature string, allowlist ...string) Option {
 	return func(b *builder) {
+		if strings.TrimSpace(reason) == "" {
+			b.fail(fmt.Errorf("secure: AllowPermission requires a non-empty reason"))
+			return
+		}
 		if err := validPermissionFeature(feature); err != nil {
 			b.fail(err)
 			return
@@ -431,8 +461,27 @@ func AllowPermission(reason string, feature string, allowlist ...string) Option 
 			}
 			items = append(items, item)
 		}
+
+		// A feature absent from the map is unconstrained by this policy, so
+		// its already-allowed set is treated as empty. That errs toward
+		// recording a waiver for an unfamiliar feature name, which is the
+		// safe direction.
+		already := make(map[string]struct{}, len(b.permissions[feature]))
+		for _, item := range b.permissions[feature] {
+			already[item] = struct{}{}
+		}
+		grantsSomethingNew := false
+		for _, item := range items {
+			if _, known := already[item]; !known {
+				grantsSomethingNew = true
+				break
+			}
+		}
+
 		b.permissions[feature] = items
-		b.waive("permissions-policy", feature+"=("+strings.Join(items, " ")+")", reason)
+		if grantsSomethingNew {
+			b.waive("permissions-policy", feature+"=("+strings.Join(items, " ")+")", reason)
+		}
 	}
 }
 

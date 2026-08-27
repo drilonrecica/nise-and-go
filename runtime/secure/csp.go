@@ -1,6 +1,8 @@
 package secure
 
 import (
+	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"fmt"
 	"sort"
@@ -68,7 +70,25 @@ func validSource(source string) error {
 }
 
 // hashAlgorithms are the CSP hash algorithms this package accepts.
-var hashAlgorithms = []string{"sha256-", "sha384-", "sha512-"}
+// hashAlgorithms are the CSP hash algorithms this package accepts, with the
+// exact digest width each one produces. The width is validated, not just the
+// prefix and the base64 alphabet: 'sha256-AAAA' decodes cleanly as base64 but
+// is three bytes where SHA-256 produces thirty-two, and a browser answers a
+// hash that cannot match by silently blocking the script.
+//
+// That silence is the whole reason this is enforced here. The one place a
+// hash enters a generated application is the frontend handler computing the
+// SvelteKit bootstrap script's hash from the embedded artifact at startup,
+// and a mistake there must surface as a refused policy at startup rather
+// than as a blank page and a console violation in a browser somewhere.
+var hashAlgorithms = []struct {
+	prefix      string
+	digestBytes int
+}{
+	{prefix: "sha256-", digestBytes: sha256.Size},
+	{prefix: "sha384-", digestBytes: sha512.Size384},
+	{prefix: "sha512-", digestBytes: sha512.Size},
+}
 
 // normalizeHash validates a CSP hash source and returns it in canonical
 // quoted form, accepting it with or without the surrounding single quotes.
@@ -85,33 +105,51 @@ func normalizeHash(raw string) (string, error) {
 		return "", err
 	}
 	for _, algorithm := range hashAlgorithms {
-		if !strings.HasPrefix(h, algorithm) {
+		if !strings.HasPrefix(h, algorithm.prefix) {
 			continue
 		}
-		digest := strings.TrimPrefix(h, algorithm)
-		if digest == "" {
+		encoded := strings.TrimPrefix(h, algorithm.prefix)
+		if encoded == "" {
 			return "", fmt.Errorf("secure: CSP hash %q has no digest", raw)
 		}
-		// CSP's base64-value grammar accepts both the standard and the
-		// URL-safe alphabet, with or without padding.
-		if _, err := base64.StdEncoding.DecodeString(digest); err == nil {
-			return "'" + h + "'", nil
+		digest, err := decodeBase64Any(encoded)
+		if err != nil {
+			return "", fmt.Errorf("secure: CSP hash %q is not valid base64", raw)
 		}
-		if _, err := base64.RawStdEncoding.DecodeString(digest); err == nil {
-			return "'" + h + "'", nil
+		if len(digest) != algorithm.digestBytes {
+			return "", fmt.Errorf(
+				"secure: CSP hash %q decodes to %d bytes; %s produces %d",
+				raw, len(digest), strings.TrimSuffix(algorithm.prefix, "-"), algorithm.digestBytes,
+			)
 		}
-		if _, err := base64.URLEncoding.DecodeString(digest); err == nil {
-			return "'" + h + "'", nil
-		}
-		if _, err := base64.RawURLEncoding.DecodeString(digest); err == nil {
-			return "'" + h + "'", nil
-		}
-		return "", fmt.Errorf("secure: CSP hash %q is not valid base64", raw)
+		return "'" + h + "'", nil
+	}
+
+	prefixes := make([]string, 0, len(hashAlgorithms))
+	for _, algorithm := range hashAlgorithms {
+		prefixes = append(prefixes, algorithm.prefix)
 	}
 	return "", fmt.Errorf(
 		"secure: CSP hash %q must start with one of %s",
-		raw, strings.Join(hashAlgorithms, ", "),
+		raw, strings.Join(prefixes, ", "),
 	)
+}
+
+// decodeBase64Any decodes a CSP base64-value, whose grammar accepts both the
+// standard and the URL-safe alphabet, with or without padding.
+func decodeBase64Any(encoded string) ([]byte, error) {
+	encodings := []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	}
+	for _, encoding := range encodings {
+		if decoded, err := encoding.DecodeString(encoded); err == nil {
+			return decoded, nil
+		}
+	}
+	return nil, fmt.Errorf("secure: %q is not valid base64", encoded)
 }
 
 // validReportURI checks a CSP report-uri value.
