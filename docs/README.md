@@ -7,6 +7,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Project status](project-status.md)
 - [Philosophy](philosophy.md)
 - [Architecture](architecture.md)
+- [Repository layout](repository-layout.md)
 - [Generated frontend](frontend.md)
 - [Security model](security.md)
 - [CLI and distribution](cli-and-distribution.md)

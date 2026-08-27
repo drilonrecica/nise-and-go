@@ -31,8 +31,10 @@ Interactive terminals may use restrained ASCII branding, color, spinners, and sh
 GitHub Releases is the canonical artifact source. Planned supported installation paths are:
 
 1. Precompiled release archives.
-2. Versioned `go install`.
+2. Versioned `go install github.com/drilonrecica/nise-and-go/cmd/nise@vX.Y.Z`.
 3. An official Homebrew tap.
+
+The Go module path is `github.com/drilonrecica/nise-and-go` ([ADR 0007](adr/0007-module-path-and-owner.md)).
 
 Nise will not be published as an npm wrapper. V0.1 will not provide a `curl | sh` installer.
 

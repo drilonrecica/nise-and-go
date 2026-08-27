@@ -17,6 +17,7 @@ ADRs record consequential decisions, their context, and their tradeoffs. They pr
 - [0004: Build the framework before the first production application](0004-framework-first-freeze.md)
 - [0005: Embed the authenticated frontend as a static single-page application](0005-static-embedded-frontend.md)
 - [0006: Use opaque server-side sessions, not JWTs](0006-opaque-sessions-no-jwt.md)
+- [0007: Repository owner and Go module path](0007-module-path-and-owner.md)
 
 New records copy [template.md](template.md) and use the next four-digit number. Do not rewrite an accepted ADR to hide a reversal; add a new ADR that supersedes it.
 
