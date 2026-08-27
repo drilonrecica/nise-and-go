@@ -79,9 +79,14 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
 └── internal/
     ├── app/
     │   ├── app.go                     [app]   explicit constructor wiring; no container, no registry
-    │   └── modes.go                   [app]   all, web, and worker process modes
+    │   ├── modes.go                   [app]   all, web, and worker process modes
+    │   └── modules.gen.go             [nise]  wiring for the selected compile-time modules
     │
     ├── features/
+    │   ├── auth/                      [app]   core: sessions, login, enrollment, credentials
+    │   ├── authz/                     [app]   core: permissions, role bundles, default-deny policies
+    │   ├── audit/                     [app]   core: the persistent audit log and its query API
+    │   ├── <module>/                  [app]   one per selected module that has domain rules
     │   └── <feature>/
     │       ├── domain.go              [app]   domain types and rules
     │       ├── usecase.go             [app]   owns the transaction boundary
@@ -97,6 +102,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
         ├── httpapi/
         │   ├── router.go              [app]   middleware order and the /api/v1 mount
         │   └── openapigen/            [nise]  oapi-codegen strict chi server types and bindings
+        ├── jobs/                      [app]   core: the River runner, queues, and registration
         ├── mail/
         │   ├── mail.go                [app]
         │   └── templates/             [app]   embedded text/template and html/template messages
@@ -116,6 +122,40 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
 **A feature is a vertical slice.** `internal/features/invoice/` owns its handlers, use cases, SQL, domain rules, and tests. Its frontend half is `frontend/src/routes/(app)/invoices/` plus `frontend/src/lib/features/invoice/`.
 
 **Transactions.** The use case opens and commits. Handlers do transport work. The `store` package runs queries and never begins a business transaction on its own.
+
+## Core services and optional modules
+
+Every generated application contains the core services: sessions and authentication, authorization, the audit log, PostgreSQL-backed jobs, and mail. They are not a privileged layer. Each one lands in the tree by the same rule that places anything else:
+
+> A core service is a **feature** when it owns domain rules, its own tables, and its own endpoints. It is **platform** when it is a technical adapter with no domain rules of its own.
+
+| Core service | Home | Why |
+|---|---|---|
+| Sessions and authentication | `internal/features/auth/` | Owns credentials, sessions, and enrollment: tables, rules, endpoints |
+| Authorization | `internal/features/authz/` | Owns permissions and role bundles, and the default-deny policy evaluation |
+| Audit log | `internal/features/audit/` | Owns the audit tables and the query API over them |
+| Jobs | `internal/platform/jobs/` | The River runner, queues, and registration. A job's payload and rules belong to the feature that enqueues it |
+| Mail | `internal/platform/mail/` | The interface, the SMTP transport, and the templates. A message's content belongs to the feature that sends it |
+
+Nothing structurally separates a core feature from a generated one. `internal/features/auth/` has the same shape as `internal/features/invoice/`, is application-owned in the same way, and may be edited, rewritten, or deleted. The only difference is when it is written: `nise new` writes the core features, `nise generate` writes the rest. `nise check` does not require any feature directory to exist ([ADR 0009](adr/0009-generated-application-layout.md)).
+
+**Features depend on each other only through interfaces the consumer declares.** Authorization checks, audit records, and job enqueueing reach a feature that way — a small interface defined where it is used, satisfied by the core feature's use case. A feature never imports another feature's `store` package.
+
+### Optional modules
+
+The four compile-time modules — `organizations`, `totp`, `notifications`, `uploads` — are recorded in `nise.json` ([ADR 0010](adr/0010-project-recipe-format.md)) and selected at generation time. A selected module contributes:
+
+| Contribution | Path | Owner |
+|---|---|---|
+| Its runtime code, imported from Nise | `github.com/drilonrecica/nise-and-go/modules/<name>` | Nise |
+| Explicit constructor wiring | `internal/app/modules.gen.go` | `[nise]` |
+| Its transport and domain surface, where it has one | `internal/features/<name>/` | `[app]` |
+| Its tables | `db/migrations/` | `[app]` |
+| Its screens | `frontend/src/routes/(app)/<name>/` | `[app]` |
+
+An unselected module contributes nothing: no import, no file, no dead code behind a runtime flag. That is what compile-time selection means, and it is why the recipe records the selection rather than a configuration value.
+
+`internal/app/modules.gen.go` is the one regenerated file in `internal/app/`. It holds constructor calls and nothing else — no application logic, no business rules — so that changing the module selection can rewrite it without destroying anything the application wrote. There is no registry, no `init()` registration, and no reflection-driven discovery.
 
 ## Embedding
 
@@ -189,4 +229,6 @@ Slice 1 delivers a project that boots. `nise new` writes the root files, `api/`,
 
 The full authenticated application shell — sidebar, navigation, theme and language controls, authentication screens, tables, and the component set described in [Generated frontend](frontend.md) — arrives with milestone M6. The directories above are where it lands; nothing in this layout moves when it does.
 
-`internal/features/` is created holding only a `.gitkeep`, because version control cannot carry an empty directory. It is populated by `nise generate` from Slice 2 onward.
+The core services arrive with the slices that build them: `internal/features/{auth,authz,audit}/` in Slice 3 (M5) and `internal/platform/jobs/` and `internal/platform/mail/` in Slice 4 (M8). Until then `internal/features/` is created holding only a `.gitkeep`, because version control cannot carry an empty directory, and `internal/app/modules.gen.go` is written with an empty module selection.
+
+Custom features are populated by `nise generate` from Slice 2 onward.

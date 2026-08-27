@@ -24,7 +24,7 @@ Three trees hold artifacts a non-Go contributor edits, and they stay at the top 
 
 - `internal/app/` — explicit constructor wiring and process-mode selection.
 - `internal/features/<feature>/` — one vertical slice per feature, owning its handlers, use cases, SQL, domain rules, and tests.
-- `internal/platform/` — technical infrastructure the application owns: configuration, database, HTTP transport, mail, and the embedded frontend.
+- `internal/platform/` — technical infrastructure the application owns: configuration, database, HTTP transport, jobs, mail, and the embedded frontend.
 
 `internal/platform/` is for technical infrastructure only. A domain rule belongs in a feature. `internal/util`, `internal/common`, `internal/shared`, and `internal/pkg` are excluded by name.
 
@@ -52,6 +52,22 @@ Three details are load-bearing:
 - The `all:` prefix is mandatory. SvelteKit writes its hashed bundles into `_app/`, and without `all:` `go:embed` skips every path whose name begins with `_` or `.`.
 - The embed pattern names `embedded/`, not `embedded/client/`. The adapter deletes its output directory before every build, so anything committed inside `embedded/client/` would be destroyed by `pnpm build`. The committed placeholder is its sibling.
 - `internal/platform/webui/embedded/placeholder.html` is committed. It is the only reason `go build ./...` succeeds in a fresh checkout where `pnpm build` has never run: the pattern `all:embedded` matches at least one file. A missing `embedded/client/index.html` is a startup error in production (fail closed) and serves the placeholder page in development.
+
+### Core services and optional modules
+
+Every generated application contains the core services from `BLUEPRINT.md` §11 — sessions and authentication, authorization, the audit log, jobs, and mail. They get no privileged layer of their own. One rule places them, and it is the same rule that places anything else in the tree:
+
+> A core service is a **feature** when it owns domain rules, its own tables, and its own endpoints. It is **platform** when it is a technical adapter with no domain rules of its own.
+
+That puts sessions and authentication in `internal/features/auth/`, authorization in `internal/features/authz/`, and the audit log in `internal/features/audit/`; it puts the River runner in `internal/platform/jobs/` and the mail interface, SMTP transport, and templates in `internal/platform/mail/`. A job's payload and a message's content belong to the feature that enqueues or sends them, not to the runner or the transport.
+
+Nothing structurally distinguishes a core feature from a generated one. `internal/features/auth/` has the shape of `internal/features/invoice/`, is application-owned in the same way, and may be edited, rewritten, or deleted. The only difference is when it is written: `nise new` writes the core features and `nise generate` writes the rest. `nise check` does not require any feature directory to exist, which keeps it an invariant runner rather than a starter-conformity checker.
+
+Because core features are peers rather than a base layer, a feature depends on another feature only through an interface the consumer declares, and never on another feature's `store` package. Authorization checks, audit records, and job enqueueing all reach a feature that way.
+
+The four compile-time modules — `organizations`, `totp`, `notifications`, `uploads` — are recorded in the recipe ([ADR 0010](0010-project-recipe-format.md)) and selected at generation time. A selected module contributes its runtime code as an import of `github.com/drilonrecica/nise-and-go/modules/<name>`, explicit constructor wiring in `internal/app/modules.gen.go`, an application-owned `internal/features/<name>/` where it has a transport or domain surface, its tables in `db/migrations/`, and its screens under `frontend/src/routes/(app)/<name>/`. An unselected module contributes nothing at all: no import, no file, no dead code behind a runtime flag.
+
+`internal/app/modules.gen.go` is the one regenerated file in `internal/app/`. It holds constructor calls and nothing else, so that changing the module selection can rewrite it without destroying application edits — generation refusing to destroy, by giving itself nothing to destroy. There is no registry, no `init()` registration, and no reflection-driven discovery.
 
 ### Generated code and its owners
 
@@ -90,6 +106,7 @@ The first form matches Go's generated-code convention so linters and diff tools 
 - Committing a placeholder inside the adapter's own output directory. `pnpm build` deletes it, so every build would dirty the working tree.
 - A top-level `web/` directory. It collides with the `web` process mode in conversation and in documentation.
 - A generic `internal/pkg/`, `internal/util/`, or `internal/common/`.
+- A separate `internal/core/` or `internal/services/` for the core services. It would add a fourth child of `internal/` and force a boundary judgement — core or feature? — on everything written afterwards.
 - A second binary. Migrations and workers are modes and subcommands of the one application binary.
 
 ## Consequences
@@ -98,5 +115,6 @@ The first form matches Go's generated-code convention so linters and diff tools 
 - `pnpm build` writes outside `frontend/`. This is surprising once, is stated in `frontend/README.md` and in `svelte.config.js`, and is the price of keeping both trees single-language.
 - Both the Go and the pnpm tree sit inside the module, so `./...` and `gofmt -l .` walk `frontend/node_modules/` — measured, not assumed. An npm package that ships a `.go` file is listed as a package of the application. Generated tooling therefore names its Go targets explicitly, `./cmd/... ./internal/... ./db/...`, rather than relying on `./...`.
 - Feature-colocated sqlc output means one `sql:` block per feature in `sqlc.yaml`, which becomes Nise-owned and regenerated as features are added.
+- Core services sit beside custom features, so `internal/features/` is not a list of things the application invented. The compensation is the interface rule: a feature that needs authorization, auditing, or a job declares the interface it wants where it uses it, which also keeps those dependencies visible in the consumer rather than in a shared base package.
 - Nise's own repository ignores `dist/`, `build/`, `node_modules/`, and `.svelte-kit/`. Template files for this layout must avoid those path segments or they will not be committed — the reason the embed directory is named `embedded/client/` and not `dist/`.
 - Revisit if SvelteKit's static adapter stops supporting an output path outside the project root, or if a real application needs a second deployable binary.
