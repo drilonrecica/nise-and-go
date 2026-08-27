@@ -112,7 +112,7 @@ func (l *Loader) Int(name string, opts ...Option) int {
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil {
-		l.addErr(fmt.Errorf("%s: %q is not a valid integer; set %s to a whole number", name, raw, name))
+		l.addErr(fmt.Errorf("%s: %q is not a valid integer: %w; set %s to a whole number", name, raw, err, name))
 		return 0
 	}
 	return n
@@ -128,7 +128,7 @@ func (l *Loader) Bool(name string, opts ...Option) bool {
 	}
 	b, err := strconv.ParseBool(raw)
 	if err != nil {
-		l.addErr(fmt.Errorf("%s: %q is not a valid boolean; set %s to true or false", name, raw, name))
+		l.addErr(fmt.Errorf("%s: %q is not a valid boolean: %w; set %s to true or false", name, raw, err, name))
 		return false
 	}
 	return b
@@ -144,7 +144,7 @@ func (l *Loader) Duration(name string, opts ...Option) time.Duration {
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		l.addErr(fmt.Errorf("%s: %q is not a valid duration; set %s to a Go duration such as \"30s\"", name, raw, name))
+		l.addErr(fmt.Errorf("%s: %q is not a valid duration: %w; set %s to a Go duration such as \"30s\"", name, raw, err, name))
 		return 0
 	}
 	return d
