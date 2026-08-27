@@ -2,7 +2,7 @@
 
 All notable released changes will be documented here.
 
-The format is based on Keep a Changelog, and releases will use semantic versioning after `1.0`. During `0.x`, breaking changes are allowed and must include migration notes.
+The format is based on Keep a Changelog. Tags use semantic-versioning format from the first release; compatibility guarantees begin at `1.0`. During `0.x`, breaking changes are allowed and must include migration notes.
 
 ## Unreleased
 

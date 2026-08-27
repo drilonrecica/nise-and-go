@@ -1,5 +1,7 @@
 # CLI and Distribution
 
+This page describes planned V0.1 behavior.
+
 The public developer interface is one cross-platform binary named `nise`.
 
 ## Planned command families

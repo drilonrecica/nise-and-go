@@ -1,6 +1,12 @@
 # Generated Frontend
 
-Nise generates a complete authenticated operational application, not an empty Svelte starter and not a marketing template.
+This page describes planned V0.1 behavior.
+
+Nise generates a complete authenticated operational application, not an empty Svelte starter and not a marketing template. Nise does not generate a marketing site; public content pages are a separate deployment.
+
+## Build model
+
+The authenticated application is built with the static adapter as a single-page application with a fallback page and embedded into the Go binary. Protected routes are never prerendered, and universal `load` functions run only in the browser. There is no per-request server-side rendering (see [ADR 0005](adr/0005-static-embedded-frontend.md)).
 
 ## Technology
 
@@ -22,9 +28,9 @@ The starter shell includes:
 - API-client integration and consistent problem handling.
 - Theme and language controls.
 - Loading, empty, error, permission-denied, and not-found states.
-- Accessible dialogs, confirmations, menus, sheets, forms, tables, alerts, toasts, and skeletons.
+- Accessible dialogs, confirmations, menus, sheets, tooltips, forms, tables, pagination, badges, alerts, toasts, and skeletons.
 
-Optional modules add only their required pages, such as TOTP setup, organization membership, uploads, or notifications.
+The optional compile-time modules (organizations, TOTP, notifications, uploads) add only the pages they require, such as organization switching and membership, TOTP setup and recovery codes, a notification centre, or upload management.
 
 ## Generated resources
 

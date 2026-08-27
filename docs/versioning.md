@@ -1,5 +1,7 @@
 # Versioning and Compatibility
 
+This page describes planned policy. Tags use semantic-versioning format from the first release; compatibility guarantees begin at `1.0`.
+
 ## V0.x
 
 V0.x is explicitly unstable. Breaking changes are permitted, but each release must include:

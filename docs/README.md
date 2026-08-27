@@ -13,7 +13,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Deployment](deployment.md)
 - [Versioning and compatibility](versioning.md)
 - [Public roadmap](roadmap.md)
-- [Architecture Decision Records](adr/README.md)
+- [Architecture Decision Records](adr/README.md) ([template](adr/template.md))
 
 ## Documentation rules
 
