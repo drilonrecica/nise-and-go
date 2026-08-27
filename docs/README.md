@@ -16,6 +16,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Operations: runtime HTTP lifecycle](operations-runtime.md)
 - [Generated frontend](frontend.md)
 - [Security model](security.md)
+- [Security headers and Content Security Policy](security-headers.md)
 - [CLI and distribution](cli-and-distribution.md)
 - [CLI output contract](cli-output.md)
 - [Toolchain](toolchain.md)
