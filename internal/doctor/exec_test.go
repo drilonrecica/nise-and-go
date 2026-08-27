@@ -1,0 +1,119 @@
+package doctor
+
+import (
+	"context"
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
+)
+
+// requireUnixTool skips the test when name is not on PATH, so this file
+// stays safe to run on a machine (or a future CI image) that lacks the
+// coreutils this test relies on, rather than failing for an unrelated
+// reason.
+func requireUnixTool(t *testing.T, name string) {
+	t.Helper()
+	if _, err := exec.LookPath(name); err != nil {
+		t.Skipf("%s not on PATH: %v", name, err)
+	}
+}
+
+func TestExecRunnerSuccess(t *testing.T) {
+	t.Parallel()
+	requireUnixTool(t, "echo")
+
+	r := NewRunner()
+	out, err := r.Run(context.Background(), time.Second, "echo", "hello", "doctor")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got, want := strings.TrimSpace(out), "hello doctor"; got != want {
+		t.Errorf("Run output = %q, want %q", got, want)
+	}
+}
+
+func TestExecRunnerCommandNotFound(t *testing.T) {
+	t.Parallel()
+	r := NewRunner()
+	_, err := r.Run(context.Background(), time.Second, "nise-doctor-definitely-not-a-real-binary")
+	if err == nil {
+		t.Fatal("Run returned nil error for a nonexistent binary, want an error")
+	}
+}
+
+// TestExecRunnerTimeout proves a wedged binary cannot hang `nise doctor`
+// forever: a real `sleep 5` process, given a much shorter timeout, must be
+// killed and Run must return promptly with a timeout error rather than
+// blocking for the full 5 seconds.
+func TestExecRunnerTimeout(t *testing.T) {
+	t.Parallel()
+	requireUnixTool(t, "sleep")
+
+	r := NewRunner()
+	start := time.Now()
+	_, err := r.Run(context.Background(), 100*time.Millisecond, "sleep", "5")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Run returned nil error for a command that exceeded its timeout")
+	}
+	if !strings.Contains(err.Error(), "did not respond within") {
+		t.Errorf("Run error = %q, want it to name the timeout", err)
+	}
+	// Generous upper bound: the process must be killed well before its
+	// own 5-second sleep would otherwise return, proving the timeout
+	// actually terminated it rather than Run merely returning early while
+	// leaving the child running.
+	if elapsed > 4*time.Second {
+		t.Errorf("Run took %s to return after a 100ms timeout; the child process was not killed promptly", elapsed)
+	}
+}
+
+// TestExecRunnerBoundsCapturedOutput proves a tool that never stops
+// writing cannot make a doctor check hold an unbounded amount of memory:
+// `yes` writes "y\n" forever until killed, so combined with a short
+// timeout this both exercises the timeout path and proves the captured
+// output never exceeds maxCapturedOutput.
+func TestExecRunnerBoundsCapturedOutput(t *testing.T) {
+	t.Parallel()
+	requireUnixTool(t, "yes")
+
+	r := NewRunner()
+	out, err := r.Run(context.Background(), 150*time.Millisecond, "yes")
+	if err == nil {
+		t.Fatal("Run returned nil error for a command killed by timeout")
+	}
+	if len(out) > maxCapturedOutput {
+		t.Errorf("captured output length = %d, want <= %d", len(out), maxCapturedOutput)
+	}
+	if len(out) == 0 {
+		t.Error("captured output is empty; expected at least some of yes's output before it was killed")
+	}
+}
+
+func TestBoundedBufferDiscardsBeyondLimit(t *testing.T) {
+	t.Parallel()
+	b := &boundedBuffer{limit: 5}
+	n, err := b.Write([]byte("hello world"))
+	if err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+	if n != len("hello world") {
+		t.Errorf("Write returned n=%d, want %d (short writes must never be reported)", n, len("hello world"))
+	}
+	if got, want := b.String(), "hello"; got != want {
+		t.Errorf("String() = %q, want %q", got, want)
+	}
+
+	n2, err := b.Write([]byte(" more"))
+	if err != nil {
+		t.Fatalf("second Write returned error: %v", err)
+	}
+	if n2 != len(" more") {
+		t.Errorf("second Write returned n=%d, want %d", n2, len(" more"))
+	}
+	if got, want := b.String(), "hello"; got != want {
+		t.Errorf("String() after over-limit write = %q, want unchanged %q", got, want)
+	}
+}
