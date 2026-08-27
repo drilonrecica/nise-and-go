@@ -1,6 +1,7 @@
 package output
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"github.com/drilonrecica/nise-and-go/internal/cli/clierr"
@@ -47,24 +48,35 @@ func (w *jsonWriter) Error(err error) {
 	w.writeDoc(ce.JSONEnvelope(w.verbose))
 }
 
-// writeDoc marshals v and writes it as one line to stdout, after stripping
-// any ESC byte from the encoded bytes. Marshal failure itself becomes a
-// (still ANSI-free) JSON error document rather than a panic or a silently
-// empty line, since a command author's Result type failing to marshal is a
-// bug this writer should surface, not hide.
+// writeDoc encodes v and writes it as one line to stdout, after stripping
+// any ESC byte from the encoded bytes. HTML-escaping is disabled: nise's
+// JSON output is read by scripts and jq, not embedded in an HTML page, so
+// "<", ">", and "&" should read as themselves rather than as \uXXXX
+// escapes. Encode failure itself becomes a (still ANSI-free) JSON error
+// document rather than a panic or a silently empty line, since a command
+// author's Result type failing to marshal is a bug this writer should
+// surface, not hide.
 func (w *jsonWriter) writeDoc(v any) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		// A map[string]string always marshals successfully, so the error
-		// here is always nil; it is still assigned (not ignored) to keep
-		// errcheck satisfied without a lint suppression comment.
-		b, err = json.Marshal(map[string]string{
-			"error": "internal: failed to encode JSON output: " + err.Error(),
+	b := encodeJSONLine(v)
+	if b == nil {
+		b = encodeJSONLine(map[string]string{
+			"error": "internal: failed to encode JSON output",
 		})
-		_ = err
 	}
 	w.stdout.writeString(string(stripANSI(b)))
-	w.stdout.writeString("\n")
+}
+
+// encodeJSONLine returns v encoded as a single JSON document followed by
+// exactly one newline (json.Encoder.Encode's own behavior), or nil if v
+// could not be encoded — the only case writeDoc needs to distinguish.
+func encodeJSONLine(v any) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil
+	}
+	return buf.Bytes()
 }
 
 // stripANSI returns b with every ESC (0x1b) byte removed. This is the
