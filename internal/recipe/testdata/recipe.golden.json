@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "profile": "go-chi-postgres-svelte",
+  "modules": [
+    "notifications",
+    "organizations",
+    "totp",
+    "uploads"
+  ],
+  "cliVersion": "v0.1.0",
+  "runtimeVersion": "v0.1.0"
+}
