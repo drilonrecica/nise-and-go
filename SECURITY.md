@@ -6,7 +6,7 @@ Nise & Go is currently pre-alpha and has no supported production release. Until 
 
 ## Reporting a vulnerability
 
-Use GitHub's private vulnerability-reporting or Security Advisory flow for this repository. Do not open a public issue containing exploitable details, credentials, private data, or a working proof of concept.
+Use GitHub's private vulnerability-reporting or Security Advisory flow for this repository: <https://github.com/drilonrecica/nise-and-go/security/advisories/new>. Do not open a public issue containing exploitable details, credentials, private data, or a working proof of concept.
 
 Include, where possible:
 
