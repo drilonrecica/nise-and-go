@@ -81,16 +81,26 @@ var resourceNameRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*$`)
 const maxResourceNameLen = 64
 
 // reservedResourceNames rejects a name regardless of case, because it
-// already means something else in a generated project or in Go itself:
-// Go's own keywords (this name becomes a Go package and type name), the
-// three core-service feature names ADR 0009 reserves for `nise new`
-// (auth, authz, audit), the generic directory names ADR 0009 explicitly
-// excludes from internal/ (util, common, shared, pkg), and the
-// ownership-marking directory names
+// already means something else in a generated project, in Go itself, or
+// on a filesystem this project must run on: Go's own keywords (this name
+// becomes a Go package and type name), the three core-service feature
+// names ADR 0009 reserves for `nise new` (auth, authz, audit), the
+// generic directory names ADR 0009 explicitly excludes from internal/
+// (util, common, shared, pkg), the ownership-marking directory names
 // docs/generated-application-layout.md defines (store, openapigen,
 // embedded) — a feature or resource sharing one of those names would
 // collide, confusingly, with the very ownership signal the path is
-// supposed to carry.
+// supposed to carry — and Windows's reserved device names (con, prn, aux,
+// nul, com1-com9, lpt1-lpt9), which docs/generated-application-layout.md's
+// naming rules already reason about cross-platform filesystem constraints
+// for (the case-collision rule) and which this list now joins: those
+// names are reserved by the Windows filesystem itself, regardless of
+// extension, so `internal/features/con/` cannot be created there at all —
+// a validation rejection here is a far clearer failure than the obscure
+// OS error a real M7 generator would otherwise hit. The check is exact,
+// case-insensitive whole-name matching only: "console" and "nullable"
+// legitimately do not collide with "con"/"nul" merely by starting with
+// them.
 var reservedResourceNames = map[string]struct{}{
 	"break": {}, "case": {}, "chan": {}, "const": {}, "continue": {},
 	"default": {}, "defer": {}, "else": {}, "fallthrough": {}, "for": {},
@@ -103,6 +113,12 @@ var reservedResourceNames = map[string]struct{}{
 	"util": {}, "common": {}, "shared": {}, "pkg": {},
 
 	"store": {}, "openapigen": {}, "embedded": {},
+
+	"con": {}, "prn": {}, "aux": {}, "nul": {},
+	"com1": {}, "com2": {}, "com3": {}, "com4": {}, "com5": {},
+	"com6": {}, "com7": {}, "com8": {}, "com9": {},
+	"lpt1": {}, "lpt2": {}, "lpt3": {}, "lpt4": {}, "lpt5": {},
+	"lpt6": {}, "lpt7": {}, "lpt8": {}, "lpt9": {},
 }
 
 // ValidateResourceName reports whether name is an acceptable `nise
