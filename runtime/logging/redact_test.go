@@ -182,6 +182,32 @@ func TestRedactingHandler_SessionFalsePositives(t *testing.T) {
 	}
 }
 
+// TestRedactingHandler_AcceptedFalsePositivesStillRedact pins the two
+// documented, accepted over-redaction cases in docs/observability.md rather
+// than leaving them as accidental behavior: "cookie" is left unbounded (so
+// cookie_count redacts, unlike session_count), and fragment containment is a
+// raw substring test that can fire inside a single word with no separator or
+// camelCase boundary at all (so tokenizer_count redacts, because "token" is
+// a literal substring of "tokenizer").
+func TestRedactingHandler_AcceptedFalsePositivesStillRedact(t *testing.T) {
+	names := []string{
+		"cookie_count",
+		"tokenizer_count",
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			capture := newCaptureHandler()
+			h := newRedactingHandler(capture, RedactOptions{})
+			logger := slog.New(h)
+			logger.Info("event", name, "42")
+
+			if got := capture.got[name]; got != RedactPlaceholder {
+				t.Errorf("got %s=%q, want %q (documented accepted false positive)", name, got, RedactPlaceholder)
+			}
+		})
+	}
+}
+
 func TestRedactingHandler_CustomPlaceholder(t *testing.T) {
 	capture := newCaptureHandler()
 	h := newRedactingHandler(capture, RedactOptions{Placeholder: "***"})
