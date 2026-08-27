@@ -4,8 +4,8 @@
 
 ## Environment
 
-- **Commit:** 72688ad45816cb5e2a2b1d26a3dcc7a87cec976e
-- **Build date:** 2026-08-27
+- **Commit:** 8f69bd8149f8d624c1ac4fdd2801d635a2de5ef6
+- **Build date:** 2026-08-28
 - **Go version:** go1.26.5-X:nodwarf5
 - **GOOS/GOARCH:** linux/amd64
 - **Hardware:** Single-machine measurement (uncontrolled hardware; variance expected)
@@ -29,14 +29,14 @@ Measured `nise version` execution time after a warm process start. Five samples:
 
 | Sample | Duration (ms) |
 |--------|---------------|
-| 1      | 2.870         |
-| 2      | 3.095         |
-| 3      | 2.837         |
-| 4      | 2.939         |
-| 5      | 3.210         |
+| 1      | 3.069         |
+| 2      | 2.837         |
+| 3      | 2.776         |
+| 4      | 2.923         |
+| 5      | 2.873         |
 
-- **Median:** 2.939 ms
-- **Spread:** 2.837–3.210 ms (Δ = 0.373 ms, ~13% variance)
+- **Median:** 2.873 ms
+- **Spread:** 2.776–3.069 ms (Δ = 0.293 ms, ~10% variance)
 
 **nise new duration:**
 
@@ -44,14 +44,14 @@ Measured wall-clock time from process start to project creation completion (37 f
 
 | Sample | Duration (ms) |
 |--------|---------------|
-| 1      | 5.177         |
-| 2      | 5.178         |
-| 3      | 5.051         |
-| 4      | 5.032         |
-| 5      | 5.028         |
+| 1      | 5.073         |
+| 2      | 5.011         |
+| 3      | 5.037         |
+| 4      | 5.014         |
+| 5      | 5.043         |
 
-- **Median:** 5.051 ms
-- **Spread:** 5.028–5.178 ms (Δ = 0.150 ms, ~3% variance)
+- **Median:** 5.037 ms
+- **Spread:** 5.011–5.073 ms (Δ = 0.062 ms, ~1% variance)
 
 ### Generated application measurements
 
@@ -65,22 +65,41 @@ This is the unstripped `./cmd/testapp/testapp` binary for the default profile.
 
 **Generated application startup (cold):**
 
-Measured via `./cmd/testapp/testapp --help` invocation. This approximates binary load and initialization without requiring a full database or server setup.
+Measured by starting the generated binary and polling `/healthz/ready` until it returns HTTP 200. Excludes any database migration time (none exists in this slice; M3 and later introduce persistent state).
 
 Five samples:
 
 | Sample | Duration (ms) |
 |--------|---------------|
-| 1      | 4.525         |
-| 2      | 4.662         |
-| 3      | 4.721         |
-| 4      | 4.509         |
-| 5      | 4.343         |
+| 1      | 9.276         |
+| 2      | 14.062        |
+| 3      | 9.703         |
+| 4      | 9.620         |
+| 5      | 11.804        |
 
-- **Median:** 4.525 ms
-- **Spread:** 4.343–4.721 ms (Δ = 0.378 ms, ~8% variance)
+- **Median:** 9.703 ms
+- **Spread:** 9.276–14.062 ms (Δ = 4.786 ms, ~49% variance)
 
-**Measurement limitation:** This measures only process startup and binary initialization. Full server startup to a passing readiness probe would require database connectivity and schema setup, which the portable measurement script deliberately avoids (see "No network, no telemetry" in [constraints.md](constraints.md)). A future controlled-runner benchmark will measure true cold startup including migrations.
+Variance is higher here than other metrics because process startup involves system calls whose timing varies on uncontrolled hardware.
+
+**Generated application idle RSS:**
+
+Measured by reading `VmRSS` from `/proc/<pid>/status` after the server settles on the readiness probe for at least 100ms. This is the process memory footprint only, not including any database connection pool or cache.
+
+Five samples:
+
+| Sample | RSS (MB) |
+|--------|----------|
+| 1      | 8.8      |
+| 2      | 9.0      |
+| 3      | 8.8      |
+| 4      | 9.1      |
+| 5      | 8.9      |
+
+- **Median:** 8.9 MB
+- **Spread:** 8.8–9.1 MB (Δ = 0.3 MB, ~3% variance)
+
+No database process is running (this slice has no M3 database layer). RSS is measured for the application process alone. A future controlled benchmark will measure full-stack memory (application + PostgreSQL).
 
 ## Regression review policy
 
