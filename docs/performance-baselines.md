@@ -73,7 +73,7 @@ This is the unstripped `./cmd/testapp/testapp` binary for the default profile.
 
 Measured by starting the generated binary and polling `/healthz/ready` until it returns HTTP 200. Excludes any database migration time (none exists in this slice; M3 and later introduce persistent state).
 
-Three independent runs, five samples each:
+Three independent runs, five samples except run 3 (three samples):
 
 | Run | Samples (ms) | Median (ms) |
 |-----|---|---|
@@ -84,7 +84,7 @@ Three independent runs, five samples each:
 - **Observed range:** 9.1–38.0 ms
 - **Across-run median spread:** 10.9–32.2 ms (Δ = 21.3 ms)
 
-**Variance note:** A bimodal pattern persists across all three runs—some samples complete in ~10 ms, others in 30+ ms—but the position of fast vs. slow samples varies. This is not positional (not "later samples are always slow") and post-measurement testing ruled out leftover processes (verified via `ps` and `ss`) and DNS overhead (curls use literal IP 127.0.0.1, no name resolution). The residual cause is unidentified, likely host scheduling jitter on uncontrolled hardware. This range requires a controlled or dedicated benchmark runner to resolve ([PERFORMANCE_BUDGETS.md](../privateDocs/PERFORMANCE_BUDGETS.md#principles)); the 10% regression threshold (below) applies loosely to a metric this noisy.
+**Variance note:** A bimodal pattern persists across all three runs—some samples complete in ~10 ms, others in 30+ ms—but the position of fast vs. slow samples varies. This is not positional (not "later samples are always slow") and post-measurement testing ruled out leftover processes (verified via `ps` and `ss`) and DNS overhead (curls use literal IP 127.0.0.1, no name resolution). The residual cause is unidentified, likely host scheduling jitter on uncontrolled hardware. Stabilizing this metric would require a controlled or dedicated benchmark runner with reproducible hardware and OS conditions. The 10% regression threshold (below) applies loosely to a metric this noisy.
 
 **Generated application idle RSS:**
 
@@ -119,7 +119,7 @@ These are reliable baselines. **Any increase above 10% requires explanation** in
 **Noisy metric** (> 50% variance across runs):
 - Generated app cold startup (9.1–38.0 ms)
 
-This metric requires a controlled benchmark runner to stabilize (see [PERFORMANCE_BUDGETS.md](../privateDocs/PERFORMANCE_BUDGETS.md#principles) for the path forward). The 10% threshold is less meaningful here; compare against the range you measured, not a single point.
+This metric requires a controlled benchmark runner to stabilize — a dedicated machine with reproducible hardware and OS conditions. Until such a runner exists, wall-clock startup measurements on uncontrolled hardware are tracked for awareness rather than enforced as gates. The 10% threshold is less meaningful here; compare against the range you measured, not a single point.
 
 ## How to regenerate
 
@@ -144,7 +144,7 @@ The script re-runs the entire measurement cycle: it does not assume a warm cache
 
 **Measured but noisy:**
 
-- **Application cold startup:** Observed 9.1–38.0 ms across independent runs. Real variance, not instrumentation noise. Awaits a controlled benchmark runner to establish stable baselines (see [PERFORMANCE_BUDGETS.md](../privateDocs/PERFORMANCE_BUDGETS.md#principles)).
+- **Application cold startup:** Observed 9.1–38.0 ms across independent runs. Real variance, not instrumentation noise. Tracked for awareness; awaits a controlled benchmark runner with reproducible hardware conditions to establish stable, gated baselines.
 
 They do not measure:
 
