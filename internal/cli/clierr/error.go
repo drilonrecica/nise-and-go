@@ -174,10 +174,16 @@ func (e *Error) Chain() []string {
 // Error implements the error interface. It is deliberately plain and short
 // — this is what a %v/%w format verb or a log line elsewhere in the process
 // sees, not the rendering the CLI's own output layer uses for the user
-// (that's HumanLines/JSONEnvelope). It never prints details or the chain.
+// (that's HumanLines/JSONEnvelope). It never prints details or the full
+// chain (an Error wrapping another Error only shows one level here; use
+// Chain for the full unwrapped list). The wrapped error's own text is
+// scrubbed through scrubChainText, exactly like Chain does — Error() is
+// the spelling a future caller reaches for with a bare %v or %s, often
+// without knowing there is a scrubbed alternative, so it cannot be the
+// one rendering path that skips redaction.
 func (e *Error) Error() string {
 	if e.err != nil {
-		return fmt.Sprintf("%s: %s", e.cause, e.err)
+		return fmt.Sprintf("%s: %s", e.cause, scrubChainText(e.err.Error()))
 	}
 	return e.cause
 }
