@@ -73,20 +73,18 @@ This is the unstripped `./cmd/testapp/testapp` binary for the default profile.
 
 Measured by starting the generated binary and polling `/healthz/ready` until it returns HTTP 200. Excludes any database migration time (none exists in this slice; M3 and later introduce persistent state).
 
-Five samples:
+Three independent runs, five samples each:
 
-| Sample | Duration (ms) |
-|--------|---------------|
-| 1      | 9.276         |
-| 2      | 14.062        |
-| 3      | 9.703         |
-| 4      | 9.620         |
-| 5      | 11.804        |
+| Run | Samples (ms) | Median (ms) |
+|-----|---|---|
+| 1   | 9.8, 12.0, 32.2, 37.7, 37.9 | 32.2 |
+| 2   | 12.7, 36.6, 38.0, 10.9, 15.6 | 15.6 |
+| 3   | 9.1, 10.9, 34.7 | 10.9 |
 
-- **Median:** 9.703 ms
-- **Spread:** 9.276–14.062 ms (Δ = 4.786 ms, ~49% variance)
+- **Observed range:** 9.1–38.0 ms
+- **Across-run median spread:** 10.9–32.2 ms (Δ = 21.3 ms)
 
-Variance is higher here than other metrics because process startup involves system calls whose timing varies on uncontrolled hardware.
+**Variance note:** A bimodal pattern persists across all three runs—some samples complete in ~10 ms, others in 30+ ms—but the position of fast vs. slow samples varies. This is not positional (not "later samples are always slow") and post-measurement testing ruled out leftover processes (verified via `ps` and `ss`) and DNS overhead (curls use literal IP 127.0.0.1, no name resolution). The residual cause is unidentified, likely host scheduling jitter on uncontrolled hardware. This range requires a controlled or dedicated benchmark runner to resolve ([PERFORMANCE_BUDGETS.md](../privateDocs/PERFORMANCE_BUDGETS.md#principles)); the 10% regression threshold (below) applies loosely to a metric this noisy.
 
 **Generated application idle RSS:**
 
@@ -107,13 +105,21 @@ Five samples:
 
 No database process is running (this slice has no M3 database layer). RSS is measured for the application process alone. A future controlled benchmark will measure full-stack memory (application + PostgreSQL).
 
-## Regression review policy
+## Baseline stability and regression review policy
 
-Until stable baselines with variance bounds are established:
+**Stable metrics** (< 10% variance across runs):
+- `nise` CLI binary size (unstripped/stripped)
+- `nise version` warm latency
+- `nise new` duration
+- Generated app binary size
+- Idle RSS
 
-- Any **deterministic increase above 10%** in a metric requires explanation in commit messages or ADRs.
-- Variance measurement remains manual until a controlled runner is in place.
-- For noisy wall-clock metrics measured on uncontrolled hardware, "deterministic" means consistent across at least three independent runs (this script produces five samples per run).
+These are reliable baselines. **Any increase above 10% requires explanation** in commit messages or ADRs.
+
+**Noisy metric** (> 50% variance across runs):
+- Generated app cold startup (9.1–38.0 ms)
+
+This metric requires a controlled benchmark runner to stabilize (see [PERFORMANCE_BUDGETS.md](../privateDocs/PERFORMANCE_BUDGETS.md#principles) for the path forward). The 10% threshold is less meaningful here; compare against the range you measured, not a single point.
 
 ## How to regenerate
 
@@ -130,11 +136,15 @@ The script re-runs the entire measurement cycle: it does not assume a warm cache
 
 ## Rationale
 
-These measurements track:
+**Reliable baselines track:**
 
-- **CLI responsiveness:** `nise version` completes in ~2.9 ms; `nise new` in ~5.0 ms. This baseline prevents unintended regression as features are added.
+- **CLI responsiveness:** `nise version` completes in ~2.9 ms; `nise new` in ~5.0 ms. These are stable and prevent regression.
 - **Generation throughput:** Project creation speed remains consistent as features are added.
-- **Application baseline:** The generated application's binary size (10.0 MB), cold startup (9.7 ms to readiness), and idle memory footprint (8.9 MB) are load-bearing for deployment and production experience.
+- **Application size and memory:** The generated application's binary (10.0 MB) and idle memory footprint (8.9–9.1 MB) are stable, load-bearing for deployment.
+
+**Measured but noisy:**
+
+- **Application cold startup:** Observed 9.1–38.0 ms across independent runs. Real variance, not instrumentation noise. Awaits a controlled benchmark runner to establish stable baselines (see [PERFORMANCE_BUDGETS.md](../privateDocs/PERFORMANCE_BUDGETS.md#principles)).
 
 They do not measure:
 
