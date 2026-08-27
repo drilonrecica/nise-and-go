@@ -22,6 +22,7 @@ import (
 func Commands() []*Command {
 	return []*Command{
 		versionCommand(),
+		newCommand(),
 		doctorCommand(),
 		agentsCommand(),
 		testCommand(),
