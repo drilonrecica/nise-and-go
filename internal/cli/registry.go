@@ -23,6 +23,7 @@ func Commands() []*Command {
 	return []*Command{
 		versionCommand(),
 		doctorCommand(),
+		agentsCommand(),
 	}
 }
 
