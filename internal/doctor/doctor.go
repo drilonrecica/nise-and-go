@@ -30,6 +30,17 @@ type Options struct {
 // §5), so two runs against the same environment always report checks in
 // the same sequence.
 //
+// The three generator-tool checks (sqlc, goose, oapi-codegen) are
+// context-sensitive: they run and can fail only outside a generated
+// project (i.e. inside the Nise framework repository itself, which is
+// what pins them via go.mod `tool` directives). Inside a generated
+// project — detected the same way the recipe checks find their project
+// root, by whether a nise.json exists at or above WorkDir — they report
+// StatusSkipped without even invoking the tool, because a generated
+// project's go.mod is not expected to declare these tools until a later
+// milestone (M3/M4); see checkGeneratorTool's doc comment in tools.go for
+// the full reasoning.
+//
 // Run never returns an error itself: a tool being missing or too old is
 // reported as a failing Check, not a Go error, so the caller (internal/
 // cli/doctor.go) can render the full report either way and decide the
@@ -44,14 +55,25 @@ func Run(ctx context.Context, opts Options) Report {
 		timeout = DefaultTimeout
 	}
 
+	// insideGeneratedProject reflects only whether a nise.json was found
+	// at or above WorkDir, not whether it goes on to parse successfully:
+	// the reason the generator-tool checks don't apply here (ADR 0009)
+	// doesn't depend on the recipe's own validity, only on being inside a
+	// generated project at all. A permission error walking up is treated
+	// as "not a generated project" — the conservative default, since it
+	// keeps the generator-tool checks meaningful outside a project, which
+	// is where they matter most — and is separately surfaced by the
+	// "recipe" check itself.
+	_, insideGeneratedProject, _ := findRecipeRoot(opts.WorkDir)
+
 	checks := []Check{
 		checkGo(ctx, r, timeout),
 		checkNode(ctx, r, timeout),
 		checkPnpm(ctx, r, timeout),
 		checkContainerRuntime(ctx, r, timeout),
-		checkSqlc(ctx, r, timeout),
-		checkGoose(ctx, r, timeout),
-		checkOapiCodegen(ctx, r, timeout),
+		checkSqlc(ctx, r, timeout, insideGeneratedProject),
+		checkGoose(ctx, r, timeout, insideGeneratedProject),
+		checkOapiCodegen(ctx, r, timeout, insideGeneratedProject),
 	}
 
 	recipeCheck, rec := checkRecipe(opts.WorkDir)

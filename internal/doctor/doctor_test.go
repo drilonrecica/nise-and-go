@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,6 +78,20 @@ func TestRunOneMissingToolFailsTheWholeReport(t *testing.T) {
 	}
 }
 
+// TestRunInsideAGeneratedProject is fix round 2's top-level regression
+// test: a freshly generated project — the first context a user runs
+// `nise doctor` in — must report a fully healthy Report (Failed() ==
+// false, the same condition internal/cli/doctor.go maps to exit 0), even
+// though its go.mod declares none of sqlc/goose/oapi-codegen. Before this
+// fix, those three reported StatusFail (via a real "exit status 2" from
+// `go tool <name>` outside any module that pins them), which flipped the
+// exit code to 3 on a project with nothing wrong.
+//
+// The runner deliberately has no stubs for any "go tool ..." invocation:
+// if the fix regressed and Run tried to invoke one of them anyway inside
+// a generated project, fakeRunner's "no stub for ..." fallback error
+// would surface as a StatusFail, and this test would catch it via either
+// the Status assertions below or the explicit r.calls check.
 func TestRunInsideAGeneratedProject(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -95,17 +110,38 @@ func TestRunInsideAGeneratedProject(t *testing.T) {
 	}
 	writeRecipeFile(t, root, data)
 
-	r := allToolsHealthyRunner()
+	r := &fakeRunner{outputs: map[string]string{
+		"go version":       "go version go1.26.5-X:nodwarf5 linux/amd64\n",
+		"node --version":   "v22.22.2\n",
+		"pnpm --version":   "10.33.0\n",
+		"docker --version": "Docker version 29.6.2, build dfc4efb\n",
+	}}
 	report := Run(context.Background(), Options{Runner: r, Timeout: time.Second, WorkDir: nested, NiseVersion: "v0.1.0"})
 
 	if report.Failed() {
-		t.Fatalf("report.Failed() = true, want false; checks: %+v", report.Checks)
+		t.Fatalf("report.Failed() = true, want false (a freshly generated project with nothing missing must exit 0); checks: %+v", report.Checks)
 	}
+
+	wantSkipped := map[string]bool{"sqlc": true, "goose": true, "oapi-codegen": true}
 	for _, c := range report.Checks {
-		if c.Name == CheckRecipeName || c.Name == CheckRecipeCompatibilityName {
+		switch {
+		case c.Name == CheckRecipeName || c.Name == CheckRecipeCompatibilityName:
 			if c.Status != StatusOK {
 				t.Errorf("%s check Status = %v, want %v (Found=%q)", c.Name, c.Status, StatusOK, c.Found)
 			}
+		case wantSkipped[c.Name]:
+			if c.Status != StatusSkipped {
+				t.Errorf("%s check Status = %v, want %v (Found=%q Remedy=%q)", c.Name, c.Status, StatusSkipped, c.Found, c.Remedy)
+			}
+			if c.Remedy != "" {
+				t.Errorf("%s check Remedy = %q, want empty inside a generated project", c.Name, c.Remedy)
+			}
+		}
+	}
+
+	for _, call := range r.calls {
+		if strings.HasPrefix(call, "go tool ") {
+			t.Errorf("Run invoked %q inside a generated project; the generator-tool checks must not run at all here", call)
 		}
 	}
 }

@@ -119,13 +119,17 @@ func TestCheckPnpm(t *testing.T) {
 	}
 }
 
-func TestCheckGoToolsHaveNoMinimumButMustResolve(t *testing.T) {
+// TestCheckGeneratorToolOutsideGeneratedProject covers behavior inside the
+// Nise framework repository itself (insideGeneratedProject=false), where
+// go.mod genuinely pins these three tools and doctor must still catch a
+// missing or unresolvable one — unchanged from before fix round 2.
+func TestCheckGeneratorToolOutsideGeneratedProject(t *testing.T) {
 	t.Parallel()
 
 	t.Run("sqlc ok, no version floor enforced", func(t *testing.T) {
 		t.Parallel()
 		r := &fakeRunner{outputs: map[string]string{"go tool sqlc version": "v1.31.1\n"}}
-		got := checkSqlc(context.Background(), r, time.Second)
+		got := checkSqlc(context.Background(), r, time.Second, false)
 		if got.Status != StatusOK {
 			t.Errorf("Status = %v, want %v", got.Status, StatusOK)
 		}
@@ -134,7 +138,7 @@ func TestCheckGoToolsHaveNoMinimumButMustResolve(t *testing.T) {
 	t.Run("goose ok, prefixed output", func(t *testing.T) {
 		t.Parallel()
 		r := &fakeRunner{outputs: map[string]string{"go tool goose --version": "goose version: v3.27.3\n"}}
-		got := checkGoose(context.Background(), r, time.Second)
+		got := checkGoose(context.Background(), r, time.Second, false)
 		if got.Status != StatusOK {
 			t.Errorf("Status = %v, want %v", got.Status, StatusOK)
 		}
@@ -145,7 +149,7 @@ func TestCheckGoToolsHaveNoMinimumButMustResolve(t *testing.T) {
 		r := &fakeRunner{outputs: map[string]string{
 			"go tool oapi-codegen -version": "github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen\nv2.8.0\n",
 		}}
-		got := checkOapiCodegen(context.Background(), r, time.Second)
+		got := checkOapiCodegen(context.Background(), r, time.Second, false)
 		if got.Status != StatusOK {
 			t.Errorf("Status = %v, want %v", got.Status, StatusOK)
 		}
@@ -156,7 +160,7 @@ func TestCheckGoToolsHaveNoMinimumButMustResolve(t *testing.T) {
 		r := &fakeRunner{errs: map[string]error{
 			"go tool sqlc version": errors.New("go: tool sqlc not found"),
 		}}
-		got := checkSqlc(context.Background(), r, time.Second)
+		got := checkSqlc(context.Background(), r, time.Second, false)
 		if got.Status != StatusFail {
 			t.Fatalf("Status = %v, want %v", got.Status, StatusFail)
 		}
@@ -164,6 +168,55 @@ func TestCheckGoToolsHaveNoMinimumButMustResolve(t *testing.T) {
 			t.Error("Remedy is empty for a failing check")
 		}
 	})
+}
+
+// TestCheckGeneratorToolInsideGeneratedProject is fix round 2's regression
+// coverage: inside a generated project (insideGeneratedProject=true), all
+// three generator-tool checks must report StatusSkipped — never
+// StatusFail, and never even attempt to run the tool at all, since a
+// generated project's go.mod is not expected to declare it until M3/M4.
+// The fakeRunner below has NO stubs for any "go tool ..." invocation on
+// purpose: if checkGeneratorTool ever called Runner.Run in this branch,
+// fakeRunner.Run's "no stub for ..." fallback error would surface as a
+// StatusFail, failing these tests loudly rather than silently.
+func TestCheckGeneratorToolInsideGeneratedProject(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		fn   func(*fakeRunner) Check
+		key  string
+	}{
+		{"sqlc", func(r *fakeRunner) Check { return checkSqlc(context.Background(), r, time.Second, true) }, "go tool sqlc version"},
+		{"goose", func(r *fakeRunner) Check { return checkGoose(context.Background(), r, time.Second, true) }, "go tool goose --version"},
+		{"oapi-codegen", func(r *fakeRunner) Check { return checkOapiCodegen(context.Background(), r, time.Second, true) }, "go tool oapi-codegen -version"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := &fakeRunner{}
+			got := tt.fn(r)
+
+			if got.Status != StatusSkipped {
+				t.Errorf("Status = %v, want %v", got.Status, StatusSkipped)
+			}
+			if got.Name != tt.name {
+				t.Errorf("Name = %q, want %q", got.Name, tt.name)
+			}
+			if got.Remedy != "" {
+				t.Errorf("Remedy = %q, want empty: there is nothing to fix, and the old remedy (add a go.mod tool directive) actively corrupts a generated application's go.mod", got.Remedy)
+			}
+			if got.Found == "" || got.Required == "" {
+				t.Errorf("Found/Required must still explain the skip: Found=%q Required=%q", got.Found, got.Required)
+			}
+			for _, call := range r.calls {
+				if call == tt.key {
+					t.Errorf("checkGeneratorTool invoked %q inside a generated project; it must not run the tool at all", tt.key)
+				}
+			}
+		})
+	}
 }
 
 func TestCheckContainerRuntime(t *testing.T) {
