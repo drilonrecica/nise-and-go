@@ -17,7 +17,7 @@ const (
 	// HeaderCSP carries an enforced Content-Security-Policy.
 	HeaderCSP = "Content-Security-Policy"
 	// HeaderCSPReportOnly carries a Content-Security-Policy that is reported
-	// but not enforced. See [WithReportOnly].
+	// but not enforced. See [AllowReportOnly].
 	HeaderCSPReportOnly = "Content-Security-Policy-Report-Only"
 	// HeaderHSTS carries Strict-Transport-Security.
 	HeaderHSTS = "Strict-Transport-Security"
@@ -203,7 +203,7 @@ type Policy struct {
 func (p *Policy) Deployment() Deployment { return p.deployment }
 
 // ReportOnly reports whether this policy's CSP is reported but not enforced.
-// See [WithReportOnly].
+// See [AllowReportOnly].
 func (p *Policy) ReportOnly() bool { return p.reportOnly }
 
 // CSPHeaderName returns the header name this policy's CSP is sent under:
@@ -241,10 +241,11 @@ func (p *Policy) apply(h http.Header, n *nonceState) {
 		h.Set(p.CSPHeaderName(), renderWithNonce(p.directives, nonce))
 		// A nonce that a shared cache can hand to a second visitor is a
 		// nonce an attacker can read and then reuse, which is the whole
-		// value of the mechanism gone. Only set it if the handler did not
-		// already choose something for itself; a handler that sends
-		// "private, no-store" is doing the same job with more precision.
-		if h.Get(HeaderCacheControl) == "" {
+		// value of the mechanism gone. A handler's own directive is kept
+		// only when it already says no-store — "private, no-store,
+		// max-age=0" is doing the same job with more precision, while
+		// "public, max-age=3600" is the hole this closes.
+		if !strings.Contains(strings.ToLower(h.Get(HeaderCacheControl)), "no-store") {
 			h.Set(HeaderCacheControl, "no-store")
 		}
 	} else {

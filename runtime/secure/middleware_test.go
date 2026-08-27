@@ -327,3 +327,108 @@ func TestResponseWriterUnwrapsForResponseController(t *testing.T) {
 		t.Errorf("%s = %q, want %q", secure.HeaderCSP, got, wantDocumentCSP)
 	}
 }
+
+// TestNonceResponseCannotBePubliclyCached closes the hole the self-review
+// found: a handler that set a caching directive of its own would have kept
+// it, and a nonce a shared cache hands to a second visitor is a nonce an
+// attacker can read and reuse.
+func TestNonceResponseCannotBePubliclyCached(t *testing.T) {
+	t.Parallel()
+
+	p, err := secure.NewDocumentPolicy(secure.Production)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		handler string
+		want    string
+	}{
+		{name: "handler sets nothing", handler: "", want: "no-store"},
+		{name: "handler asks for public caching", handler: "public, max-age=3600", want: "no-store"},
+		{name: "handler asks for private caching", handler: "private, max-age=600", want: "no-store"},
+		{name: "handler asks for revalidation only", handler: "no-cache", want: "no-store"},
+		{
+			name:    "handler already says no-store",
+			handler: "private, no-store, max-age=0",
+			want:    "private, no-store, max-age=0",
+		},
+		{name: "handler says NO-STORE in caps", handler: "NO-STORE", want: "NO-STORE"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := serve(t, p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.handler != "" {
+					w.Header().Set(secure.HeaderCacheControl, tc.handler)
+				}
+				if _, minted := secure.Nonce(r.Context()); !minted {
+					t.Error("Nonce reported no nonce")
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			if got := h.Get(secure.HeaderCacheControl); got != tc.want {
+				t.Errorf("%s = %q, want %q", secure.HeaderCacheControl, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHeadersSurviveAPanickingHandler checks that a recovery middleware
+// mounted outside this one still sends its response with the policy in
+// place.
+func TestHeadersSurviveAPanickingHandler(t *testing.T) {
+	t.Parallel()
+
+	p, err := secure.NewDocumentPolicy(secure.Production)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	inner := secure.Middleware(p)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	}))
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the panic did not propagate to an outer recovery middleware")
+			}
+			rec.WriteHeader(http.StatusInternalServerError)
+		}()
+		inner.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	}()
+
+	if got := rec.Result().Header.Get(secure.HeaderCSP); got != wantDocumentCSP {
+		t.Errorf("%s after a panic = %q, want %q", secure.HeaderCSP, got, wantDocumentCSP)
+	}
+	if got := rec.Result().Header.Get(secure.HeaderHSTS); got == "" {
+		t.Errorf("%s is missing after a panic", secure.HeaderHSTS)
+	}
+}
+
+// TestReportOnlyIsARecordedWaiver is the other half of the self-review fix.
+// A report-only policy enforces nothing, so an application asserting it
+// carries no waivers must not pass while shipping one.
+func TestReportOnlyIsARecordedWaiver(t *testing.T) {
+	t.Parallel()
+
+	p, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.AllowReportOnly("tightening connect-src; enforcing again after the canary week"),
+	)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+	waivers := p.Waivers()
+	if len(waivers) != 1 {
+		t.Fatalf("got %d waivers, want 1: %v", len(waivers), waivers)
+	}
+	if waivers[0].Control != "content-security-policy" {
+		t.Errorf("waiver control = %q, want %q", waivers[0].Control, "content-security-policy")
+	}
+	if !strings.Contains(waivers[0].Detail, "not enforced") {
+		t.Errorf("waiver detail = %q, want it to say the policy is not enforced", waivers[0].Detail)
+	}
+}

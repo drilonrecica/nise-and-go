@@ -42,13 +42,17 @@ func Middleware(p *Policy) func(http.Handler) http.Handler {
 			state := &nonceState{enabled: p.nonceEnabled}
 			wrapped := &responseWriter{ResponseWriter: w, policy: p, nonce: state}
 
+			// Deferred rather than called after ServeHTTP for two
+			// reasons. A handler that wrote neither a status nor a body
+			// leaves net/http to write 200 after this returns, which is
+			// still early enough for the header map to matter. And a
+			// handler that panics still has the headers written before the
+			// panic unwinds, so a recovery middleware mounted outside this
+			// one sends its 500 with the policy in place.
+			defer wrapped.applyPolicy()
+
 			ctx := context.WithValue(r.Context(), nonceContextKey, state)
 			next.ServeHTTP(wrapped, r.WithContext(ctx))
-
-			// A handler that wrote neither a status nor a body leaves
-			// net/http to write 200 after this returns, which is still
-			// early enough for the header map to matter.
-			wrapped.applyPolicy()
 		})
 	}
 }
