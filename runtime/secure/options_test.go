@@ -1,6 +1,9 @@
 package secure_test
 
 import (
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -240,9 +243,43 @@ func TestScriptAndStyleHashes(t *testing.T) {
 			"47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
 			"'unsafe-inline'",
 			"sha256-abc; script-src 'unsafe-inline'",
+			// Valid base64 of the wrong width. These decode cleanly and
+			// would reach the browser, which answers a hash that cannot
+			// match by silently blocking the script.
+			"sha256-AAAA",
+			"sha256-" + validSHA384,
+			"sha256-" + validSHA512,
+			"sha384-" + validSHA256,
+			"sha512-" + validSHA256,
 		} {
 			if _, err := secure.NewDocumentPolicy(secure.Production, secure.WithScriptHashes(bad)); err == nil {
 				t.Errorf("WithScriptHashes accepted %q", bad)
+			}
+		}
+	})
+
+	t.Run("every algorithm at its own width", func(t *testing.T) {
+		t.Parallel()
+		for _, good := range []string{
+			"sha256-" + validSHA256,
+			"sha384-" + validSHA384,
+			"sha512-" + validSHA512,
+		} {
+			if _, err := secure.NewDocumentPolicy(secure.Production, secure.WithScriptHashes(good)); err != nil {
+				t.Errorf("WithScriptHashes(%q): %v", good, err)
+			}
+		}
+	})
+
+	t.Run("width error names the mismatch", func(t *testing.T) {
+		t.Parallel()
+		_, err := secure.NewDocumentPolicy(secure.Production, secure.WithScriptHashes("sha256-AAAA"))
+		if err == nil {
+			t.Fatal("accepted a three-byte sha256 digest")
+		}
+		for _, want := range []string{"3 bytes", "sha256", "32"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not mention %q", err, want)
 			}
 		}
 	})
@@ -468,5 +505,112 @@ func TestNilOptionIsRejected(t *testing.T) {
 
 	if _, err := secure.NewDocumentPolicy(secure.Production, nil); err == nil {
 		t.Error("NewDocumentPolicy accepted a nil Option")
+	}
+}
+
+// Base64 digests of the empty string at each accepted width, used to check
+// that a hash of the right shape but the wrong algorithm width is refused.
+var (
+	validSHA256 = base64.StdEncoding.EncodeToString(func() []byte { s := sha256.Sum256(nil); return s[:] }())
+	validSHA384 = base64.StdEncoding.EncodeToString(func() []byte { s := sha512.Sum384(nil); return s[:] }())
+	validSHA512 = base64.StdEncoding.EncodeToString(func() []byte { s := sha512.Sum512(nil); return s[:] }())
+)
+
+// TestAllowPermissionWaivesOnlyWhenItGrants checks that the waiver list stays
+// a signal. A waiver recorded for a call that grants nothing erodes exactly
+// the assertion the package documents as the proof a policy is unweakened.
+func TestAllowPermissionWaivesOnlyWhenItGrants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		feature    string
+		allowlist  []string
+		wantWaiver bool
+		wantHeader string
+	}{
+		{
+			name:       "granting a denied capability",
+			feature:    "camera",
+			allowlist:  []string{"self"},
+			wantWaiver: true,
+			wantHeader: "camera=(self)",
+		},
+		{
+			name:       "adding an origin to a granted capability",
+			feature:    "fullscreen",
+			allowlist:  []string{"self", `"https://viewer.example"`},
+			wantWaiver: true,
+			wantHeader: `fullscreen=(self "https://viewer.example")`,
+		},
+		{
+			name:       "restating what is already allowed",
+			feature:    "fullscreen",
+			allowlist:  []string{"self"},
+			wantWaiver: false,
+			wantHeader: "fullscreen=(self)",
+		},
+		{
+			name:       "tightening a granted capability to nothing",
+			feature:    "fullscreen",
+			allowlist:  nil,
+			wantWaiver: false,
+			wantHeader: "fullscreen=()",
+		},
+		{
+			name:       "re-denying an already denied capability",
+			feature:    "camera",
+			allowlist:  nil,
+			wantWaiver: false,
+			wantHeader: "camera=()",
+		},
+		{
+			name:       "an unfamiliar feature errs toward recording",
+			feature:    "compute-pressure",
+			allowlist:  []string{"self"},
+			wantWaiver: true,
+			wantHeader: "compute-pressure=(self)",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p, err := secure.NewDocumentPolicy(
+				secure.Production,
+				secure.AllowPermission("a stated reason", tc.feature, tc.allowlist...),
+			)
+			if err != nil {
+				t.Fatalf("NewDocumentPolicy: %v", err)
+			}
+			if got := len(p.Waivers()) > 0; got != tc.wantWaiver {
+				t.Errorf("recorded a waiver = %v, want %v (waivers: %v)", got, tc.wantWaiver, p.Waivers())
+			}
+			if got := serve(t, p, nil).Get(secure.HeaderPermissionsPolicy); !strings.Contains(got, tc.wantHeader) {
+				t.Errorf("%s = %q, want it to contain %q", secure.HeaderPermissionsPolicy, got, tc.wantHeader)
+			}
+		})
+	}
+}
+
+// TestAllowPermissionReplacesRatherThanExtends pins the documented semantics.
+// An extending option could only widen, which would make it impossible to
+// narrow a capability the defaults already grant.
+func TestAllowPermissionReplacesRatherThanExtends(t *testing.T) {
+	t.Parallel()
+
+	p, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.AllowPermission("first", "camera", "self", `"https://one.example"`),
+		secure.AllowPermission("second", "camera", `"https://two.example"`),
+	)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+	got := serve(t, p, nil).Get(secure.HeaderPermissionsPolicy)
+	if !strings.Contains(got, `camera=("https://two.example")`) {
+		t.Errorf("%s = %q, want the last call to replace the allowlist", secure.HeaderPermissionsPolicy, got)
+	}
+	if strings.Contains(got, "one.example") {
+		t.Errorf("%s = %q, want the first allowlist gone, not accumulated", secure.HeaderPermissionsPolicy, got)
 	}
 }
