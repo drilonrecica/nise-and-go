@@ -20,10 +20,15 @@ import (
 //	mux.Handle("/api/v1/", apiChain(apiRouter))
 //	mux.Handle("/", documentChain(webui.Handler()))
 //
-// Middleware panics if p is nil. A nil policy is a wiring mistake that would
-// otherwise serve every response with no security headers at all, and the
-// project's fail-closed rule makes that a startup failure rather than a
-// silent one.
+// Middleware panics unless p came from [NewDocumentPolicy] or
+// [NewAPIPolicy]. A nil pointer, or a zero-valued secure.Policy reached
+// through a composite literal or an uninitialized struct field, would
+// otherwise serve every response with an empty Content-Security-Policy, no
+// Strict-Transport-Security, and no X-Frame-Options — while
+// [Policy.Waivers] still reported none, so the assertion this package
+// documents as the proof that a policy is unweakened would pass on a policy
+// that enforces nothing. Both are wiring mistakes, and the project's
+// fail-closed rule makes them a startup failure rather than a silent one.
 //
 // # The headers are written last
 //
@@ -34,8 +39,10 @@ import (
 // the last word. That is what makes [Policy]'s "no setters, only options"
 // design mean something at runtime rather than only at construction.
 func Middleware(p *Policy) func(http.Handler) http.Handler {
-	if p == nil {
-		panic("runtime/secure: Middleware called with a nil Policy")
+	if !p.valid() {
+		panic("runtime/secure: Middleware requires a Policy from NewDocumentPolicy " +
+			"or NewAPIPolicy; a nil pointer or a zero-valued secure.Policy enforces " +
+			"nothing while still reporting no waivers")
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

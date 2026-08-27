@@ -181,6 +181,17 @@ const (
 // resulting code says a protection was dropped. Every change goes through a
 // named option instead, and every weakening leaves a [Waiver] behind.
 type Policy struct {
+	// built distinguishes a Policy that a constructor produced from the
+	// zero value. Policy is exported with only unexported fields, which
+	// stops an application from *setting* a field but not from writing
+	// secure.Policy{} — or from declaring a struct field of type
+	// secure.Policy and passing its address. Such a value has an empty CSP,
+	// no HSTS, and no X-Frame-Options, while Waivers() returns an empty
+	// slice, so the assertion this package documents as the way to prove a
+	// policy is unweakened would pass on a policy that enforces nothing.
+	// Middleware refuses it; see Policy.valid.
+	built bool
+
 	deployment Deployment
 	reportOnly bool
 
@@ -197,6 +208,13 @@ type Policy struct {
 	frameOption string
 
 	waivers []Waiver
+}
+
+// valid reports whether p came from NewDocumentPolicy or NewAPIPolicy rather
+// than from a composite literal or a zero-valued struct field.
+func (p *Policy) valid() bool {
+	return p != nil && p.built &&
+		(p.deployment == Development || p.deployment == Production)
 }
 
 // Deployment returns the deployment this policy was built for.
@@ -538,6 +556,7 @@ func (b *builder) build() (*Policy, error) {
 	}
 
 	return &Policy{
+		built:        true,
 		deployment:   b.deployment,
 		reportOnly:   b.reportOnly,
 		directives:   ds,
