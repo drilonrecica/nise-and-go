@@ -1,0 +1,37 @@
+# Runtime Packages
+
+`runtime/` is the only Go API generated applications import. Everything else in the repository — `cmd/`, `internal/`, `templates/`, `test/`, `examples/` — is private and may change in any release.
+
+The package list and the boundary rules are fixed by [ADR 0011](adr/0011-runtime-public-api.md). This page is the index and the status board.
+
+Import path prefix: `github.com/drilonrecica/nise-and-go/runtime/…` ([ADR 0007](adr/0007-module-path-and-owner.md)).
+
+## Packages
+
+| Package | Purpose | Status | Task |
+|---|---|---|---|
+| `runtime` | Documentation only. Declares the stability policy; exports nothing. | implemented | M2-009 |
+| `runtime/config` | Typed environment configuration, `_FILE` secret variants, fail-closed production validation. | planned | M2-001, M2-002, M2-003 |
+| `runtime/logging` | Structured JSON and human-readable logs over `log/slog`, request and correlation IDs, central redaction. | planned | M2-004, M2-005 |
+| `runtime/health` | Startup, liveness, and readiness checks and their handlers. | planned | M2-006 |
+| `runtime/lifecycle` | Process modes `all`, `web`, and `worker`; HTTP server construction; graceful shutdown and bounded draining. | planned | M2-007, M2-008 |
+| `runtime/observability` | HTTP, database-pool, and job metrics, and the optional tracing interface. | planned | M2-011 |
+| `runtime/secure` | Security headers and Content Security Policy for the embedded frontend. | planned | M2-012 |
+
+`runtime/internal/…` holds shared implementation. The Go toolchain makes it invisible to applications, and it carries no compatibility promise.
+
+Compile-time modules live under `modules/`, are selected at generation time, and are recorded in the project recipe ([ADR 0010](adr/0010-project-recipe-format.md)). They are a separate public surface with the same stability policy.
+
+## Boundary rules
+
+- `net/http` middleware lives in the package that owns the concern. There is no middleware aggregator package. The ordered chain is generated application code in `internal/platform/httpapi/router.go` ([ADR 0009](adr/0009-generated-application-layout.md)).
+- A `runtime/` package may import the standard library and `runtime/internal/…`.
+- A `runtime/` package may import another `runtime/` package only along an edge named in ADR 0011. Today that is exactly one: `runtime/lifecycle` may import `runtime/config`, `runtime/logging`, and `runtime/health`. In particular, `runtime/logging` must not import `runtime/config`.
+- No `runtime/` package imports `internal/`, `cmd/`, `templates/`, `test/`, or `examples/`.
+- `runtime/` contains no generators, templates, CLI presentation, network clients, update checks, telemetry, global mutable state, `init()` side effects, or reflection-driven dependency injection.
+
+## Stability
+
+`0.x` is explicitly unstable. Breaking changes are permitted in any `0.x` release and ship with a changelog entry and migration notes ([Versioning and compatibility](versioning.md)). From `1.0`, documented exported identifiers here follow semantic versioning.
+
+Every exported identifier in `runtime/` carries a doc comment. Adding, removing, or retyping one is a contract change: it requires the doc comment, a row change on this page, and an explicit line in the commit message stating what the surface gained or lost.
