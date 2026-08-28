@@ -198,8 +198,49 @@ func TestPostgresWaitReadyGatesOnPgIsready(t *testing.T) {
 	if err := p.WaitReady(context.Background(), ex, rt, 2*time.Second, time.Millisecond); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
-	if attempts != 3 {
-		t.Fatalf("attempts = %d, want 3", attempts)
+	// Two failures, then requiredReadyStreak consecutive successes.
+	if want := 2 + requiredReadyStreak; attempts != want {
+		t.Fatalf("attempts = %d, want %d", attempts, want)
+	}
+}
+
+// TestPostgresWaitReadyRequiresAStreak is the regression for the cold-start
+// race: the postgres image runs initdb against a temporary server, so a
+// single successful probe is not proof the real server is up.
+func TestPostgresWaitReadyRequiresAStreak(t *testing.T) {
+	t.Parallel()
+	p := NewPostgres("demoapp", "", "", "")
+	rt := Runtime{Engine: EngineDocker, Command: "docker"}
+
+	// ok, then "shutting down", then ok forever: a gate that accepted the
+	// first success would hand the caller a database that is about to
+	// close every connection.
+	n := 0
+	ex := &countingExec{fn: func(string) error {
+		n++
+		if n == 2 {
+			return errors.New("the database system is shutting down")
+		}
+		return nil
+	}}
+	if err := p.WaitReady(context.Background(), ex, rt, 2*time.Second, time.Millisecond); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if n < 4 {
+		t.Fatalf("the gate returned after %d probes; it accepted a success that was immediately followed by a shutdown", n)
+	}
+}
+
+// TestPostgresReadyArgsProbeOverTCP pins the flags that make the gate
+// meaningful. Without --host the probe reaches the Unix socket initdb's
+// temporary server listens on.
+func TestPostgresReadyArgsProbeOverTCP(t *testing.T) {
+	t.Parallel()
+	args := strings.Join(NewPostgres("demoapp", "", "", "").readyArgs(), " ")
+	for _, want := range []string{"pg_isready", "--host 127.0.0.1", "--port 5432"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("readyArgs = %q, want it to contain %q", args, want)
+		}
 	}
 }
 
