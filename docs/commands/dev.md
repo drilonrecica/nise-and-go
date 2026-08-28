@@ -117,10 +117,21 @@ document comes from Vite, so **it carries no Content Security Policy** — see
 which writes into the `go:embed` target, then runs the Go server alone on the
 port you open. No Vite, no proxy.
 
-This is the production topology, exactly: one binary serving the built assets
-and the API from one origin, with the **full production security headers
-enforced**, including the Content Security Policy and the inline-script hash the
-server computes from the embedded artifact at startup.
+This is the production **topology**, exactly: one binary serving the built assets
+and the API from one origin. The headers are the same development set described
+under [Development and the CSP](#development-and-the-content-security-policy) —
+**production minus HSTS**, because `APP_ENV` is still `development` and
+`runtime/secure` never pins `Strict-Transport-Security` on a development
+deployment. What `--embedded` changes is that the **Content Security Policy is
+now enforced against the real built artifact**, with the inline-script hash the
+server computes from the embed at startup, instead of being bypassed by a
+document Vite served.
+
+That is the whole point of the mode: the CSP is the header a frontend change can
+break, and it is byte-for-byte the production one. HSTS is the one header
+production adds on top, and it is deliberately absent here — a stray HSTS header
+pins `http://localhost` in your browser for a year and nothing the application
+can do afterwards unpins it.
 
 There is no hot reload in this mode, and a frontend change means re-running the
 command. Use it to confirm a change survives the real policy before you push.

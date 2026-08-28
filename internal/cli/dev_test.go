@@ -198,6 +198,70 @@ func TestValidateDevPortsNeverProbesTheDatabasePort(t *testing.T) {
 	}
 }
 
+// TestFrontendPreconditionIsCheckedBeforeTheDatabase pins the ordering the
+// source reads in: a stat that can fail must run before a step that can pull
+// a 250 MB image. A reader who reorders these would otherwise make a
+// developer with no frontend/node_modules wait out a download before being
+// told something that was already true when they pressed enter.
+func TestFrontendPreconditionIsCheckedBeforeTheDatabase(t *testing.T) {
+	t.Parallel()
+	src, err := os.ReadFile("dev.go")
+	if err != nil {
+		t.Fatalf("reading dev.go: %v", err)
+	}
+	body := string(src)
+	frontend := strings.Index(body, "requireFrontendDependencies(root)")
+	database := strings.Index(body, "startDevDatabase(")
+	if frontend < 0 || database < 0 {
+		t.Fatal("could not find both call sites in dev.go")
+	}
+	if frontend > database {
+		t.Fatal("requireFrontendDependencies runs after startDevDatabase; the cheap precondition must come first")
+	}
+}
+
+// TestDatabaseTeardownRunsOnEveryExitPath covers the leak the review found:
+// any failure after the database is up — a failed proxy build, a failed
+// frontend build, a proxy port taken between the pre-flight check and the
+// listen — returned without honoring --stop-db and without printing the stop
+// hint, so a container was left running and a flag silently did nothing.
+//
+// The guarantee is structural rather than incidental, so it is asserted
+// structurally: the teardown is deferred immediately after the database
+// starts, and the ordered shutdown calls the same once-guarded closure so the
+// happy path keeps its line ordering without running the teardown twice.
+func TestDatabaseTeardownRunsOnEveryExitPath(t *testing.T) {
+	t.Parallel()
+	src, err := os.ReadFile("dev.go")
+	if err != nil {
+		t.Fatalf("reading dev.go: %v", err)
+	}
+	body := string(src)
+
+	start := strings.Index(body, "startDevDatabase(")
+	deferred := strings.Index(body, "defer teardownDatabase()")
+	if start < 0 || deferred < 0 {
+		t.Fatal("could not find the database start and its deferred teardown in dev.go")
+	}
+	if deferred < start {
+		t.Fatal("the teardown is deferred before the database is started")
+	}
+	// Nothing may return between the two: every path after the container is
+	// up has to reach the defer.
+	between := body[start:deferred]
+	if strings.Count(between, "return err") > 1 {
+		t.Fatalf("more than one early return sits between starting the database and deferring its teardown:\n%s", between)
+	}
+	// The ordered shutdown must go through the same closure, not a second
+	// direct call that would double-print or double-stop.
+	if strings.Count(body, "stopDevDatabase(") != 1 {
+		t.Fatal("stopDevDatabase is called from more than one place; route every path through teardownDatabase")
+	}
+	if !strings.Contains(body, "teardownOnce.Do(") {
+		t.Fatal("the teardown is not once-guarded; the deferred call would repeat the ordered shutdown's")
+	}
+}
+
 func TestAppListenPortFollowsEmbeddedMode(t *testing.T) {
 	t.Parallel()
 	f := devFlags{port: "8080", appPort: "8081"}

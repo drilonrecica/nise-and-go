@@ -32,8 +32,11 @@ type Runtime struct {
 	Version string
 }
 
-// String renders the runtime for a startup line, e.g.
-// `podman (docker) 5.8.4` when the docker binary is a Podman shim.
+// String renders the runtime for a startup line. It names the engine, and
+// names the binary too whenever the two disagree, so a Podman shim invoked
+// as `docker` reads as `podman (via "docker") 5.8.4` rather than hiding
+// which of the two a copy-pasted command should use. A binary whose name
+// matches its engine renders plainly: `podman 5.8.4`.
 func (r Runtime) String() string {
 	if r.Command != string(r.Engine) {
 		return fmt.Sprintf("%s (via %q) %s", r.Engine, r.Command, r.Version)

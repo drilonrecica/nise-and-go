@@ -171,6 +171,15 @@ func runDev(ctx context.Context, env *Env, f devFlags) error {
 	if err := validateDevPorts(f); err != nil {
 		return err
 	}
+	// Cheapest precondition first. This is a stat; the next step can pull a
+	// 250 MB image. Checking it after the pull means a developer with no
+	// frontend/node_modules waits out a download before being told the
+	// thing that was already true when they pressed enter.
+	if !f.embedded {
+		if err := requireFrontendDependencies(root); err != nil {
+			return err
+		}
+	}
 
 	// Color is decided from the detected terminal capabilities. Child
 	// output is stripped of ANSI when color is off, and the children are
@@ -197,6 +206,23 @@ func runDev(ctx context.Context, env *Env, f devFlags) error {
 	if err != nil {
 		return err
 	}
+	// From here on, every exit path must run the database teardown — not
+	// just the ordered shutdown below, but also a failed proxy build, a
+	// failed frontend build, and a proxy port that was taken between the
+	// pre-flight check and the listen. --stop-db is a promise, and a
+	// container left running with no message is both a resource leak and a
+	// flag that silently did nothing, which is the pair most likely to make
+	// somebody stop trusting the command.
+	//
+	// The sync.Once is what lets the deferred safety net coexist with the
+	// explicit call the ordered shutdown makes: the happy path keeps the
+	// database line in its right place, after the children have stopped,
+	// and the error paths still get it.
+	var teardownOnce sync.Once
+	teardownDatabase := func() {
+		teardownOnce.Do(func() { stopDevDatabase(ctx, env, f, db, dbRuntime, pr) })
+	}
+	defer teardownDatabase()
 
 	topology := devTopology{
 		Project:  project.name,
@@ -212,9 +238,6 @@ func runDev(ctx context.Context, env *Env, f devFlags) error {
 
 	var proxySrv *http.Server
 	if !f.embedded {
-		if err := requireFrontendDependencies(root); err != nil {
-			return err
-		}
 		proxy, err := buildDevProxy(f, pr)
 		if err != nil {
 			return err
@@ -314,7 +337,7 @@ func runDev(ctx context.Context, env *Env, f devFlags) error {
 		cancelShutdown()
 	}
 	wg.Wait()
-	stopDevDatabase(ctx, env, f, db, dbRuntime, pr)
+	teardownDatabase()
 
 	failMu.Lock()
 	defer failMu.Unlock()
