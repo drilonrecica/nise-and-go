@@ -18,6 +18,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Security model](security.md)
 - [Security headers and Content Security Policy](security-headers.md)
 - [CLI and distribution](cli-and-distribution.md)
+- [No telemetry](no-telemetry.md)
 - [CLI output contract](cli-output.md)
 - [Performance baselines](performance-baselines.md)
 - [`nise new`](commands/new.md)
