@@ -8,25 +8,37 @@ import (
 // RedactPlaceholder replaces a value this package decides not to print.
 const RedactPlaceholder = "[REDACTED]"
 
-// denyFragments is a small, independent copy of the key-fragment idea in
-// runtime/logging's redaction deny-set (see runtime/logging/redact.go). It
-// is NOT imported from there on purpose: Constraint 2 in
-// .superpowers/sdd/execution-plan/constraints.md keeps cmd/ and internal/
-// standard-library-only for the CLI, and the controller's brief for this
-// task is explicit that internal/cli must not depend on runtime/ at all —
-// doctor, dev, and friends run before a runtime/logging instance even
-// exists. Do not "fix" this duplication by adding the import; that import
-// is exactly what was ruled out. If the two lists drift, that is an
-// accepted cost of keeping the CLI dependency-free, not a bug in either
-// package.
+// denyFragments is a small, independent list serving the same idea as
+// runtime/logging's redaction deny-set (see runtime/logging/redact.go),
+// deliberately kept separate rather than imported.
 //
-// This copy is intentionally smaller than runtime/logging's: it skips that
-// package's camelCase/word-boundary normalization and its narrower
-// "session"-only bounding, because CLI error detail keys are Nise's own
-// short, hand-written identifiers (e.g. "dsn", "recipe_path"), not
-// arbitrary structured-log attribute names pulled from third-party
-// libraries. Plain case-insensitive substring containment is enough for
-// that narrower job.
+// The reason is what the two lists are for, not a rule about import
+// direction. ADR 0011 permits internal/ to import runtime/ precisely when
+// the point is to reuse a rule the runtime enforces unconditionally, so the
+// CLI cannot validate a divergent copy of it — internal/check does exactly
+// that for ParseEnvironment and ParseMode. Redaction is not that shape.
+// runtime/logging's list is tuned for arbitrary structured-log attribute
+// names arriving from third-party libraries, and carries camelCase and
+// word-boundary normalization plus a narrower "session"-only bounding to
+// cope with them. This one covers CLI error-detail keys, which are Nise's
+// own short, hand-written identifiers ("dsn", "recipe_path"), where plain
+// case-insensitive substring containment is enough. There is no single
+// source of truth here for the two to drift apart from: they are two
+// answers to two different questions, and sharing one list would force each
+// to carry the other's compromises.
+//
+// A second consideration reinforces it rather than carrying it alone:
+// clierr runs in commands (doctor, dev) that execute before any
+// runtime/logging instance exists, so there is nothing to borrow at the
+// moment it is needed.
+//
+// So: adding a fragment here does not oblige anyone to add it there, or the
+// reverse. What each list must stay is complete for its own input
+// population; redact_test.go is where that is pinned for this one. If a
+// future change does make the two genuinely one question — a shared
+// runtime/internal redaction package, say, which ADR 0011 already names as
+// the expected first resident of runtime/internal/ — reconsidering this
+// split is legitimate, not forbidden.
 var denyFragments = []string{
 	"password",
 	"passwd",

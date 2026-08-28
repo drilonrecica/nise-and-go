@@ -36,6 +36,19 @@ config.go`, the router's middleware list, the frontend's component tree —
 `nise check` must not assert it. See [Checks that were deliberately
 excluded](#checks-that-were-deliberately-excluded).
 
+**One check is admitted on a different ground, and it is worth naming.**
+`secret-material` does not come from `runtime/`, the recipe, or the rules of
+generation. It rests on Global Constraint 8 — no secret, token, cookie value,
+password, or connection-string password may surface — extended to the
+project's own tracked files. It is also the one check that *can* fail a
+project whose only fault is that it was customized, which is exactly the case
+the rule above exists to exclude. What keeps the exception defensible is that
+the property is not a Nise convention at all: a committed credential is a
+defect in any repository under any framework, and is the one finding whose
+cost of being missed is unbounded. The price is a real false-positive risk,
+which is why every rule below is written narrow, is paired with an explicit
+tolerance, and has both a detection and a non-detection test.
+
 ## `skipped` is a first-class result
 
 A check reports `skipped`, always with a reason, whenever it cannot actually

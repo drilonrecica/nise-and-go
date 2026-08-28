@@ -46,6 +46,18 @@ var envKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // but never as both. Each is checked through the runtime's own parser, so a
 // change to what the runtime accepts changes what this check accepts,
 // automatically.
+//
+// That last sentence is why this file imports runtime/config and
+// runtime/lifecycle at all, and it is the whole justification for the
+// import: a second copy of ParseEnvironment's and ParseMode's closed value
+// sets would drift, and this check would then validate something other than
+// what the process will actually accept. ADR 0011's import rules permit
+// internal/ to import runtime/ on exactly that ground and no other — reusing
+// a rule the runtime enforces unconditionally — and name this import as the
+// only current instance. Adding another one means adding its justification
+// to that list. It is not a general licence to build CLI code on runtime
+// types; see internal/cli/clierr/redact.go for a case where duplication
+// remains the right answer.
 func checkConfig(envFile string) Check {
 	if envFile == "" {
 		return skip(CheckConfig, invariantConfig,
