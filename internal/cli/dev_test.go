@@ -334,14 +334,21 @@ func TestChildEnvKeepsAnExplicitAppEnv(t *testing.T) {
 }
 
 func TestChildEnvDisablesChildColorWhenColorIsOff(t *testing.T) {
+	// Isolate this assertion from the process running the test. An inherited
+	// NO_COLOR (as used by many CI and agent environments) is the developer's
+	// value to preserve, not one childEnv forced itself.
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("FORCE_COLOR", "")
+
 	got := envMap(childEnv(devFlags{appPort: "8081"}, nil, false))
 	if got["NO_COLOR"] != "1" || got["FORCE_COLOR"] != "0" {
 		t.Fatalf("NO_COLOR=%q FORCE_COLOR=%q, want the children asked not to color",
 			got["NO_COLOR"], got["FORCE_COLOR"])
 	}
 	got = envMap(childEnv(devFlags{appPort: "8081"}, nil, true))
-	if _, ok := got["NO_COLOR"]; ok {
-		t.Fatal("NO_COLOR was forced on a color-capable terminal")
+	if got["NO_COLOR"] != "" || got["FORCE_COLOR"] != "" {
+		t.Fatalf("NO_COLOR=%q FORCE_COLOR=%q, want the inherited values preserved on a color-capable terminal",
+			got["NO_COLOR"], got["FORCE_COLOR"])
 	}
 }
 
