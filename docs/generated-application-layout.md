@@ -214,9 +214,11 @@ All three code generators write their own `Code generated … DO NOT EDIT.` head
 `frontend/` sits inside the Go module, so `go build ./...`, `go list ./...`, and `gofmt -l .` walk `frontend/node_modules/`, and an npm package that happens to ship a `.go` file is listed as a package of the application. Generated tooling names its Go targets explicitly instead:
 
 ```sh
-go build ./cmd/... ./internal/... ./db/...
-gofmt -l cmd internal db
+go build ./cmd/... ./internal/...
+gofmt -l cmd internal
 ```
+
+`db/` is reserved for `db/embed.go` and the SQL migrations it embeds. Until that file exists it holds no Go package, so naming `./db/...` produces `go: warning: "./db/..." matched no packages` on every run; the generated `Makefile`, `nise test`, and the generated `AGENTS.md` all omit it today and all gain it together when the database milestone lands.
 
 ## Naming rules
 

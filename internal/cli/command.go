@@ -20,6 +20,23 @@ type Command struct {
 	Name string
 	// Short is a one-line description shown in help listings.
 	Short string
+	// Args, if non-empty, is this command's positional-argument
+	// signature, written the way a user reads it in a usage line — for
+	// example "<name>" for `nise generate feature <name>`, or
+	// "[name]" for an argument the command can prompt for instead.
+	//
+	// It exists because a command's positional arguments are otherwise
+	// invisible: help renders "nise new [flags]", and a user reading only
+	// --help has no way to discover that `nise new` takes a project name
+	// at all. The flag package describes flags for us; nothing described
+	// these, so the help system could not express them and the
+	// documentation had to send readers to an output that did not contain
+	// the answer.
+	//
+	// Empty means the command takes no positional arguments. Nothing
+	// validates Args against what Run actually accepts — it is help text,
+	// and Run remains the authority on argument count.
+	Args string
 	// NewFlagSet, if non-nil, is called fresh on every dispatch to build
 	// this command's own flag.FlagSet. Building it fresh (rather than
 	// storing a single *flag.FlagSet on the Command) means the same

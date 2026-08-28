@@ -489,7 +489,21 @@ func runHelp(out output.Writer, root []*Command, args []string) int {
 // unknownCommandError builds the usage error for an unrecognized command
 // or subcommand name, including a "did you mean" suggestion when one of
 // candidates is a close edit-distance match.
+//
+// A token that begins with a dash is reported as a flag, not a command.
+// `nise -json version` used to answer `unknown command "-json"`, which
+// names the wrong kind of thing entirely and sends the reader looking for a
+// command they never typed. Recognizing single-dash spellings of the global
+// flags stays deferred; only the noun is corrected here, and the recovery
+// line says what the accepted spelling is.
 func unknownCommandError(parentPath []string, attempted string, candidates []string) *clierr.Error {
+	if isFlagToken(attempted) {
+		return clierr.Usage(
+			fmt.Sprintf("unknown flag %q", attempted),
+			`Global flags are spelled with two dashes and may appear before or after the command, for example "nise --json version". Run "nise help" to see them.`,
+		).WithDocs("docs/cli-output.md#usage-errors")
+	}
+
 	label := "command"
 	if len(parentPath) > 0 {
 		label = fmt.Sprintf("subcommand of %q", "nise "+strings.Join(parentPath, " "))
@@ -500,4 +514,12 @@ func unknownCommandError(parentPath []string, attempted string, candidates []str
 		recovery = fmt.Sprintf("Did you mean %q? Run \"nise help\" to see available commands.", s)
 	}
 	return clierr.Usage(cause, recovery).WithDocs("docs/cli-output.md#usage-errors")
+}
+
+// isFlagToken reports whether a command-line token is a flag rather than a
+// command name. A bare "-" is conventionally stdin or a placeholder, not a
+// flag, and no nise command name begins with a dash, so the check is the
+// leading dash plus at least one more character.
+func isFlagToken(tok string) bool {
+	return len(tok) > 1 && strings.HasPrefix(tok, "-")
 }

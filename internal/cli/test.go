@@ -70,7 +70,7 @@ type suitePlan struct {
 }
 
 // describe renders p's command for human and JSON reporting, e.g.
-// "go test ./cmd/... ./internal/... ./db/...".
+// "go test ./cmd/... ./internal/...".
 func (p suitePlan) describe(extraArgs []string) string {
 	return strings.Join(append(append([]string{}, p.Argv...), extraArgs...), " ")
 }
@@ -81,6 +81,14 @@ func (p suitePlan) describe(extraArgs []string) string {
 // docs/generated-application-layout.md's own "Go targets" section
 // prescribes: frontend/ sits inside the same Go module, so a bare `./...`
 // would also walk frontend/node_modules/.
+//
+// The package list is exactly the generated Makefile's GO_PACKAGES, and
+// deliberately so: two commands claiming to run "the project's Go tests"
+// must not run different sets. It omits ./db/..., which the Makefile also
+// omits — a fresh project's db/ holds SQL migrations and no Go package, so
+// naming it only produces `go: warning: "./db/..." matched no packages` on
+// every single run. When db/ gains generated Go, it is reached through
+// ./internal/... or added to both lists at once.
 func planGoSuite(root string) suitePlan {
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
 		return suitePlan{Name: suiteGo, SkipReason: "no go.mod found at the project root"}
@@ -88,7 +96,7 @@ func planGoSuite(root string) suitePlan {
 	return suitePlan{
 		Name:     suiteGo,
 		Runnable: true,
-		Argv:     []string{"go", "test", "./cmd/...", "./internal/...", "./db/..."},
+		Argv:     []string{"go", "test", "./cmd/...", "./internal/..."},
 		Dir:      root,
 	}
 }

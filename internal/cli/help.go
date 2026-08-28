@@ -112,19 +112,28 @@ func rootHelp(cmds []*Command) helpResult {
 // commandHelp builds the helpResult for a resolved command reached via
 // path (the sequence of command-name tokens that led to it).
 func commandHelp(path []string, cmd *Command) helpResult {
+	flags := flagsOf(cmd)
+
 	usage := "nise " + strings.Join(path, " ")
-	if cmd.NewFlagSet != nil {
-		usage += " [flags]"
-	}
 	if len(cmd.Subcommands) > 0 {
 		usage += " <subcommand>"
+	}
+	if cmd.Args != "" {
+		usage += " " + cmd.Args
+	}
+	// "[flags]" is gated on the command actually registering one, not on
+	// NewFlagSet being non-nil. `nise generate feature` builds an empty
+	// FlagSet (dispatch wants one either way) and used to advertise flags
+	// it does not have, while its one real argument went unmentioned.
+	if len(flags) > 0 {
+		usage += " [flags]"
 	}
 	return helpResult{
 		Path:     path,
 		Short:    cmd.Short,
 		Usage:    usage,
 		Commands: summaries(cmd.Subcommands),
-		Flags:    flagsOf(cmd),
+		Flags:    flags,
 	}
 }
 

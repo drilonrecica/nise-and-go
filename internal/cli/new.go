@@ -114,6 +114,9 @@ func newCommand() *Command {
 	return &Command{
 		Name:  "new",
 		Short: "Create a new Nise application",
+		// Optional in the usage line because an interactive terminal can
+		// prompt for it; --json, --yes, and --no-input all require it.
+		Args: "[name]",
 		NewFlagSet: func() *flag.FlagSet {
 			fs := flag.NewFlagSet("new", flag.ContinueOnError)
 			flags.bind(fs)

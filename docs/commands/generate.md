@@ -65,7 +65,7 @@ mode — before any generator is invoked.
 ```
 $ nise generate feature invoice_line
 name "invoice_line" must start with a letter and contain only letters and digits — no underscore, hyphen, or space (docs/generated-application-layout.md: "Go directory names contain no underscores or hyphens")
-Choose a name matching ^[A-Za-z][A-Za-z0-9]*$ that is not a reserved word; see "nise generate feature --help".
+Choose a name matching ^[A-Za-z][A-Za-z0-9]*$ that is not a reserved word.
 ```
 
 ## What happens once the name is valid
