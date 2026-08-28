@@ -26,6 +26,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [`nise agents`](commands/agents.md)
 - [`nise test`](commands/test.md)
 - [`nise generate`](commands/generate.md)
+- [`nise check`](commands/check.md)
 - [Toolchain](toolchain.md)
 - [Dependency allowlist](dependencies.md)
 - [Supported platforms](supported-platforms.md)
