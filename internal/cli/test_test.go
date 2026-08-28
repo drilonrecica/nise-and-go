@@ -424,11 +424,14 @@ func TestTestCommandHasNoReservedFlagCollisions(t *testing.T) {
 }
 
 // writeGoFixtureModule writes a minimal Go module at dir with a package
-// under each of cmd/, internal/, and db/ — planGoSuite's own three targets
-// (./cmd/... ./internal/... ./db/...) — so `go test` against all three
-// finds real packages instead of failing at setup with "no such
-// directory" for whichever of cmd/ or db/ a narrower fixture omitted.
-// internal/x's own test either passes or fails depending on failing.
+// under each of cmd/ and internal/ — planGoSuite's own two targets
+// (./cmd/... ./internal/...) — so `go test` against both finds real
+// packages instead of failing at setup with "no such directory" for
+// whichever a narrower fixture omitted. It also writes db/embed.go, which
+// planGoSuite deliberately does not name today (see its doc comment): the
+// fixture keeps it so the assertion that db/ is *not* tested stays
+// meaningful. internal/x's own test either passes or fails depending on
+// failing.
 func writeGoFixtureModule(t *testing.T, dir string, failing bool) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module fixture\n\ngo 1.26\n"), 0o644); err != nil {

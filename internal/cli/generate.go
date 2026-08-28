@@ -168,6 +168,7 @@ func generateFeatureCommand(gen Generator) *Command {
 	return &Command{
 		Name:  "feature",
 		Short: "Scaffold a new vertical-slice feature (not implemented until milestone M7)",
+		Args:  "<name>",
 		NewFlagSet: func() *flag.FlagSet {
 			return flag.NewFlagSet("feature", flag.ContinueOnError)
 		},
@@ -179,6 +180,7 @@ func generateResourceCommand(gen Generator) *Command {
 	return &Command{
 		Name:  "resource",
 		Short: "Scaffold a full CRUD resource within a feature (not implemented until milestone M7)",
+		Args:  "<name>",
 		NewFlagSet: func() *flag.FlagSet {
 			return flag.NewFlagSet("resource", flag.ContinueOnError)
 		},
@@ -203,7 +205,7 @@ func generateRun(kind string, do func(ctx context.Context, root, name string) er
 		name, err := ValidateResourceName(env.Args[0])
 		if err != nil {
 			return clierr.Usage(err.Error(),
-				`Choose a name matching ^[A-Za-z][A-Za-z0-9]*$ that is not a reserved word; see "nise generate `+kind+` --help".`,
+				`Choose a name matching ^[A-Za-z][A-Za-z0-9]*$ that is not a reserved word.`,
 			).WithCode("generate.invalid_name").WithDocs("docs/commands/generate.md#naming-rules")
 		}
 
