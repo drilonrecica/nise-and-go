@@ -1,7 +1,9 @@
 package agentsfile
 
 import (
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -27,44 +29,51 @@ var blobLinkRE = regexp.MustCompile(`github\.com/drilonrecica/nise-and-go/blob/(
 // one edit in agentsmd.go plus a fixture regeneration, and a second spelling
 // cannot be introduced silently.
 func TestRepositoryBlobLinksUseOneBranch(t *testing.T) {
-	root := repoRoot(t)
+	dir := repoRoot(t)
+
+	// os.Root confines every read below to the repository worktree, so a
+	// symlink inside it cannot make this test read a file outside it.
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("opening %s: %v", dir, err)
+	}
+	defer func() { _ = root.Close() }()
 
 	var checked int
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	walkErr := fs.WalkDir(root.FS(), ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			switch d.Name() {
 			case ".git", "node_modules", "privateDocs":
-				return filepath.SkipDir
+				return fs.SkipDir
 			}
 			return nil
 		}
-		if !textFileExtension(filepath.Ext(d.Name())) {
+		if !textFileExtension(path.Ext(d.Name())) {
 			return nil
 		}
-		data, readErr := os.ReadFile(path) // #nosec G304 -- path comes from walking this repository's own worktree in a test.
+		data, readErr := fs.ReadFile(root.FS(), name)
 		if readErr != nil {
 			return readErr
 		}
-		rel, _ := filepath.Rel(root, path)
 		for _, m := range blobLinkRE.FindAllStringSubmatch(string(data), -1) {
 			checked++
 			branch, _, _ := strings.Cut(m[1], "/")
 			if branch != niseRepoDefaultBranch {
 				t.Errorf("%s links to blob/%s; the repository's default branch is %q. "+
 					"Build repository links from niseRepoBlobURL (internal/agentsfile/agentsmd.go) "+
-					"so there is exactly one branch name in the tree.", rel, branch, niseRepoDefaultBranch)
+					"so there is exactly one branch name in the tree.", name, branch, niseRepoDefaultBranch)
 			}
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("walking %s: %v", root, err)
+	if walkErr != nil {
+		t.Fatalf("walking %s: %v", dir, walkErr)
 	}
 	if checked == 0 {
-		t.Fatalf("found no repository blob links under %s; the guard is not actually checking anything", root)
+		t.Fatalf("found no repository blob links under %s; the guard is not actually checking anything", dir)
 	}
 }
 
