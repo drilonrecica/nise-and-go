@@ -54,6 +54,19 @@ type MiddlewareOptions struct {
 // Middleware never logs the request or response body, or any part of
 // either.
 func Middleware(logger *slog.Logger, opts MiddlewareOptions) func(http.Handler) http.Handler {
+	// A nil logger is never a valid argument: this middleware calls
+	// logger.With on every request, so accepting nil turns a wiring mistake
+	// into a nil-pointer dereference on the first request the process
+	// serves, in a middleware whose whole job is to make failures legible.
+	// Failing here instead puts it in the startup path, where the stack
+	// names the wiring site. Substituting slog.Default() would be worse:
+	// the process would run, logs would go somewhere nobody configured, and
+	// the mistake would surface as missing output rather than as an error.
+	if logger == nil {
+		panic("runtime/logging: Middleware requires a non-nil *slog.Logger; " +
+			"build one with slog.New(logging.NewJSONHandler(...)) or slog.New(logging.NewTextHandler(...)) and pass it explicitly")
+	}
+
 	requestHeader := opts.RequestIDHeader
 	if requestHeader == "" {
 		requestHeader = DefaultRequestIDHeader

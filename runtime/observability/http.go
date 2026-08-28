@@ -5,11 +5,24 @@ import (
 	"time"
 )
 
-// DefaultHTTPDurationBuckets are the histogram bucket boundaries, in
+// defaultHTTPDurationBuckets backs [DefaultHTTPDurationBuckets]. It is
+// unexported, and every reader gets a copy, because a package-level
+// exported slice is package-level mutable state: assigning one element of
+// it would change the bucket bounds of every histogram constructed
+// afterwards, process-wide. runtime/doc.go and ADR 0011 both promise that
+// nothing in runtime holds global mutable state.
+var defaultHTTPDurationBuckets = []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10}
+
+// DefaultHTTPDurationBuckets returns the histogram bucket boundaries, in
 // seconds, [NewHTTPMetrics] uses for its request-duration histogram. They
 // are the Prometheus client libraries' own conventional default buckets,
 // spanning 5ms to 10s.
-var DefaultHTTPDurationBuckets = []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10}
+//
+// The returned slice is a fresh copy; mutating it has no effect on the
+// package default, matching [logging.DefaultDenyKeys]'s contract.
+func DefaultHTTPDurationBuckets() []float64 {
+	return copyFloats(defaultHTTPDurationBuckets)
+}
 
 // unmatchedRoute labels a request Middleware's [RouteTemplateFunc] could
 // not resolve to a template — typically a 404 the router never matched to
@@ -57,7 +70,7 @@ func NewHTTPMetrics(reg *Registry) (*HTTPMetrics, error) {
 			Help:   "HTTP request duration in seconds, by method, route template, and status class.",
 			Labels: []string{"method", "route", "status_class"},
 		},
-		Buckets: DefaultHTTPDurationBuckets,
+		Buckets: defaultHTTPDurationBuckets,
 	})
 	if err != nil {
 		return nil, err

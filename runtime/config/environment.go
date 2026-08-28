@@ -37,7 +37,7 @@ func ParseEnvironment(raw string) (Environment, error) {
 		return Environment(raw), nil
 	default:
 		return "", fmt.Errorf(
-			"unrecognized environment %q; want one of %q, %q, or %q",
+			"config: unrecognized environment %q; want one of %q, %q, or %q",
 			raw, Development, Test, Production,
 		)
 	}

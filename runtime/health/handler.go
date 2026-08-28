@@ -16,6 +16,26 @@ var (
 	unavailableBody = []byte(`{"status":"unavailable"}`)
 )
 
+// requireGate panics when a handler constructor is handed a nil *Gate.
+//
+// Without it, nil is accepted silently and the failure surfaces later as a
+// bare nil-pointer dereference inside the probe handler — on the liveness
+// probe, which is exactly the request an operator least wants to be the
+// first symptom of a wiring mistake. A nil Gate is never a valid argument,
+// so this fails at construction, in the process's own startup path, with a
+// message naming the package, the parameter, and how to build a valid one.
+// It deliberately does not substitute a default Gate: that would hide the
+// wiring bug behind a probe reporting a state nobody chose.
+//
+// A zero-valued Gate (&health.Gate{}) is valid and fails closed — not
+// ready — so only nil is rejected here.
+func requireGate(constructor string, gate *Gate) {
+	if gate == nil {
+		panic("runtime/health: " + constructor + " requires a non-nil *health.Gate; " +
+			"build one with health.NewGate(ready bool), or use &health.Gate{}, which starts not ready")
+	}
+}
+
 func writeProbeResponse(w http.ResponseWriter, healthy bool) {
 	w.Header().Set("Content-Type", contentTypeJSON)
 	if healthy {
@@ -32,6 +52,8 @@ func writeProbeResponse(w http.ResponseWriter, healthy bool) {
 // the liveness and readiness probes are not consulted until initialization
 // — migrations checked, pools built — has finished.
 func NewStartupHandler(gate *Gate) http.Handler {
+	requireGate("NewStartupHandler", gate)
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeProbeResponse(w, gate.Ready())
 	})
@@ -44,6 +66,8 @@ func NewStartupHandler(gate *Gate) http.Handler {
 // deadlock, never merely because a downstream dependency is unavailable
 // (that is what readiness is for).
 func NewLivenessHandler(gate *Gate) http.Handler {
+	requireGate("NewLivenessHandler", gate)
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeProbeResponse(w, gate.Ready())
 	})
@@ -60,6 +84,8 @@ func NewLivenessHandler(gate *Gate) http.Handler {
 // [NewReadinessReportHandler], mounted behind your own authorization, for a
 // detailed view.
 func NewReadinessHandler(gate *Gate, prober *Prober) http.Handler {
+	requireGate("NewReadinessHandler", gate)
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		healthy := gate.Ready()
 		if healthy && prober != nil {
@@ -86,6 +112,8 @@ type readinessReport struct {
 // caller must mount this handler only behind middleware that authenticates
 // the caller first. Never expose it directly to an unauthenticated client.
 func NewReadinessReportHandler(gate *Gate, prober *Prober) http.Handler {
+	requireGate("NewReadinessReportHandler", gate)
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		report := Report{Healthy: true}
 		if prober != nil {
