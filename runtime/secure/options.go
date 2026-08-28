@@ -58,9 +58,13 @@ func AllowReportOnly(reason string) Option {
 }
 
 // WithReportURI sends CSP violation reports to uri, which must be a
-// same-origin absolute path such as "/api/v1/csp-reports" or an https URL.
-// Plain http is refused: a violation report names the page URL and the
-// blocked resource, and those must not cross the network in cleartext.
+// same-origin absolute path such as "/api/v1/csp-reports". Anything else —
+// including an https URL naming another origin — is refused here; use
+// [AllowExternalReportURI], which takes a reason and records a [Waiver].
+//
+// A same-origin path takes no reason because it weakens nothing: the
+// reports go to the application already serving the page, over the
+// connection the browser already has.
 //
 // Only the report-uri directive is emitted. The newer Reporting-API pairing
 // of report-to with a Reporting-Endpoints header is deliberately not built
@@ -68,10 +72,53 @@ func AllowReportOnly(reason string) Option {
 // report-uri remains the form every current browser accepts.
 func WithReportURI(uri string) Option {
 	return func(b *builder) {
-		if err := validReportURI(uri); err != nil {
+		form, err := classifyReportURI(uri)
+		if err != nil {
 			b.fail(err)
 			return
 		}
+		if form != reportURISameOrigin {
+			b.fail(fmt.Errorf(
+				"secure: WithReportURI accepts a same-origin absolute path only; "+
+					"%q names another origin, which sends every violation report to a third party — "+
+					"use AllowExternalReportURI(reason, uri) instead", uri))
+			return
+		}
+		b.reportURI = uri
+	}
+}
+
+// AllowExternalReportURI sends CSP violation reports to uri at another
+// origin — a hosted collector — and records a [Waiver] naming reason.
+//
+// It is an Allow… option, not a With…, because it is a real weakening
+// dressed as configuration. A violation report names the page URL, the
+// referrer, the blocked resource, and, for an inline violation, a sample of
+// the script or style that was blocked. Sending that stream continuously to
+// a third party discloses this application's internal URL structure, and
+// the collector becomes a place an attacker can look for the shape of an
+// application they cannot otherwise see. That is a decision an operator
+// should have to justify once, in code, where [Policy.Waivers] can report
+// it at startup and a test can assert against it.
+//
+// uri must be an absolute https URL. Plain http is refused: the report's
+// contents must not cross the network in cleartext. A same-origin absolute
+// path is also refused here — it weakens nothing and belongs in
+// [WithReportURI], so that a waiver always means something.
+func AllowExternalReportURI(reason, uri string) Option {
+	return func(b *builder) {
+		form, err := classifyReportURI(uri)
+		if err != nil {
+			b.fail(err)
+			return
+		}
+		if form != reportURIExternal {
+			b.fail(fmt.Errorf(
+				"secure: AllowExternalReportURI is for a collector at another origin; "+
+					"%q is same-origin, so use WithReportURI(uri), which records no waiver", uri))
+			return
+		}
+		b.waive("content-security-policy", "report-uri "+uri, reason)
 		b.reportURI = uri
 	}
 }

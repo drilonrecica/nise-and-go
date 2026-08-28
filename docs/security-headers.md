@@ -196,7 +196,7 @@ if got := documentPolicy.Waivers(); len(got) != 0 {
 | Option | Effect | Waiver |
 |---|---|---|
 | `AllowReportOnly(reason)` | Report violations, block nothing at all | yes |
-| `WithReportURI(uri)` | Send reports to a same-origin path or an https URL | no |
+| `WithReportURI(uri)` | Send reports to a same-origin absolute path | no |
 | `WithScriptHashes(…)` | Allow exact inline scripts by hash | no |
 | `WithStyleHashes(…)` | Allow exact inline style elements by hash | no |
 | `WithHSTSPreload()` | Add `preload` to HSTS | no |
@@ -212,6 +212,7 @@ if got := documentPolicy.Waivers(); len(got) != 0 {
 | `AllowCrossOriginPopups(reason)` | COOP `same-origin-allow-popups` | yes |
 | `AllowCrossOriginResources(reason, p)` | CORP `same-site` or `cross-origin` | yes |
 | `AllowReferrerPolicy(reason, p)` | A referrer policy that leaks cross-origin | yes |
+| `AllowExternalReportURI(reason, uri)` | Send reports to an https collector at another origin | yes |
 | `AllowPermission(reason, feature, …)` | Grant a denied browser capability | yes |
 | `AllowReducedHSTS(reason, maxAge, includeSubdomains)` | Shorten HSTS or drop `includeSubDomains` | yes |
 
