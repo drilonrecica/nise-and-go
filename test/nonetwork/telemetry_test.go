@@ -91,11 +91,19 @@ var httpsHostPattern = regexp.MustCompile(`https?://([A-Za-z0-9](?:[A-Za-z0-9-]*
 // loopbackHosts never need an allowlist entry: they are not network
 // destinations outside this process, they are the localhost addresses
 // nise dev's own proxy and health/lifecycle test fixtures bind or dial.
-var loopbackHostPrefixes = []string{
-	"127.0.0.1",
-	"localhost",
-	"0.0.0.0",
-	"::1",
+//
+// Matched by exact string equality, deliberately — not
+// strings.HasPrefix, which a prefix match like "127.0.0.1" would let
+// "127.0.0.1.evil-telemetry.example" walk straight through as
+// "loopback" and skip the allowlist check entirely. isLoopbackHost's
+// only job is to recognize these four literals; anything merely
+// starting with one of them is a real, unallowlisted host and must be
+// reported like any other.
+var loopbackHosts = map[string]bool{
+	"127.0.0.1": true,
+	"localhost": true,
+	"0.0.0.0":   true,
+	"::1":       true,
 }
 
 // scanExtensions are the file suffixes goSourceFiles walks. ".tmpl" is
@@ -185,12 +193,7 @@ func TestHTTPSHostAllowlistHasNoStaleEntries(t *testing.T) {
 }
 
 func isLoopbackHost(host string) bool {
-	for _, prefix := range loopbackHostPrefixes {
-		if strings.HasPrefix(host, prefix) {
-			return true
-		}
-	}
-	return false
+	return loopbackHosts[host]
 }
 
 // goSourceFiles returns every non-test .go file under the given

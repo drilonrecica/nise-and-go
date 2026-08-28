@@ -258,8 +258,32 @@ func assertNoNetworkErrorMarkers(t *testing.T, res runResult) {
 
 // dynamicCases is the exact command list the dynamic proof covers. It
 // satisfies the task brief's minimum ("no args, help, version, doctor,
-// generate --help, test --help") plus the controller's two additions
-// ("check (outside a project), and new (into a temp directory)").
+// generate --help, test --help"), the controller's two additions ("check
+// (outside a project), and new (into a temp directory)"), and review
+// fix-round-1's "agents (outside a project)": agents.Commands() is the
+// only entry in the registry this list omitted, and it lives in the same
+// wholesale-allowlisted internal/cli package as dev.go — see
+// networkAllowlist's entry for internal/cli — where this dynamic proof is
+// the only layer able to catch anything at all, since the static import
+// check cannot tell "agents.go" apart from "dev.go" within one compiled
+// package.
+//
+// This list is hand-maintained against internal/cli.Commands() rather
+// than derived from it. Deriving it would need test/nonetwork to import
+// internal/cli to call Commands() directly — which would put a package
+// this suite's own static_test.go treats as network-capable into the
+// test binary's own import graph, muddying what TestStaticNoUnexpected-
+// NetworkImports is checking (a test importing the thing it audits is a
+// different, weaker shape of test than one that shells out to the
+// compiled artifact, which is what makes the dynamic proof honest in the
+// first place — see this file's own top-of-file comment on why a real
+// subprocess is used at all). The alternative — parsing registry.go's
+// source text to enumerate command names without an import — trades one
+// hand-maintained list for a different fragile one. A short, commented,
+// hand-maintained table, reviewed here, is the honest answer for a
+// registry that grows by single-digit entries per milestone; whoever adds
+// the next command to internal/cli/registry.go should add its
+// non-interactive shape here in the same change.
 //
 // nise dev is deliberately not included: it cannot run non-interactively
 // (it supervises a container database and a Vite dev server, and refuses
@@ -280,6 +304,24 @@ func dynamicCases() []dynCase {
 		{
 			name:     "check (outside a project)",
 			args:     []string{"check"},
+			wantExit: exitPtr(3), // clierr.ExitPrecondition
+			extraChecks: func(t *testing.T, res runResult) {
+				if !strings.Contains(res.stderr, "no nise.json") {
+					t.Errorf("stderr = %q, want it to name the local precondition (\"no nise.json found\") — "+
+						"this case exists specifically to prove the failure is local, not a network timeout", res.stderr)
+				}
+			},
+		},
+		{
+			// agents lives in the wholesale-allowlisted internal/cli
+			// package (see networkAllowlist's entry for it), where this
+			// dynamic proof is the only layer that can catch anything —
+			// the static import check cannot distinguish "agents.go"
+			// from "dev.go" within one compiled package. Same shape as
+			// "check": findProjectRoot fails the same way outside a
+			// project, through clierr.Precondition.
+			name:     "agents (outside a project)",
+			args:     []string{"agents"},
 			wantExit: exitPtr(3), // clierr.ExitPrecondition
 			extraChecks: func(t *testing.T, res runResult) {
 				if !strings.Contains(res.stderr, "no nise.json") {
