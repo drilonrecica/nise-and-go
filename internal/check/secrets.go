@@ -47,8 +47,8 @@ var skippedDirs = map[string]struct{}{
 	"vendor":       {},
 }
 
-// envExampleNames are the environment-file names that exist to be committed.
-// Everything else matching .env* is the real thing.
+// envExampleNames are the environment-file names that exist to be committed
+// with placeholder values in them.
 var envExampleNames = map[string]struct{}{
 	".env.example":  {},
 	".env.sample":   {},
@@ -56,11 +56,47 @@ var envExampleNames = map[string]struct{}{
 	".env.dist":     {},
 }
 
+// envEncryptedSuffixes are the extensions a committed environment file
+// carries when its values are ciphertext rather than plaintext: sops, age,
+// GnuPG, and the several tools that wrap them.
+//
+// Committing an encrypted environment file is correct practice, not a
+// mistake — it is how a team keeps configuration in version control without
+// keeping secrets in it — so failing such a project, with a remedy telling
+// the operator to rotate every credential they just carefully encrypted,
+// would be exactly the "punish a legitimately customized project" failure
+// this command's admission rule exists to prevent. With no suppression flag
+// in this slice, such a project could never make `nise check` green at all.
+//
+// Recognizing the extension was chosen over adding a suppression mechanism
+// (an ignore file, or a --allow flag) deliberately. A suppression mechanism
+// is a general escape hatch that also silences findings nobody examined,
+// and it would need a format, a location, and its own documentation; the
+// extension list is narrow, self-documenting, and turns off exactly the two
+// rules that assume plaintext.
+//
+// The trade-off, stated plainly: a file named ".env.enc" that was never
+// actually encrypted is taken at its word and not scanned for plaintext
+// assignments. That is the same trust the check already places in
+// ".env.example", and the alternative — trying to tell ciphertext from
+// plaintext by inspection — is guesswork that would fail in both directions.
+var envEncryptedSuffixes = []string{
+	".age", ".asc", ".enc", ".encrypted", ".gpg", ".pgp", ".sealed", ".sops", ".vault",
+}
+
 // keyFileExtensions and keyFileNames are file shapes whose whole purpose is
 // to hold a private key.
+//
+// ".pem" is deliberately NOT in this list. PEM is an armor encoding, not a
+// key format: a .pem file is just as likely to be a public certificate or a
+// CA bundle, and deploy/tls/ca.pem holding nothing but
+// "-----BEGIN CERTIFICATE-----" is a correct thing to commit. Rule 3 already
+// finds a real private key inside any text file by its armor header, whatever
+// the file is called, so listing the extension here would add false positives
+// and no detection.
 var (
 	keyFileExtensions = map[string]struct{}{
-		".pem": {}, ".key": {}, ".p12": {}, ".pfx": {}, ".jks": {}, ".keystore": {},
+		".key": {}, ".p12": {}, ".pfx": {}, ".jks": {}, ".keystore": {},
 	}
 	keyFileNames = map[string]struct{}{
 		"id_rsa": {}, "id_dsa": {}, "id_ecdsa": {}, "id_ed25519": {},
@@ -75,7 +111,17 @@ var (
 	// secretAssignment matches a secret-named variable being given a value
 	// in an environment file. The name half is what makes it specific: a
 	// long value assigned to PORT is not a finding.
-	secretAssignment = regexp.MustCompile(`(?i)^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|PRIVATE_KEY|CREDENTIAL|CREDENTIALS)[A-Za-z0-9_]*)\s*=\s*(.*)$`)
+	//
+	// The prefix before the keyword is OPTIONAL, and that is the whole
+	// point of writing it this way. An earlier version required at least
+	// one character there, so DATABASE_PASSWORD matched but a bare
+	// PASSWORD= did not — and neither did SECRET=, TOKEN=, or API_KEY=,
+	// which are the plainest spellings anyone would use. A real-shaped
+	// GitHub token committed as "TOKEN=ghp_..." scanned clean. The rule
+	// documented in docs/commands/check.md has always been *TOKEN*, with
+	// the star meaning "any affix, including none"; this pattern now says
+	// the same thing.
+	secretAssignment = regexp.MustCompile(`(?i)^(?:export\s+)?((?:[A-Za-z_][A-Za-z0-9_]*)?(?:SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|PRIVATE_KEY|CREDENTIAL)[A-Za-z0-9_]*)\s*=\s*(.*)$`)
 	// dsnCredentials matches a URL carrying inline userinfo with a
 	// password, e.g. postgres://user:pass@host/db.
 	dsnCredentials = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*)://([^\s/:@"']+):([^\s/@"']+)@`)
@@ -170,11 +216,12 @@ func scanFile(root, rel string) []string {
 
 	var findings []string
 
-	// Rule 1: an environment file that is not one of the example forms.
-	// The generated .gitignore excludes exactly this shape, so a tracked
-	// one means the exclusion was overridden.
-	if _, isExample := envExampleNames[lower]; !isExample && (lower == ".env" || strings.HasPrefix(lower, ".env.")) {
-		findings = append(findings, rel+" is a committed environment file, not one of the .env.example forms")
+	// Rule 1: a committed environment file whose values are meant to be
+	// real and plaintext. The generated .gitignore excludes exactly this
+	// shape, so a tracked one means the exclusion was overridden.
+	dotEnv := lower == ".env" || strings.HasPrefix(lower, ".env.")
+	if dotEnv && !isExampleEnvFile(lower) && !isEncryptedEnvFile(lower) {
+		findings = append(findings, rel+" is a committed environment file, and neither an .env.example form nor an encrypted one")
 	}
 
 	// Rule 2: a file whose name or extension exists to hold a private key.
@@ -209,7 +256,13 @@ func scanFile(root, rel string) []string {
 	// whose whole format is KEY=VALUE. Restricting this rule to
 	// environment files is what keeps it off source code, where
 	// `token := cfg.OperatorToken` is a variable, not a credential.
-	if isEnvShaped(lower) {
+	// An encrypted environment file's values are ciphertext envelopes, so
+	// "a long value assigned to a secret-named variable" describes its
+	// entire, correct contents. An example file is NOT exempt: a real
+	// credential pasted into .env.example is one of the likeliest ways a
+	// secret gets committed, and the placeholder tolerance below is what
+	// keeps that file quiet when its values really are placeholders.
+	if isEnvShaped(lower) && !isEncryptedEnvFile(lower) {
 		for i, line := range strings.Split(content, "\n") {
 			trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\r"))
 			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -239,6 +292,28 @@ func scanFile(root, rel string) []string {
 	}
 
 	return findings
+}
+
+// isExampleEnvFile reports whether an environment file's name says its
+// values are placeholders.
+func isExampleEnvFile(lowerBase string) bool {
+	_, ok := envExampleNames[lowerBase]
+	return ok
+}
+
+// isEncryptedEnvFile reports whether an environment file's name says its
+// values are ciphertext. See envEncryptedSuffixes for why the name is taken
+// at its word.
+func isEncryptedEnvFile(lowerBase string) bool {
+	if !isEnvShaped(lowerBase) {
+		return false
+	}
+	for _, suffix := range envEncryptedSuffixes {
+		if strings.HasSuffix(lowerBase, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // isEnvShaped reports whether a file's name says its contents are KEY=VALUE

@@ -337,14 +337,39 @@ disabled:
 
 | # | Rule | Tolerance |
 |---|---|---|
-| 1 | A tracked environment file | `.env.example`, `.env.sample`, `.env.template`, `.env.dist` are exactly what may be committed |
-| 2 | A file named or suffixed like a private key (`id_rsa`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`) | — |
+| 1 | A committed plaintext environment file (`.env`, `.env.<anything>`) | Two families are exempt: the **example** forms (`.env.example`, `.env.sample`, `.env.template`, `.env.dist`), and the **encrypted** forms — any `.env…` name ending `.age`, `.asc`, `.enc`, `.encrypted`, `.gpg`, `.pgp`, `.sealed`, `.sops`, or `.vault` |
+| 2 | A file named or suffixed like a private key (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`) | `*.pem` is deliberately **not** in this list — see below |
 | 3 | A `-----BEGIN … PRIVATE KEY-----` armor block, in any text file | Binary files (any NUL byte) and files over 1 MiB are not scanned |
-| 4 | A secret-named variable (`*SECRET*`, `*TOKEN*`, `*PASSWORD*`, `*API_KEY*`, `*CREDENTIAL*`, …) assigned a real value, in a file whose format is `KEY=VALUE` | Only in `.env`-shaped files, so `token := cfg.OperatorToken` in Go source is not a finding; values under 8 characters, and conventional placeholders (`changeme`, `your-…`, `<…>`, `${…}`, empty) are markers, not material |
-| 5 | A URL carrying an inline password (`postgres://user:pass@host`) | A password equal to its own username, or matching a placeholder, or under 8 characters, is a throwaway local credential |
+| 4 | A secret-named variable (`*SECRET*`, `*TOKEN*`, `*PASSWORD*`, `*PASSWD*`, `*API_KEY*`/`*APIKEY*`, `*PRIVATE_KEY*`, `*CREDENTIAL*`) assigned a real value, in a file whose format is `KEY=VALUE`. The `*` means *any affix, including none*: bare `TOKEN=`, `SECRET=`, and `API_KEY=` match | Only in `.env`-shaped files, so `token := cfg.OperatorToken` in Go source is not a finding; **encrypted** env files are skipped (their values are ciphertext envelopes) but **example** files are not, since a real credential pasted into `.env.example` is one of the likeliest ways a secret gets committed; values under 8 characters, and conventional placeholders (`changeme`, `your-…`, `<…>`, `${…}`, empty) are markers, not material |
+| 5 | A URL carrying an inline password (`postgres://user:pass@host`) | A password equal to its own username, or matching a placeholder (`postgres://user:password@…` in prose), or under 8 characters, is a throwaway local credential |
 
 The remedy names rotation, not only deletion: removing a committed secret in
 a new commit leaves it readable in every earlier one.
+
+**Why encrypted environment files are exempt.** Committing an encrypted
+environment file is correct practice — it is how a team keeps configuration
+in version control without keeping secrets in it. Failing a project for a
+`.env.enc`, `.env.sops`, or `.env.age`, with a remedy telling the operator to
+rotate every credential they just carefully encrypted, is exactly the "punish
+a legitimately customized project" failure the admission rule at the top of
+this page exists to prevent — and with no suppression mechanism in this
+slice, such a project could never make `nise check` green at all. Recognizing
+the extensions was chosen over adding a suppression flag or ignore file: a
+suppression mechanism is a general escape hatch that also silences findings
+nobody examined, and would need a format, a location, and documentation of
+its own. The trade-off, stated plainly: a file named `.env.enc` that was
+never actually encrypted is taken at its word. That is the same trust the
+check already places in `.env.example`, and the alternative — telling
+ciphertext from plaintext by inspection — is guesswork that fails in both
+directions.
+
+**Why `*.pem` is not a private-key extension.** PEM is an armor *encoding*,
+not a key format. A `.pem` file is just as likely to be a public certificate
+or a CA bundle, and `deploy/tls/ca.pem` holding nothing but
+`-----BEGIN CERTIFICATE-----` is a correct thing to commit. Rule 3 already
+finds a real private key inside any text file by its armor header, whatever
+the file is called, so listing the extension in rule 2 would add false
+positives and no detection.
 
 ## Checks that were deliberately excluded
 

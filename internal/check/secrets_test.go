@@ -72,6 +72,72 @@ func TestSecretMaterialFindings(t *testing.T) {
 			want:    check.StatusOK,
 		},
 		{
+			// The positive control for the case above. Without it, that
+			// non-detection could pass because the NAME never matched
+			// rather than because the placeholder tolerance worked — which
+			// is exactly how a bare-name blind spot survived review once
+			// already. Same file, same variable names, real values.
+			name:    "the same names in the same file with real values are found",
+			path:    ".env.example",
+			content: "OPERATOR_TOKEN=ghp_16C7e42F292c6912E7710c838347Ae178B4a\nDATABASE_PASSWORD=Xb9-qt2LmZ0pRvW4\nAPI_KEY=AIzaSyA1B2C3D4E5F6G7H8I9J0KlMnOpQrStUv\n",
+			want:    check.StatusFail,
+		},
+		// #nosec G101 -- not a credential: a fixture shaped like a GitHub
+		// personal access token, so the rule under test has something to
+		// match. gosec flagging it is the detector this test asserts,
+		// working.
+		{
+			// The bare spellings. docs/commands/check.md documents the rule
+			// as *TOKEN* / *SECRET*, where the star means "any affix,
+			// including none"; an earlier pattern required at least one
+			// character before the keyword, so a real GitHub token
+			// committed as "TOKEN=ghp_..." scanned clean.
+			name:    "a bare TOKEN with a real value",
+			path:    ".env.example",
+			content: "TOKEN=ghp_16C7e42F292c6912E7710c838347Ae178B4a\n",
+			want:    check.StatusFail,
+		},
+		{
+			name:    "a bare SECRET with a real value",
+			path:    ".env.example",
+			content: "SECRET=s3cr3t-Yb3kQ9wLmPz2R7tXvA4s\n",
+			want:    check.StatusFail,
+		},
+		{
+			name:    "a bare API_KEY with a real value",
+			path:    ".env.example",
+			content: "API_KEY=AIzaSyA1B2C3D4E5F6G7H8I9J0KlMnOpQrStUv\n",
+			want:    check.StatusFail,
+		},
+		{
+			name:    "a bare PASSWORD with a real value",
+			path:    "config/staging.env",
+			content: "PASSWORD=Xb9-qt2LmZ0pRvW4\n",
+			want:    check.StatusFail,
+		},
+		{
+			// Encrypted environment files are correct practice, not a
+			// mistake, and there is no suppression mechanism in this slice:
+			// failing them would leave such a project unable to make
+			// `nise check` green at all.
+			name:    "an encrypted environment file may be committed",
+			path:    ".env.enc",
+			content: "OPERATOR_TOKEN=ENC[AES256_GCM,data:9xKq2mVvQ0pR7tXwA4sYb3kQ,type:str]\n",
+			want:    check.StatusOK,
+		},
+		{
+			name:    "a sops-encrypted per-environment file may be committed",
+			path:    ".env.production.sops",
+			content: "DATABASE_PASSWORD=ENC[AES256_GCM,data:Kd82hsQ0zLpWmVvQ0pR7,type:str]\n",
+			want:    check.StatusOK,
+		},
+		{
+			name:    "an age-encrypted environment file may be committed",
+			path:    ".env.age",
+			content: "-----BEGIN AGE ENCRYPTED FILE-----\nYWdlLWVuY3J5cHRpb24ub3Jn\n-----END AGE ENCRYPTED FILE-----\n",
+			want:    check.StatusOK,
+		},
+		{
 			name:    "a private key block in any file",
 			path:    "deploy/notes.md",
 			content: "Here is the key we use:\n" + privateKey,
@@ -81,6 +147,22 @@ func TestSecretMaterialFindings(t *testing.T) {
 			name:    "a file named like a private key",
 			path:    "deploy/server.key",
 			content: "not actually a key, but named like one\n",
+			want:    check.StatusFail,
+		},
+		{
+			// PEM is an armor encoding, not a key format. A .pem holding a
+			// public certificate or a CA bundle is a correct thing to
+			// commit, and rule 3 already finds a real private key inside
+			// any text file by its armor header.
+			name:    "a .pem holding only a public certificate",
+			path:    "deploy/tls/ca.pem",
+			content: "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAK\n-----END CERTIFICATE-----\n",
+			want:    check.StatusOK,
+		},
+		{
+			name:    "a .pem that really does hold a private key",
+			path:    "deploy/tls/server.pem",
+			content: privateKey,
 			want:    check.StatusFail,
 		},
 		{
@@ -117,6 +199,18 @@ func TestSecretMaterialFindings(t *testing.T) {
 			name:    "a throwaway local credential is not a leak",
 			path:    "deploy/compose.yaml",
 			content: "    DATABASE_URL: postgres://app:app@localhost:5432/app\n",
+			want:    check.StatusOK,
+		},
+		// #nosec G101 -- not a credential: the literal word "password" in a
+		// documentation example, which is precisely the non-detection this
+		// case exists to pin.
+		{
+			// Documentation that shows the shape of a connection string is
+			// the single most common place a DSN appears in a repository,
+			// and the placeholder tolerance is what keeps prose quiet.
+			name:    "a documented example DSN in prose",
+			path:    "db/README.md",
+			content: "Set `DATABASE_URL`, for example:\n\n    postgres://user:password@localhost:5432/appdb\n",
 			want:    check.StatusOK,
 		},
 	} {
