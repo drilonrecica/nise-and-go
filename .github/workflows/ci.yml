@@ -77,11 +77,33 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
+      # NISE_REQUIRE_NETNS turns test/nonetwork's network-namespace proof from
+      # a graceful skip into a hard failure. That proof is the only one of the
+      # three that catches a raw net.Dial ignoring HTTP_PROXY, and it skips
+      # when unprivileged user namespaces are unavailable. Because `make test`
+      # runs `go test` without -v, such a skip is invisible in this log and
+      # exit-code-identical to a pass, so the strongest proof could silently
+      # stop running and nobody would learn. Setting this makes its absence
+      # loud.
+      #
+      # Linux only: netns is unavailable on macOS and Windows by design, so
+      # those legs must keep skipping gracefully.
+      #
+      # If this job fails on the netns test, the fix is NOT to delete this
+      # variable. It means the runner blocks unprivileged user namespace
+      # creation (Ubuntu 23.10+ can restrict this via AppArmor), and the
+      # proof genuinely is not running — which is exactly what this variable
+      # exists to reveal. Either restore the capability on the runner or
+      # record the loss of coverage in docs/no-telemetry.md.
       - name: go test
         run: make test
+        env:
+          NISE_REQUIRE_NETNS: ${{ matrix.os == 'ubuntu-latest' && '1' || '' }}
 
       - name: go test -race
         run: make test-race
+        env:
+          NISE_REQUIRE_NETNS: ${{ matrix.os == 'ubuntu-latest' && '1' || '' }}
 
   generation-diff:
     name: Generation diff
