@@ -21,6 +21,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [CLI output contract](cli-output.md)
 - [Performance baselines](performance-baselines.md)
 - [`nise new`](commands/new.md)
+- [`nise dev`](commands/dev.md)
 - [`nise doctor`](commands/doctor.md)
 - [`nise agents`](commands/agents.md)
 - [`nise test`](commands/test.md)
