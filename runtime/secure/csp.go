@@ -152,27 +152,42 @@ func decodeBase64Any(encoded string) ([]byte, error) {
 	return nil, fmt.Errorf("secure: %q is not valid base64", encoded)
 }
 
-// validReportURI checks a CSP report-uri value.
+// reportURIForm classifies a CSP report-uri value.
+type reportURIForm int
+
+const (
+	// reportURIInvalid is anything this package refuses outright.
+	reportURIInvalid reportURIForm = iota
+	// reportURISameOrigin is an absolute path such as
+	// "/api/v1/csp-reports", handled by the application itself.
+	reportURISameOrigin
+	// reportURIExternal is an absolute https URL naming another origin.
+	reportURIExternal
+)
+
+// classifyReportURI checks a CSP report-uri value and reports which form it
+// takes.
 //
 // A same-origin absolute path is the expected form and the only one that
-// needs no further trust. An absolute https URL is accepted for an external
-// collector. Plain http is refused: a violation report names the page URL and
-// the blocked resource, which is exactly the kind of detail that must not
-// cross the network in cleartext.
-func validReportURI(uri string) error {
+// needs no further trust. An absolute https URL names a third party and is
+// therefore a weakening, not a configuration detail: see
+// [AllowExternalReportURI]. Plain http is refused in both cases — a
+// violation report names the page URL and the blocked resource, which is
+// exactly the kind of detail that must not cross the network in cleartext.
+func classifyReportURI(uri string) (reportURIForm, error) {
 	if uri == "" {
-		return fmt.Errorf("secure: empty CSP report URI")
+		return reportURIInvalid, fmt.Errorf("secure: empty CSP report URI")
 	}
 	if err := validSource(uri); err != nil {
-		return fmt.Errorf("secure: CSP report URI %q is not a usable header value", uri)
+		return reportURIInvalid, fmt.Errorf("secure: CSP report URI %q is not a usable header value", uri)
 	}
 	switch {
 	case strings.HasPrefix(uri, "/") && !strings.HasPrefix(uri, "//"):
-		return nil
+		return reportURISameOrigin, nil
 	case strings.HasPrefix(uri, "https://") && len(uri) > len("https://"):
-		return nil
+		return reportURIExternal, nil
 	default:
-		return fmt.Errorf(
+		return reportURIInvalid, fmt.Errorf(
 			"secure: CSP report URI %q must be a same-origin absolute path or an https:// URL",
 			uri,
 		)

@@ -459,11 +459,8 @@ func TestAllowPermission(t *testing.T) {
 func TestReportURIValidation(t *testing.T) {
 	t.Parallel()
 
-	accepted := []string{"/api/v1/csp-reports", "https://reports.example.com/csp"}
-	for _, uri := range accepted {
-		if _, err := secure.NewDocumentPolicy(secure.Production, secure.WithReportURI(uri)); err != nil {
-			t.Errorf("WithReportURI(%q): %v", uri, err)
-		}
+	if _, err := secure.NewDocumentPolicy(secure.Production, secure.WithReportURI("/api/v1/csp-reports")); err != nil {
+		t.Errorf("WithReportURI(same-origin path): %v", err)
 	}
 	refused := []string{
 		"",
@@ -473,11 +470,68 @@ func TestReportURIValidation(t *testing.T) {
 		"/reports; default-src *",
 		"/reports\r\nX-Injected: 1",
 		"https://",
+		// Cross-origin now belongs to AllowExternalReportURI, which takes
+		// a reason and records a waiver.
+		"https://reports.example.com/csp",
 	}
 	for _, uri := range refused {
 		if _, err := secure.NewDocumentPolicy(secure.Production, secure.WithReportURI(uri)); err == nil {
 			t.Errorf("WithReportURI accepted %q", uri)
 		}
+	}
+}
+
+// TestExternalReportURIRecordsAWaiver is the regression test for the one
+// weakening this package used to accept silently. Sending every violation
+// report — page URL, referrer, blocked resource, and a sample of blocked
+// inline content — to a third-party collector is a disclosure decision, and
+// this package's whole discipline is that a weakening is visible as an
+// Allow… call and readable back from Policy.Waivers.
+func TestExternalReportURIRecordsAWaiver(t *testing.T) {
+	t.Parallel()
+
+	const uri = "https://reports.example.com/csp"
+	p, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.AllowExternalReportURI("hosted collector approved by the operator", uri),
+	)
+	if err != nil {
+		t.Fatalf("AllowExternalReportURI: %v", err)
+	}
+
+	waivers := p.Waivers()
+	if len(waivers) != 1 {
+		t.Fatalf("Waivers() = %v, want exactly one", waivers)
+	}
+	if !strings.Contains(waivers[0].Detail, uri) {
+		t.Errorf("waiver detail %q does not name the collector", waivers[0].Detail)
+	}
+	if !strings.Contains(p.ContentSecurityPolicy(), "report-uri "+uri) {
+		t.Errorf("CSP %q does not carry the report-uri directive", p.ContentSecurityPolicy())
+	}
+
+	// A same-origin path weakens nothing, so it must not be reachable
+	// through the Allow… door: a waiver that can mean "nothing was
+	// weakened" is a waiver nobody can act on.
+	if _, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.AllowExternalReportURI("reason", "/api/v1/csp-reports"),
+	); err == nil {
+		t.Error("AllowExternalReportURI accepted a same-origin path")
+	}
+	// And an empty reason is refused, like every other Allow… option.
+	if _, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.AllowExternalReportURI("", uri),
+	); err == nil {
+		t.Error("AllowExternalReportURI accepted an empty reason")
+	}
+	// http never, at either door.
+	if _, err := secure.NewDocumentPolicy(
+		secure.Production,
+		secure.AllowExternalReportURI("reason", "http://reports.example.com/csp"),
+	); err == nil {
+		t.Error("AllowExternalReportURI accepted a cleartext http collector")
 	}
 }
 
