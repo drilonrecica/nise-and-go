@@ -22,6 +22,7 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/observability"
 
 	"{{.ModulePath}}/internal/platform/config"
+	"{{.ModulePath}}/internal/platform/database"
 	"{{.ModulePath}}/internal/platform/httpapi"
 	"{{.ModulePath}}/internal/platform/webui"
 )
@@ -48,6 +49,12 @@ func Run(ctx context.Context, modeOverride string) error {
 		return err
 	}
 
+	pool, err := database.Open(ctx, cfg.DatabaseURL.Reveal(), cfg.DatabasePassword.Reveal(), cfg.Database)
+	if err != nil {
+		return fmt.Errorf("starting database: %w", err)
+	}
+	defer pool.Close()
+
 	// Fail closed in production: a production binary with no frontend
 	// build embedded would serve the development placeholder to real
 	// users, so it refuses to start instead.
@@ -61,6 +68,15 @@ func Run(ctx context.Context, modeOverride string) error {
 	}
 
 	registry := observability.NewRegistry()
+	poolMetrics, err := observability.NewPoolMetrics(registry)
+	if err != nil {
+		return fmt.Errorf("registering database pool metrics: %w", err)
+	}
+	if err := poolMetrics.Register("primary", func() observability.PoolStats {
+		return database.Stats(pool)
+	}); err != nil {
+		return fmt.Errorf("registering primary database pool: %w", err)
+	}
 	httpMetrics, err := observability.NewHTTPMetrics(registry)
 	if err != nil {
 		return fmt.Errorf("registering HTTP metrics: %w", err)
@@ -70,10 +86,7 @@ func Run(ctx context.Context, modeOverride string) error {
 	// report unavailable until wiring has finished.
 	gate := health.NewGate(false)
 
-	// No dependency checks are registered yet. A check is added here, as an
-	// explicit element of this slice, when the thing it probes exists — a
-	// database pool, a cache, an outbound dependency.
-	prober := health.NewProber(nil)
+	prober := health.NewProber([]health.Check{database.ReadinessCheck(pool)})
 
 	handler, err := httpapi.New(httpapi.Deps{
 		Config:   cfg,

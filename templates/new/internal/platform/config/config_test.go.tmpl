@@ -1,0 +1,105 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package config
+
+import (
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestLoadAppliesConservativeDatabasePoolDefaults(t *testing.T) {
+	setTestEnvironment(t)
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if got, want := cfg.Database.MaxConns, int32(10); got != want {
+		t.Errorf("Database.MaxConns = %d, want %d", got, want)
+	}
+	if got, want := cfg.Database.MinConns, int32(0); got != want {
+		t.Errorf("Database.MinConns = %d, want %d", got, want)
+	}
+	if got, want := cfg.Database.MaxConnLifetime, 30*time.Minute; got != want {
+		t.Errorf("Database.MaxConnLifetime = %s, want %s", got, want)
+	}
+	if got, want := cfg.Database.MaxConnIdleTime, 5*time.Minute; got != want {
+		t.Errorf("Database.MaxConnIdleTime = %s, want %s", got, want)
+	}
+	if got, want := cfg.Database.HealthCheckPeriod, 30*time.Second; got != want {
+		t.Errorf("Database.HealthCheckPeriod = %s, want %s", got, want)
+	}
+	if got, want := cfg.Database.ConnectTimeout, 5*time.Second; got != want {
+		t.Errorf("Database.ConnectTimeout = %s, want %s", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidDatabasePoolRelationships(t *testing.T) {
+	setTestEnvironment(t)
+	t.Setenv("DB_MAX_CONNS", "2")
+	t.Setenv("DB_MIN_CONNS", "3")
+	t.Setenv("DB_MAX_CONN_IDLE_TIME", "31m")
+	t.Setenv("DB_MAX_CONN_LIFETIME", "30m")
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("Load succeeded with DB_MIN_CONNS above DB_MAX_CONNS and idle time above lifetime")
+	}
+	for _, name := range []string{"DB_MIN_CONNS", "DB_MAX_CONNS", "DB_MAX_CONN_IDLE_TIME", "DB_MAX_CONN_LIFETIME"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q does not name %s", err, name)
+		}
+	}
+}
+
+func setTestEnvironment(t *testing.T) {
+	t.Helper()
+	values := map[string]string{
+		"APP_ENV":                "test",
+		"APP_MODE":               "all",
+		"BIND_ADDR":              "127.0.0.1",
+		"PORT":                   "8080",
+		"DEBUG":                  "false",
+		"LOG_LEVEL":              "info",
+		"LOG_FORMAT":             "text",
+		"TRUST_PROXY_HEADERS":    "false",
+		"ALLOW_PUBLIC_BIND":      "false",
+		"OPERATOR_TOKEN":         "",
+		"DATABASE_URL":           "postgres://app:secret@127.0.0.1:5432/app?sslmode=disable",
+		"DATABASE_PASSWORD":      "",
+		"DB_MAX_CONNS":           "10",
+		"DB_MIN_CONNS":           "0",
+		"DB_MAX_CONN_LIFETIME":   "30m",
+		"DB_MAX_CONN_IDLE_TIME":  "5m",
+		"DB_HEALTH_CHECK_PERIOD": "30s",
+		"DB_CONNECT_TIMEOUT":     "5s",
+	}
+	for name, value := range values {
+		t.Setenv(name, value)
+	}
+	unsetTestEnvironment(t, "OPERATOR_TOKEN_FILE")
+	unsetTestEnvironment(t, "DATABASE_URL_FILE")
+	unsetTestEnvironment(t, "DATABASE_PASSWORD_FILE")
+}
+
+func unsetTestEnvironment(t *testing.T, name string) {
+	t.Helper()
+	value, existed := os.LookupEnv(name)
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatalf("unset %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			if err := os.Setenv(name, value); err != nil {
+				t.Errorf("restore %s: %v", name, err)
+			}
+			return
+		}
+		if err := os.Unsetenv(name); err != nil {
+			t.Errorf("restore unset %s: %v", name, err)
+		}
+	})
+}

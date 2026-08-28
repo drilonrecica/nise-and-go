@@ -19,13 +19,34 @@ services:
       LOG_FORMAT: json
       LOG_LEVEL: info
       DEBUG: "false"
+      DATABASE_URL: postgres://{{.AppName}}@db:5432/{{.AppName}}?sslmode=disable
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      DB_MAX_CONNS: "10"
+    depends_on:
+      db:
+        condition: service_healthy
 
-# No healthcheck is declared. The runtime image is distroless: it carries no
-# shell and no curl, so a Compose healthcheck would have to run the
-# application binary against itself, which proves nothing an exited process
-# does not already prove. Probe /healthz/ready from outside instead — that is
-# the endpoint your load balancer and your orchestrator should both use.
+  db:
+    image: docker.io/library/postgres:17.6-alpine
+    environment:
+      POSTGRES_USER: {{.AppName}}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: {{.AppName}}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --quiet --username {{.AppName}} --dbname {{.AppName}}"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 10s
 
-# PostgreSQL and the other supporting services are added here with the
-# database milestone. {{.AppName}} has no database dependency yet, so
-# declaring one now would be a service nothing connects to.
+# No healthcheck is declared for the application service. Its runtime image
+# is distroless: it carries no shell and no curl, so a Compose healthcheck
+# would have to run the application binary against itself, which proves
+# nothing an exited process does not already prove. Probe /healthz/ready from
+# outside instead — that is the endpoint your load balancer and orchestrator
+# should both use.
+
+volumes:
+  postgres-data:

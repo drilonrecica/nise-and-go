@@ -7,7 +7,6 @@ a zero-padded sequential prefix, alongside `embed.go`, which embeds them
 into the binary. Sequential prefixes rather than timestamps: generation must
 produce byte-identical output on every machine.
 
-This directory is empty today. `{{.AppName}}` has no database yet — no
-connection pool, no migration runner, and no tables. They arrive with the
-database milestone, and `internal/platform/database/` is where the pool and
-the migration runner will live.
+The connection pool is implemented in `internal/platform/database/`.
+Migration source and the embedded migration runner arrive in the next
+database task; server startup never applies migrations implicitly.

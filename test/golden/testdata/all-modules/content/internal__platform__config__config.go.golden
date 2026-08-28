@@ -13,10 +13,13 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"time"
 
 	rtconfig "github.com/drilonrecica/nise-and-go/runtime/config"
 	"github.com/drilonrecica/nise-and-go/runtime/lifecycle"
 	"github.com/drilonrecica/nise-and-go/runtime/secure"
+
+	"github.com/example/myapp/internal/platform/database"
 )
 
 // Config is this application's fully resolved configuration.
@@ -48,6 +51,14 @@ type Config struct {
 	// OperatorToken gates the operator-only endpoints. When it is unset,
 	// those endpoints are not mounted at all.
 	OperatorToken rtconfig.Secret
+	// DatabaseURL is the PostgreSQL connection string. Its Secret wrapper
+	// prevents accidental formatting or structured logging.
+	DatabaseURL rtconfig.Secret
+	// DatabasePassword optionally supplies the password separately from
+	// DatabaseURL, avoiding URL quoting hazards in deployment configuration.
+	DatabasePassword rtconfig.Secret
+	// Database holds the validated connection-pool limits.
+	Database database.Settings
 }
 
 // Addr is the host:port the HTTP server listens on.
@@ -78,6 +89,12 @@ func Load() (Config, []string, error) {
 	env := l.Environment("APP_ENV", rtconfig.Default("development"))
 	rawMode := l.String("APP_MODE", rtconfig.Default("all"))
 	rawLevel := l.String("LOG_LEVEL", rtconfig.Default("info"))
+	maxConns := l.Int("DB_MAX_CONNS", rtconfig.Default("10"))
+	minConns := l.Int("DB_MIN_CONNS", rtconfig.Default("0"))
+	maxConnLifetime := l.Duration("DB_MAX_CONN_LIFETIME", rtconfig.Default("30m"))
+	maxConnIdleTime := l.Duration("DB_MAX_CONN_IDLE_TIME", rtconfig.Default("5m"))
+	healthCheckPeriod := l.Duration("DB_HEALTH_CHECK_PERIOD", rtconfig.Default("30s"))
+	connectTimeout := l.Duration("DB_CONNECT_TIMEOUT", rtconfig.Default("5s"))
 
 	cfg := Config{
 		Env:               env,
@@ -88,6 +105,8 @@ func Load() (Config, []string, error) {
 		TrustProxyHeaders: l.Bool("TRUST_PROXY_HEADERS", rtconfig.Default("false")),
 		AllowPublicBind:   l.Bool("ALLOW_PUBLIC_BIND", rtconfig.Default("false")),
 		OperatorToken:     l.Secret("OPERATOR_TOKEN", rtconfig.Default("")),
+		DatabaseURL:       l.Secret("DATABASE_URL"),
+		DatabasePassword:  l.Secret("DATABASE_PASSWORD", rtconfig.Default("")),
 	}
 	if err := l.Err(); err != nil {
 		return Config{}, nil, err
@@ -106,11 +125,25 @@ func Load() (Config, []string, error) {
 	}
 	cfg.LogLevel = level
 
+	databaseSettings, err := database.NewSettings(
+		maxConns,
+		minConns,
+		time.Duration(maxConnLifetime),
+		time.Duration(maxConnIdleTime),
+		time.Duration(healthCheckPeriod),
+		time.Duration(connectTimeout),
+	)
+	if err != nil {
+		return Config{}, warnings, err
+	}
+	cfg.Database = databaseSettings
+
 	if cfg.LogFormat != "json" && cfg.LogFormat != "text" {
 		return Config{}, warnings, fmt.Errorf(`LOG_FORMAT: must be "json" or "text", found %q`, cfg.LogFormat)
 	}
 
 	if err := rtconfig.Validate(cfg.Env, func(v *rtconfig.Validator) {
+		v.RequireSecretSet("DATABASE_URL", cfg.DatabaseURL)
 		v.Check(!cfg.Debug, "DEBUG",
 			"debug mode is enabled in production",
 			"set DEBUG=false")

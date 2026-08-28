@@ -37,6 +37,12 @@ drain plus up to 30 seconds for in-flight requests).
 
 ## Configuration
 
+Set `POSTGRES_PASSWORD` in the shell or Compose environment before running
+`docker compose`. Compose refuses an absent value and uses the same value
+for PostgreSQL and the application's separate `DATABASE_PASSWORD`;
+it is never interpolated into a URL, baked into the image, or committed to
+this file.
+
 The image sets `APP_ENV=production`, which turns on the fail-closed startup
 checks in `internal/platform/config`. It also sets `BIND_ADDR=0.0.0.0` and
 `ALLOW_PUBLIC_BIND=true`, because a container must bind every interface to

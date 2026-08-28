@@ -200,6 +200,9 @@ if go build -o "$gen_app_bin" ./cmd/testapp 2>&1; then
         gen_app_size=$(stat -c%s "$gen_app_bin" 2>/dev/null || wc -c < "$gen_app_bin")
         echo "Generated app binary size: $gen_app_size bytes"
 
+        if [[ -z "${DATABASE_URL:-}" ]]; then
+            echo "Skipping startup and RSS measurements: DATABASE_URL is not set"
+        else
         # Measure cold startup to /healthz/ready readiness probe
         # Use widely-spaced ports to minimize TIME_WAIT contention between samples
         echo ""
@@ -305,6 +308,7 @@ if go build -o "$gen_app_bin" ./cmd/testapp 2>&1; then
         else
             rss_median=0
             echo "Median: FAILED (no successful samples)"
+        fi
         fi
     fi
 else
