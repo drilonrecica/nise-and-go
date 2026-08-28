@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"flag"
 	"fmt"
 	"io/fs"
 	"os"
@@ -21,12 +20,6 @@ import (
 	"github.com/drilonrecica/nise-and-go/internal/recipe"
 	"github.com/drilonrecica/nise-and-go/templates"
 )
-
-// updateGolden regenerates the committed golden manifests. Run it with
-// `go test ./internal/generator/... -update` after a deliberate change to a
-// template, and review the diff: the manifest is the record of exactly what
-// a generated project contains.
-var updateGolden = flag.Bool("update", false, "rewrite the golden manifests in testdata")
 
 // fixedVersion is the version every test pins. The recipe records the
 // generating CLI's version, which changes on every release, so a golden
@@ -79,49 +72,6 @@ func TestGenerationIsDeterministic(t *testing.T) {
 			b := treeManifest(t, second)
 			if a != b {
 				t.Errorf("two runs produced different trees:\n--- first ---\n%s\n--- second ---\n%s", a, b)
-			}
-		})
-	}
-}
-
-// TestGeneratedTreeMatchesGolden pins the exact set of paths and the exact
-// bytes of every file, for the default recipe and for a recipe with every
-// module selected. A template change that was not intended shows up here as
-// a diff before it reaches a user's project.
-func TestGeneratedTreeMatchesGolden(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		golden string
-		opts   generator.Options
-	}{
-		{"default", "default.txt", defaultOptions()},
-		{"all modules", "all-modules.txt", allModulesOptions()},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			root := filepath.Join(t.TempDir(), tc.opts.Name)
-			if _, err := generator.Write(root, tc.opts); err != nil {
-				t.Fatalf("Write: %v", err)
-			}
-			got := treeManifest(t, root)
-
-			goldenPath := filepath.Join("testdata", "golden", tc.golden)
-			if *updateGolden {
-				if err := os.MkdirAll(filepath.Dir(goldenPath), 0o750); err != nil {
-					t.Fatalf("creating testdata: %v", err)
-				}
-				if err := os.WriteFile(goldenPath, []byte(got), 0o644); err != nil {
-					t.Fatalf("writing golden: %v", err)
-				}
-				return
-			}
-
-			want, err := os.ReadFile(goldenPath)
-			if err != nil {
-				t.Fatalf("reading golden (run with -update to create it): %v", err)
-			}
-			if got != string(want) {
-				t.Errorf("generated tree does not match %s.\n--- got ---\n%s\n--- want ---\n%s\nRun `go test ./internal/generator/... -update` and review the diff if the change was intended.",
-					goldenPath, got, want)
 			}
 		})
 	}
@@ -637,7 +587,14 @@ func TestDockerignoreKeepsTheBuildContextClean(t *testing.T) {
 
 // treeManifest returns a stable, sorted "sha256  path" listing of every
 // file under root, with paths relative to root and slash-separated. It is
-// the comparison unit for both the determinism test and the golden test.
+// the comparison unit for the determinism test: two independently written
+// trees must produce the same listing.
+//
+// This is not a golden format and is never committed — it is only ever
+// compared against another listing produced in the same process, so its
+// sort order does not have to be reviewable. The committed record of what a
+// generated project contains lives in test/golden, whose manifest sorts by
+// path for exactly the reason this one need not.
 func treeManifest(t *testing.T, root string) string {
 	t.Helper()
 

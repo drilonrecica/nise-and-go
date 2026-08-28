@@ -48,19 +48,29 @@
 // # The manifest is sorted by path
 //
 // Deliberately, and this is the one thing about the format worth stating
-// twice. An earlier manifest in internal/generator/testdata sorted by hash
-// first, which meant any content change reshuffled the whole file and turned
-// every review diff into an unreadable permutation. Sorting by path means a
-// changed file is one changed line, a new file is one added line, and a
-// renamed file is one of each — which is what makes a golden diff worth
-// reading at all.
+// twice. The suite this one replaced kept its manifests in
+// internal/generator/testdata and sorted them by hash first, which meant any
+// content change reshuffled the whole file and turned every review diff into
+// an unreadable permutation — a golden diff nobody can read is a golden
+// suite that has stopped working. Sorting by path means a changed file is
+// one changed line, a new file is one added line, and a renamed file is one
+// of each.
+//
+// That older suite has been deleted (it was hash-only, hash-sorted, carried
+// no modes, and committed no contents), so this is now the only committed
+// record of generated output, and one template change needs one regeneration
+// command.
 //
 // # Regenerating
 //
 //	UPDATE_GOLDEN=1 go test ./test/golden/...
 //
-// An environment variable rather than a -update flag, so that this suite and
-// internal/generator's older one cannot collide over the same flag name in a
-// single `go test ./...` invocation. Review the resulting diff: it is the
-// record of exactly what a generated project contains.
+// An environment variable rather than a -update flag. When this suite was
+// written, internal/generator's older golden test still registered a
+// package-level -update flag, and two test packages claiming one flag name
+// in a single `go test ./...` invocation is a collision waiting to happen;
+// the older suite is gone now, but an environment variable also reads
+// unambiguously in CI logs and in a shell history, so it stays. Review the
+// resulting diff: it is the record of exactly what a generated project
+// contains.
 package golden
