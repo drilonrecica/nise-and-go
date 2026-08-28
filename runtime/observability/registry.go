@@ -34,6 +34,20 @@ func NewRegistry() *Registry {
 // every Vec kind: a counter and a gauge cannot share a name, matching the
 // exposition format's own constraint that one name has exactly one type.
 func (r *Registry) reserveName(name string) error {
+	// A Registry built as observability.Registry{} — through a composite
+	// literal or an uninitialized struct field — has a nil names map, and
+	// every constructor below would otherwise fail on it with a bare
+	// "assignment to entry in nil map" from inside this package. That is a
+	// wiring mistake, not a runtime condition, so it panics at construction
+	// naming what to do instead of returning an error the caller would have
+	// to distinguish from a genuine duplicate-name error. Lazily allocating
+	// the map here would hide the mistake: a Registry nobody constructed is
+	// also a Registry nobody passed to NewHandler, so its metrics would be
+	// collected and never exposed.
+	if r.names == nil {
+		panic("runtime/observability: Registry was not constructed; " +
+			"build one with observability.NewRegistry() rather than observability.Registry{}")
+	}
 	if name == "" {
 		return fmt.Errorf("observability: metric name must not be empty")
 	}
@@ -75,7 +89,7 @@ func (r *Registry) NewCounterVec(opts VecOpts) (*CounterVec, error) {
 	cv := &CounterVec{
 		name:       opts.Name,
 		help:       opts.Help,
-		labelNames: opts.Labels,
+		labelNames: copyStrings(opts.Labels),
 		table: newSeriesTable(opts.MaxSeries, func() *counterValue {
 			return &counterValue{}
 		}),
@@ -94,7 +108,7 @@ func (r *Registry) NewGaugeVec(opts VecOpts) (*GaugeVec, error) {
 	gv := &GaugeVec{
 		name:       opts.Name,
 		help:       opts.Help,
-		labelNames: opts.Labels,
+		labelNames: copyStrings(opts.Labels),
 		table: newSeriesTable(opts.MaxSeries, func() *gaugeValue {
 			return &gaugeValue{}
 		}),
@@ -117,7 +131,7 @@ func (r *Registry) newGaugeFuncVec(opts VecOpts) (*gaugeFuncVec, error) {
 	gv := &gaugeFuncVec{
 		name:       opts.Name,
 		help:       opts.Help,
-		labelNames: opts.Labels,
+		labelNames: copyStrings(opts.Labels),
 		table:      newSeriesTable(0, func() gaugeFuncSeries { return gaugeFuncSeries{} }),
 	}
 	r.mu.Lock()
@@ -141,11 +155,11 @@ func (r *Registry) NewHistogramVec(opts HistogramVecOpts) (*HistogramVec, error)
 	if err := r.reserveName(opts.Name); err != nil {
 		return nil, err
 	}
-	buckets := opts.Buckets
+	buckets := copyFloats(opts.Buckets)
 	hv := &HistogramVec{
 		name:       opts.Name,
 		help:       opts.Help,
-		labelNames: opts.Labels,
+		labelNames: copyStrings(opts.Labels),
 		buckets:    buckets,
 		table: newSeriesTable(opts.MaxSeries, func() *histogramValue {
 			return newHistogramValue(buckets)
@@ -155,4 +169,40 @@ func (r *Registry) NewHistogramVec(opts HistogramVecOpts) (*HistogramVec, error)
 	r.histograms = append(r.histograms, hv)
 	r.mu.Unlock()
 	return hv, nil
+}
+
+// copyStrings returns a copy of in, or nil when in is empty.
+//
+// Every constructor above copies its caller's Labels rather than aliasing
+// them. A Registry keeps a Vec for the life of the process and reads
+// labelNames on every scrape, so aliasing let a caller who reused or
+// mutated its own slice after construction rewrite the label names of a
+// live metric — and, because reads happen on the scrape goroutine, do it
+// as an unsynchronized write. Constructors take their inputs by value in
+// spirit; a slice argument only honors that if it is copied.
+func copyStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
+
+// copyFloats returns a copy of in, or nil when in is empty.
+//
+// HistogramVec's bucket bounds need this even more than labels do: the one
+// slice is shared by every series the Vec creates, exposition reads it to
+// render each "le" bound, and histogramValue.Observe reads it on the
+// request path with no lock. Aliasing therefore let a caller mutate the
+// exported bounds while the recorded counts stayed where they were,
+// emitting a non-monotonic — malformed — Prometheus histogram, and did it
+// as a data race.
+func copyFloats(in []float64) []float64 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]float64, len(in))
+	copy(out, in)
+	return out
 }

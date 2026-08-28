@@ -22,7 +22,7 @@ Prometheus text format won. **This decision is not locked in**: `Registry`, `Cou
 | Metric | Type | Labels | Notes |
 |---|---|---|---|
 | `http_requests_total` | counter | `method`, `route`, `status_class` | Total HTTP requests. |
-| `http_request_duration_seconds` | histogram | `method`, `route`, `status_class` | Request duration; buckets from `DefaultHTTPDurationBuckets` (5ms–10s). |
+| `http_request_duration_seconds` | histogram | `method`, `route`, `status_class` | Request duration; buckets from `DefaultHTTPDurationBuckets()` (5ms–10s). |
 | `http_requests_in_flight` | gauge | `method` | Requests currently being served. **Labeled by method only, not route** — see below. |
 
 Wire it into your router with `HTTPMetrics.Middleware(routeTemplate)`, where `routeTemplate` is a `func(*http.Request) string` your application supplies, typically reading the matched route from your router after routing has resolved (for chi: `chi.RouteContext(r.Context()).RoutePattern()`, read only after calling the wrapped handler — chi does not finish populating the route context until then). `runtime/observability` does not import chi itself: doing so would make chi a dependency of the framework's own `runtime/` tree, which the current milestone's zero-runtime-dependency target forbids. A request the router never matched, or a nil `routeTemplate`, is labeled `"unmatched"`.
@@ -49,7 +49,7 @@ No pool package exists in this repository yet (the blueprint places pgxpool thro
 | Metric | Type | Labels | Notes |
 |---|---|---|---|
 | `jobs_completed_total` | counter | `queue`, `kind`, `outcome` | `outcome` is one of `success`, `failure`, `discarded`. |
-| `job_duration_seconds` | histogram | `queue`, `kind` | Buckets from `DefaultJobDurationBuckets` (100ms–10min). |
+| `job_duration_seconds` | histogram | `queue`, `kind` | Buckets from `DefaultJobDurationBuckets()` (100ms–10min). |
 
 No job runner exists in this repository yet (the blueprint places River through pgx at M8, blueprint §11). `JobMetrics.Observe(queue, kind, outcome, duration)` is the seam a future job runner is expected to call once per job completion. `job_test.go` exercises this seam with a hand-written fake job runner, for the same reason as the pool seam above: this package does not fabricate a system it does not yet measure.
 

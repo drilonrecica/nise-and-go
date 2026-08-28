@@ -19,11 +19,20 @@ const (
 	JobOutcomeDiscarded JobOutcome = "discarded"
 )
 
-// DefaultJobDurationBuckets are the histogram bucket boundaries, in
+// defaultJobDurationBuckets backs [DefaultJobDurationBuckets]. See
+// defaultHTTPDurationBuckets for why it is unexported and copied out.
+var defaultJobDurationBuckets = []float64{.1, .5, 1, 5, 15, 30, 60, 120, 300, 600}
+
+// DefaultJobDurationBuckets returns the histogram bucket boundaries, in
 // seconds, [NewJobMetrics] uses for its job-duration histogram. Background
 // jobs commonly run far longer than an HTTP request, so the top bucket
 // reaches minutes rather than [DefaultHTTPDurationBuckets]'s ten seconds.
-var DefaultJobDurationBuckets = []float64{.1, .5, 1, 5, 15, 30, 60, 120, 300, 600}
+//
+// The returned slice is a fresh copy; mutating it has no effect on the
+// package default.
+func DefaultJobDurationBuckets() []float64 {
+	return copyFloats(defaultJobDurationBuckets)
+}
 
 // JobMetrics holds the essential background-job metrics: completed jobs by
 // queue, kind, and outcome, and a duration histogram by queue and kind. No
@@ -56,7 +65,7 @@ func NewJobMetrics(reg *Registry) (*JobMetrics, error) {
 			Help:   "Background job execution duration in seconds, by queue and kind.",
 			Labels: []string{"queue", "kind"},
 		},
-		Buckets: DefaultJobDurationBuckets,
+		Buckets: defaultJobDurationBuckets,
 	})
 	if err != nil {
 		return nil, err

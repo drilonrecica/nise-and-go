@@ -30,6 +30,14 @@ func TestParseEnvironment(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.raw) {
 					t.Fatalf("error %q does not mention the rejected value %q", err, tt.raw)
 				}
+				// lifecycle.ParseMode and secure.ParseDeployment both name
+				// their package; this is the third parallel parser and it
+				// used to be the one that did not. An unprefixed error
+				// reaches an operator's startup log with no clue which of
+				// several closed value sets rejected the value.
+				if !strings.HasPrefix(err.Error(), "config: ") {
+					t.Fatalf("error %q is not prefixed with its package name", err)
+				}
 				return
 			}
 			if err != nil {
