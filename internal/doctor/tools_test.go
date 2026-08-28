@@ -3,6 +3,8 @@ package doctor
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -170,16 +172,32 @@ func TestCheckGeneratorToolOutsideGeneratedProject(t *testing.T) {
 	})
 }
 
-// TestCheckGeneratorToolInsideGeneratedProject is fix round 2's regression
-// coverage: inside a generated project (insideGeneratedProject=true), all
-// three generator-tool checks must report StatusSkipped — never
+func TestSQLCDoesNotRunImplicitlyInsideGeneratedProject(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{}
+	got := checkSqlc(context.Background(), r, time.Second, true)
+	if got.Status != StatusSkipped {
+		t.Fatalf("Status = %v, want %v (Found=%q)", got.Status, StatusSkipped, got.Found)
+	}
+	if slices.Contains(r.calls, "go tool sqlc version") {
+		t.Fatalf("calls = %v, sqlc may download and must not run implicitly", r.calls)
+	}
+	if !strings.Contains(got.Required, "make sqlc-compile") {
+		t.Errorf("Required = %q, want explicit verification command", got.Required)
+	}
+}
+
+// TestFutureGeneratorToolsSkipInsideGeneratedProject is fix round 2's
+// regression coverage: inside a generated project, tools not pinned there
+// yet must report StatusSkipped — never
 // StatusFail, and never even attempt to run the tool at all, since a
-// generated project's go.mod is not expected to declare it until M3/M4.
+// generated project's go.mod is not expected to declare them until their
+// M3/M4 tasks land.
 // The fakeRunner below has NO stubs for any "go tool ..." invocation on
 // purpose: if checkGeneratorTool ever called Runner.Run in this branch,
 // fakeRunner.Run's "no stub for ..." fallback error would surface as a
 // StatusFail, failing these tests loudly rather than silently.
-func TestCheckGeneratorToolInsideGeneratedProject(t *testing.T) {
+func TestFutureGeneratorToolsSkipInsideGeneratedProject(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -187,7 +205,6 @@ func TestCheckGeneratorToolInsideGeneratedProject(t *testing.T) {
 		fn   func(*fakeRunner) Check
 		key  string
 	}{
-		{"sqlc", func(r *fakeRunner) Check { return checkSqlc(context.Background(), r, time.Second, true) }, "go tool sqlc version"},
 		{"goose", func(r *fakeRunner) Check { return checkGoose(context.Background(), r, time.Second, true) }, "go tool goose --version"},
 		{"oapi-codegen", func(r *fakeRunner) Check { return checkOapiCodegen(context.Background(), r, time.Second, true) }, "go tool oapi-codegen -version"},
 	}

@@ -29,6 +29,9 @@ const (
 	// applications.
 	PgxVersion = "v5.10.0"
 
+	// SQLCVersion pins the query-code generator in generated projects.
+	SQLCVersion = "v1.31.1"
+
 	// GoDirective is the go directive written into the generated go.mod.
 	// It is the three-component form `go mod tidy` produces, so the first
 	// tidy in a new project does not rewrite the file nise just wrote.

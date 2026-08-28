@@ -76,29 +76,27 @@ func checkPnpm(ctx context.Context, r Runner, timeout time.Duration) Check {
 // there is no minimum version to compare against here, only "does it
 // resolve and run".
 //
-// This is only true inside the Nise framework repository itself, which is
-// what pins those `tool` directives. A generated application's own
-// go.mod carries none of them — ADR 0009 does not ask it to, and it has
-// no use for them until M3/M4 land the generator commands that would
-// invoke them from inside the application. insideGeneratedProject (set by
-// Run from whether a project recipe was found — see doctor.go) routes
-// each check to checkGeneratorTool, which reports StatusSkipped rather
-// than running the tool and reporting StatusFail at all: a generated
-// project genuinely lacking these tools is healthy, not broken, and
-// failing here would (a) fire in the very first thing a user runs after
-// `nise new`, (b) turn a healthy project's exit code non-zero, and worse,
-// (c) print a remedy — "add a go.mod tool directive" — that actively
-// corrupts the application's own go.mod if followed. See
-// TestCheckGeneratorToolSkipsInsideAGeneratedProject and
-// TestCheckGeneratorToolStillFailsOutsideAGeneratedProject.
+// sqlc is pinned in generated projects from M3-002 onward, but doctor still
+// does not invoke it there: Go may download and build a missing tool, which
+// would violate doctor's no-implicit-network contract. The explicit
+// sqlc-compile/generate commands are the user-authorized execution boundary.
 func checkSqlc(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool) Check {
-	return checkGeneratorTool(ctx, r, timeout, insideGeneratedProject, minVersionSpec{
+	spec := minVersionSpec{
 		name:    "sqlc",
 		command: "go",
 		args:    []string{"tool", "sqlc", "version"},
 		min:     nil,
 		install: "Run `go get -tool github.com/sqlc-dev/sqlc/cmd/sqlc` from the repository root.",
-	})
+	}
+	if insideGeneratedProject {
+		return Check{
+			Name:     spec.name,
+			Status:   StatusSkipped,
+			Found:    "declared by this project's go.mod but not executed implicitly",
+			Required: "run `make sqlc-compile` explicitly to resolve and verify the pinned local sqlc tool",
+		}
+	}
+	return checkMinVersion(ctx, r, timeout, spec)
 }
 
 func checkGoose(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool) Check {
@@ -121,8 +119,8 @@ func checkOapiCodegen(ctx context.Context, r Runner, timeout time.Duration, insi
 	})
 }
 
-// checkGeneratorTool routes a go.mod-`tool`-pinned generator check
-// (sqlc/goose/oapi-codegen) based on whether doctor is running inside a
+// checkGeneratorTool routes a future go.mod-`tool`-pinned generator check
+// (currently goose/oapi-codegen) based on whether doctor is running inside a
 // generated project. Inside a generated project it never even invokes
 // spec.command: there is nothing to run yet, by design, so a StatusFail
 // (and its "add a tool directive" remedy, which is actively wrong advice
@@ -138,7 +136,7 @@ func checkGeneratorTool(ctx context.Context, r Runner, timeout time.Duration, in
 			Status: StatusSkipped,
 			Found:  "not declared by this project's go.mod",
 			Required: spec.name + " is only required inside the Nise framework repository itself; " +
-				"a generated project does not declare it — Nise's generator tools arrive with a later milestone (M3/M4), not at project creation",
+				"a generated project does not declare it yet — this generator tool arrives with its later M3/M4 integration task",
 		}
 	}
 	return checkMinVersion(ctx, r, timeout, spec)

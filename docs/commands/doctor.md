@@ -88,11 +88,11 @@ doctor invoked) is what gets reported in `found`, e.g. `podman 5.8.4
 
 ### `sqlc`, `goose`, `oapi-codegen`
 
-These three checks behave differently depending on **where** `doctor`
-runs, because whether the tool is expected to be pinned at all depends on
-that context. Each is a wrapper around the same underlying check, keyed on
-whether a project recipe (`nise.json`) was found — see the `recipe` check
-below for that same detection.
+All three run in the Nise framework repository. Inside a generated project,
+they are skipped without execution: sqlc is pinned there, but Go may download
+and build it on first use; Goose and oapi-codegen are not pinned there yet.
+The explicit generator commands are the user-authorized boundary for any
+tool resolution that may need the module proxy.
 
 **Outside a generated project — i.e. inside the Nise framework repository
 itself:**
@@ -115,23 +115,15 @@ doctor re-deriving it.
 
 **Inside a generated project:**
 
-- **`skipped`**, unconditionally — the tool is never even invoked. A
-  generated project's `go.mod` is not expected to declare `sqlc`, `goose`,
-  or `oapi-codegen` at all: [ADR 0009](../adr/0009-generated-application-layout.md)
-  does not ask for `tool` directives, and the application has no use for
-  them until Nise's generator commands (M3/M4) land and would invoke them
-  from inside the application itself. `remedy` is empty here — there is
-  nothing to fix, and the "outside a project" remedy above is actively
-  wrong advice in this context: following it would add `tool` directives
-  for sqlc/goose/oapi-codegen to the *application's own* `go.mod`, not
-  Nise's.
+- **sqlc:** `skipped`, explaining that it is declared but not executed
+  implicitly. Run `make sqlc-compile` to resolve and verify it
+  explicitly.
+- **goose and oapi-codegen:** `skipped` because they are not yet
+  declared by a generated project's `go.mod`.
 
-This distinction exists because a freshly generated project is the first
-context most users run `nise doctor` in, immediately after `nise new`,
-and reporting `fail` there — which was this command's original behavior —
-meant a completely healthy project exited non-zero on its very first
-health check, with a remedy that would have made the project worse if
-followed.
+This preserves `doctor`'s no-implicit-network contract. In a clean
+module cache, `go tool sqlc version` downloads the pinned module before
+it can print a version; a diagnostic command must not initiate that traffic.
 
 ### `recipe`
 

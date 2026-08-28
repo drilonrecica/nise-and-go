@@ -7,8 +7,9 @@
 GO_PACKAGES := ./cmd/... ./internal/...
 GO_FMT_DIRS := cmd internal
 BINARY := bin/{{.AppName}}
+SQLC_CONFIGS := $(shell find internal/features -type f -name sqlc.yaml -print | LC_ALL=C sort)
 
-.PHONY: help build run test fmt lint web-install web-build all
+.PHONY: help build run test fmt lint sqlc-generate sqlc-compile web-install web-build all
 
 help: ## List the available targets.
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*?## ' $(MAKEFILE_LIST) \
@@ -30,6 +31,28 @@ fmt: ## Format Go source in place.
 
 lint: ## Vet the Go packages. Add golangci-lint here if you adopt it.
 	go vet $(GO_PACKAGES)
+
+sqlc-generate: ## Generate every feature-local store in stable path order.
+	@if [ -z "$(strip $(SQLC_CONFIGS))" ]; then \
+		echo "no feature-local sqlc.yaml files found"; \
+	else \
+		set -e; \
+		for config in $(SQLC_CONFIGS); do \
+			echo "sqlc generate -f $$config"; \
+			go tool sqlc generate --no-remote -f "$$config"; \
+		done; \
+	fi
+
+sqlc-compile: ## Compile-check every feature-local SQL contract.
+	@if [ -z "$(strip $(SQLC_CONFIGS))" ]; then \
+		echo "no feature-local sqlc.yaml files found"; \
+	else \
+		set -e; \
+		for config in $(SQLC_CONFIGS); do \
+			echo "sqlc compile -f $$config"; \
+			go tool sqlc compile --no-remote -f "$$config"; \
+		done; \
+	fi
 
 web-install: ## Install the frontend's dependencies.
 	pnpm --dir frontend install
