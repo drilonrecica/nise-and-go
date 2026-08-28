@@ -37,7 +37,6 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
 ├── nise.json                          [nise]  project recipe: profile, modules, versions (ADR 0010)
 ├── go.mod                             [app]   application module; the application may add dependencies
 ├── go.sum                             [app]
-├── sqlc.yaml                          [nise]  one sql block per feature; regenerated as features are added
 ├── .gitignore                         [app]
 │
 ├── api/
@@ -93,6 +92,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │       ├── domain.go              [app]   domain types and rules
     │       ├── usecase.go             [app]   owns the transaction boundary
     │       ├── handler.go             [app]   transport: decode, call use case, translate result
+    │       ├── sqlc.yaml              [app]   feature-local sqlc contract
     │       ├── queries/
     │       │   └── <feature>.sql      [app]   hand-written SQL, input to sqlc
     │       ├── store/                 [nise]  sqlc output for this feature
@@ -204,10 +204,13 @@ Three details matter:
 | Typed SQL access | `internal/features/<feature>/store/` | sqlc | `[nise]` |
 | TypeScript models | `frontend/src/lib/api/schema.d.ts` | openapi-typescript | `[nise]` |
 | Built SPA | `internal/platform/webui/embedded/client/` | `pnpm build` | `[nise]`, not committed |
-| sqlc configuration | `sqlc.yaml` | nise | `[nise]` |
+| sqlc configuration | `internal/features/<feature>/sqlc.yaml` | nise, then application | `[app]` |
 | Project recipe | `nise.json` | nise | `[nise]` |
 
-All three code generators write their own `Code generated … DO NOT EDIT.` headers, which satisfies the ownership-header rule for their output.
+All three code generators write their own `Code generated … DO NOT EDIT.`
+headers, which satisfy the ownership-header rule for their output. sqlc
+configuration is deliberately feature-local and application-owned; see
+[ADR 0014](adr/0014-feature-colocated-sqlc.md).
 
 ## Go targets
 

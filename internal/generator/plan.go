@@ -128,6 +128,7 @@ type templateData struct {
 	NiseVersion    string
 	ChiVersion     string
 	PgxVersion     string
+	SQLCVersion    string
 	GoVersion      string
 	GoImageTag     string
 	NodeVersion    string
@@ -156,6 +157,7 @@ func newTemplateData(opts Options) templateData {
 		NiseVersion:        NiseModuleVersion,
 		ChiVersion:         ChiVersion,
 		PgxVersion:         PgxVersion,
+		SQLCVersion:        SQLCVersion,
 		GoVersion:          GoDirective,
 		GoImageTag:         GoImageTag,
 		NodeVersion:        NodeVersion,

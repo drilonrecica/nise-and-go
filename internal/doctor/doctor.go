@@ -30,16 +30,10 @@ type Options struct {
 // §5), so two runs against the same environment always report checks in
 // the same sequence.
 //
-// The three generator-tool checks (sqlc, goose, oapi-codegen) are
-// context-sensitive: they run and can fail only outside a generated
-// project (i.e. inside the Nise framework repository itself, which is
-// what pins them via go.mod `tool` directives). Inside a generated
-// project — detected the same way the recipe checks find their project
-// root, by whether a nise.json exists at or above WorkDir — they report
-// StatusSkipped without even invoking the tool, because a generated
-// project's go.mod is not expected to declare these tools until a later
-// milestone (M3/M4); see checkGeneratorTool's doc comment in tools.go for
-// the full reasoning.
+// Generator tools run only outside generated projects. Inside one they
+// report StatusSkipped: sqlc is pinned but may require a network-backed tool
+// build, while Goose and oapi-codegen are not pinned there yet. Explicit
+// generator commands are the user-authorized tool execution boundary.
 //
 // Run never returns an error itself: a tool being missing or too old is
 // reported as a failing Check, not a Go error, so the caller (internal/

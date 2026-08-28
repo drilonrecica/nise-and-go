@@ -55,6 +55,8 @@ Commit `go.sum` and `frontend/pnpm-lock.yaml` after the first run.
 | `make test` | `go test -race` over `./cmd/...` and `./internal/...` |
 | `make fmt` | `gofmt -s -w` over `cmd` and `internal` |
 | `make lint` | `go vet` over the Go packages |
+| `make sqlc-compile` | Compile-check every feature-local SQL contract |
+| `make sqlc-generate` | Regenerate every feature-local `store/` |
 | `make web-install` | `pnpm --dir frontend install` |
 | `make web-build` | `pnpm --dir frontend build` |
 

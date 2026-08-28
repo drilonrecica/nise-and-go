@@ -82,16 +82,13 @@ func TestRunOneMissingToolFailsTheWholeReport(t *testing.T) {
 // test: a freshly generated project — the first context a user runs
 // `nise doctor` in — must report a fully healthy Report (Failed() ==
 // false, the same condition internal/cli/doctor.go maps to exit 0), even
-// though its go.mod declares none of sqlc/goose/oapi-codegen. Before this
-// fix, those three reported StatusFail (via a real "exit status 2" from
+// though its go.mod declares only sqlc, not goose or oapi-codegen. Before
+// the context fix, all three reported StatusFail (via a real "exit status 2" from
 // `go tool <name>` outside any module that pins them), which flipped the
 // exit code to 3 on a project with nothing wrong.
 //
-// The runner deliberately has no stubs for any "go tool ..." invocation:
-// if the fix regressed and Run tried to invoke one of them anyway inside
-// a generated project, fakeRunner's "no stub for ..." fallback error
-// would surface as a StatusFail, and this test would catch it via either
-// the Status assertions below or the explicit r.calls check.
+// The runner stubs no generator tool. If Run invokes one, fakeRunner's
+// fallback error surfaces as a failure.
 func TestRunInsideAGeneratedProject(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -141,7 +138,7 @@ func TestRunInsideAGeneratedProject(t *testing.T) {
 
 	for _, call := range r.calls {
 		if strings.HasPrefix(call, "go tool ") {
-			t.Errorf("Run invoked %q inside a generated project; the generator-tool checks must not run at all here", call)
+			t.Errorf("Run invoked generator tool %q inside a generated project", call)
 		}
 	}
 }

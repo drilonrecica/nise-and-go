@@ -11,6 +11,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Generated application layout](generated-application-layout.md)
 - [Runtime packages](runtime-packages.md)
 - [Configuration](configuration.md)
+- [Database queries and sqlc](database-queries.md)
 - [Observability](observability.md)
 - [Metrics and tracing](metrics.md)
 - [Operations: runtime HTTP lifecycle](operations-runtime.md)
@@ -44,4 +45,3 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - Security and performance claims require evidence and a reproducible method.
 - Commands and configuration belong in reference pages once the interface stabilizes.
 - Consequential design changes require an ADR.
-
