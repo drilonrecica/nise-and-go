@@ -28,6 +28,7 @@ func Commands() []*Command {
 		testCommand(),
 		devCommand(),
 		generateCommand(),
+		checkCommand(),
 	}
 }
 
