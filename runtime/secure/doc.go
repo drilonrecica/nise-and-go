@@ -31,10 +31,12 @@
 // [WithScriptHashes]. That hash changes on every frontend build, so it must
 // be derived from the built file rather than written into Go source.
 //
-// [Nonce] exists for the HTML the Go server renders itself — the placeholder
-// page before a frontend build exists, an error document, anything a later
-// milestone renders server-side. It mints from crypto/rand, per response, on
-// first use.
+// [Nonce] exists for inline script in HTML the Go server renders itself —
+// an error document, or a page a later milestone renders server-side — not
+// the placeholder page: renderWithNonce only ever appends the nonce to
+// script-src, and the placeholder page has no inline script, only the inline
+// style that [WithStyleHashes] covers. It mints from crypto/rand, per
+// response, on first use.
 //
 // Minting is lazy on purpose. A handler serving a hashed, immutable build
 // asset never calls [Nonce], so its response neither spends randomness nor
