@@ -2,6 +2,7 @@ package dev
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -134,8 +135,20 @@ func (p Postgres) createArgs() []string {
 // is accepting connections. pg_isready ships inside the image, so this
 // probe is identical on Docker and on Podman and needs no client on the
 // host.
+//
+// --host and --port are load-bearing, and their absence is a bug this
+// package shipped for exactly one test run. On a cold volume the postgres
+// image's entrypoint runs initdb against a *temporary* server that listens
+// on the Unix socket only (it is started with listen_addresses=”), then
+// shuts that server down and starts the real one. A pg_isready with no
+// host connects over that socket, so it answers "accepting connections"
+// during initialization — and the next thing a caller does gets
+// "the database system is shutting down". Forcing the probe over TCP,
+// which is also the transport the application will use, means it cannot
+// pass until the real server is listening.
 func (p Postgres) readyArgs() []string {
 	return []string{"exec", p.ContainerName(), "pg_isready", "--quiet",
+		"--host", "127.0.0.1", "--port", "5432",
 		"--username", p.User(), "--dbname", p.Database()}
 }
 
@@ -190,10 +203,19 @@ func (p Postgres) Up(ctx context.Context, ex Exec, rt Runtime, progress func(str
 	return nil
 }
 
+// requiredReadyStreak is how many consecutive successful probes count as
+// ready. Two, not one: see readyArgs for the initialization sequence this
+// guards against. The TCP-scoped probe should already be enough on its
+// own; requiring the streak costs one poll interval and removes the whole
+// class of "ready, then immediately shutting down" races rather than the
+// one instance of it that has been observed.
+const requiredReadyStreak = 2
+
 // WaitReady polls pg_isready inside the container until PostgreSQL accepts
-// connections or timeout elapses. It is a gate, not a hint: nothing that
-// needs the database is started until this returns nil, so an application
-// child never has to implement its own retry loop to survive a cold start.
+// connections on TCP, consistently, or timeout elapses. It is a gate, not a
+// hint: nothing that needs the database is started until this returns nil,
+// so an application child never has to implement its own retry loop to
+// survive a cold start.
 func (p Postgres) WaitReady(ctx context.Context, ex Exec, rt Runtime, timeout, interval time.Duration) error {
 	if interval <= 0 {
 		interval = 250 * time.Millisecond
@@ -202,12 +224,21 @@ func (p Postgres) WaitReady(ctx context.Context, ex Exec, rt Runtime, timeout, i
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	var last error
+	streak := 0
 	for {
 		last = ex.Run(ctx, rt.Command, p.readyArgs()...)
 		if last == nil {
-			return nil
+			streak++
+			if streak >= requiredReadyStreak {
+				return nil
+			}
+		} else {
+			streak = 0
 		}
 		if time.Now().After(deadline) {
+			if last == nil {
+				last = fmt.Errorf("the probe never succeeded %d times in a row", requiredReadyStreak)
+			}
 			return fmt.Errorf("the database container did not become ready within %s: %w", timeout, last)
 		}
 		select {
@@ -216,6 +247,54 @@ func (p Postgres) WaitReady(ctx context.Context, ex Exec, rt Runtime, timeout, i
 		case <-ticker.C:
 		}
 	}
+}
+
+// ErrPortMismatch reports that an existing container publishes a different
+// host port than the one requested.
+var ErrPortMismatch = errors.New("dev: the existing database container publishes a different port")
+
+// PublishedPort reports the host port the running container publishes for
+// PostgreSQL, using `<engine> port`, which Docker and Podman both support
+// and both answer in the same "host:port" shape.
+func (p Postgres) PublishedPort(ctx context.Context, ex Exec, rt Runtime) (string, error) {
+	out, err := ex.Output(ctx, rt.Command, "port", p.ContainerName(), "5432/tcp")
+	if err != nil {
+		return "", fmt.Errorf("reading the published port of %s: %w", p.ContainerName(), err)
+	}
+	line := strings.TrimSpace(firstLine(string(out)))
+	if line == "" {
+		return "", fmt.Errorf("%s publishes no port for 5432/tcp", p.ContainerName())
+	}
+	if i := strings.LastIndexByte(line, ':'); i >= 0 {
+		return line[i+1:], nil
+	}
+	return line, nil
+}
+
+// VerifyPublishedPort fails when a container left over from an earlier run
+// publishes a port other than the configured one.
+//
+// Without this check the reused container keeps its original mapping while
+// nise prints a connection string built from the flag — so the DSN in the
+// startup block names a port nothing is listening on, and the application
+// child is handed the same wrong address. A wrong connection string that
+// looks right is worse than a refusal.
+func (p Postgres) VerifyPublishedPort(ctx context.Context, ex Exec, rt Runtime) error {
+	got, err := p.PublishedPort(ctx, ex, rt)
+	if err != nil {
+		return err
+	}
+	if got != p.HostPort {
+		return fmt.Errorf("%w: %s publishes %s, not %s", ErrPortMismatch, p.ContainerName(), got, p.HostPort)
+	}
+	return nil
+}
+
+// RemoveCommand is the command that deletes the container so the next run
+// recreates it with the requested mapping. The volume is not touched, so
+// the data survives.
+func (p Postgres) RemoveCommand(rt Runtime) string {
+	return rt.Command + " rm -f " + p.ContainerName()
 }
 
 // Stop stops the container without removing it or its volume, so the next
