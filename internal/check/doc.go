@@ -20,6 +20,27 @@
 // invariant this package may assert. docs/commands/check.md names the checks
 // that were deliberately excluded on that ground.
 //
+// # The one check admitted on a different ground
+//
+// The secret-material check is not derived from runtime/, the recipe, or the
+// rules of generation. It is admitted on Global Constraint 8 — "No secret,
+// token, cookie value, password, or connection-string password may appear in
+// logs, CLI output, error messages, or generated files" — extended to the
+// project's own tracked files, which the M1-012 brief names explicitly as a
+// security invariant checkable now.
+//
+// Saying so out loud matters more here than it would elsewhere, because this
+// is the one check that CAN fail a project whose only fault is that it was
+// customized: a repository layout the starter never produced, a file the
+// application added. That is precisely the case the rule above exists to
+// exclude, so the exception has to be visible rather than implied. What
+// keeps it defensible is that the property it protects is not a Nise
+// convention at all — a committed credential is a defect in any repository,
+// under any framework, and is the one finding whose cost of being missed is
+// unbounded. The price paid for that is a real false-positive risk, which is
+// why every rule in secrets.go is written narrow, is paired with an explicit
+// tolerance, and has both a detection and a non-detection test.
+//
 // # Skipped is a first-class result
 //
 // A check reports [StatusSkipped], with a reason, whenever it cannot
