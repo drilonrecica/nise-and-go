@@ -50,15 +50,36 @@ change (via `make test` / `make test-race` — see the note on wiring below):
    every non-interactive command, with `HTTP_PROXY`, `HTTPS_PROXY`, and
    `ALL_PROXY` pointed at a local listener that records every connection it
    receives and then refuses it, and `GOPROXY=off`. The test asserts that
-   listener recorded nothing. This is the proof that matters most: it
-   catches a subprocess nise spawns reaching out on its own (`doctor`'s
-   `go version`, `node --version`, `docker --version` checks, for example),
-   which no import-graph analysis can see.
+   listener recorded nothing. This is the proof that matters most, within
+   a specific, stated boundary: it catches a subprocess nise spawns that is
+   itself proxy-aware — Go's own `net/http`, and most language HTTP
+   clients, `curl`, `git`, and similar tools that honor
+   `HTTP_PROXY`/`HTTPS_PROXY` — even when that subprocess's own output is
+   discarded, because the connection attempt lands on the recording
+   listener regardless of what the caller does with the result.
 
-   Stated honestly: pointing `HTTP_PROXY` at a trap only constrains Go code
-   that builds an `http.Client`/`http.Transport` without overriding
-   `Proxy` — the default, but not the only possibility. A raw `net.Dial`
-   ignores proxy environment variables entirely. `test/nonetwork/netns_test.go`
+   It does **not** catch a proxy-unaware subprocess. A tool that dials
+   directly — `nc`, a raw socket client, or any process that never
+   consults proxy environment variables — bypasses the trap entirely: the
+   static check sees no forbidden Go import (the network code lives
+   outside this binary's own compiled graph), the proxy trap is never
+   contacted because the tool never asked where to send the connection,
+   and if that subprocess's result is discarded, the network-namespace run
+   (below) leaves no exit-code or output difference to notice either — a
+   successful connection outside the namespace and a failed one inside it
+   can both be silently swallowed by a caller that never checks. This is a
+   real, not hypothetical, limit: nise does not currently invoke any tool
+   of this shape (`doctor`'s `go version`/`node --version`/`docker
+   --version` checks are simple version probes, chosen and reviewed for
+   exactly this property), but a *future* change that wired in a
+   proxy-unaware subprocess whose result nise ignored would not be caught
+   by any of the three proofs on this page.
+
+   Stated honestly, on the gap that remains even for proxy-aware code:
+   pointing `HTTP_PROXY` at a trap only constrains Go code that builds an
+   `http.Client`/`http.Transport` without overriding `Proxy` — the
+   default, but not the only possibility. A raw `net.Dial` ignores proxy
+   environment variables entirely. `test/nonetwork/netns_test.go`
    adds a stricter, best-effort layer for exactly that gap: it re-runs the
    same commands inside a Linux network namespace with no interface but a
    loopback that is never brought up, so *any* connection attempt —
@@ -78,7 +99,26 @@ change (via `make test` / `make test-race` — see the note on wiring below):
    host is a documentation link, a spec citation, an install-instruction
    URL, an XML namespace, or a placeholder shown in an error message — never
    a real destination — and each entry says which. A violation fails with
-   the exact file and line.
+   the exact file and line. `127.0.0.1`, `localhost`, `0.0.0.0`, and `::1`
+   are recognized as loopback and never need an allowlist entry, matched
+   by exact string equality — deliberately not by prefix, since a prefix
+   match would let `127.0.0.1.evil-telemetry.example` walk through as
+   "loopback" and skip the check it exists to run.
+
+   Stated honestly, on what this pattern-based match does not reach: the
+   host-extraction regex only recognizes DNS-label-shaped hosts (letters,
+   digits, hyphens, dots) and stops at the first character outside that
+   set — a port's `:`, a path's `/`, a query's `?`. It does not parse a
+   bracketed IPv6 literal (`http://[::1]/...` is not matched at all, so
+   the `::1` allowlist-adjacent entry above is presently unreachable
+   rather than exploitable — a non-issue for what this check protects,
+   since loopback is never the real-destination case it looks for) or a
+   host built at runtime through string concatenation or a
+   `fmt.Sprintf` template, which no source-text grep can see. Those are
+   both gaps this proof shares with any pattern-based static check; they
+   are why the dynamic and static-import proofs above exist as separate,
+   independent layers rather than this one being asked to catch
+   everything.
 
 Run all three, plus everything else in `test/nonetwork`, with:
 

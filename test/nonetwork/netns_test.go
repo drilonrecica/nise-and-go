@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -26,10 +28,20 @@ import (
 // standard unprivileged-userns path most Linux distributions ship enabled.
 // Where it is not enabled (locked-down kernels, some container sandboxes,
 // and some CI runners deliberately disable unprivileged user namespaces),
-// this test skips with an explicit reason rather than failing the build:
-// the property it adds is real but strictly additional to
-// TestDynamicNoOutboundConnections, which runs unconditionally and already
-// satisfies the task's required dynamic proof.
+// this test skips with an explicit reason by default.
+//
+// A skip is silent under `make test`/`make test-race`, which run `go
+// test` without -v: no visible line, no non-zero exit, indistinguishable
+// from "ran and passed." For local development that is the right default
+// (the property this test adds is strictly additional to
+// TestDynamicNoOutboundConnections, which runs unconditionally and
+// already satisfies the task's required dynamic proof), but it would let
+// the strongest of this package's three proofs quietly become optional on
+// a CI runner that disables unprivileged user namespaces, with nobody
+// noticing. Setting NISE_REQUIRE_NETNS to any value other than "", "0",
+// or "false" turns every skip below into a t.Fatalf carrying the
+// identical reason — see skipOrRequire. CI sets it; a plain local
+// `go test` does not.
 //
 // What a pass here proves that the proxy-based test cannot: that none of
 // these commands' behavior — exit code, stdout, or a network-shaped error
@@ -66,18 +78,47 @@ func TestDynamicNetworkNamespace(t *testing.T) {
 	}
 }
 
-// requireUnprivilegedNetworkNamespace skips the test when this sandbox
-// cannot create an unprivileged user+network namespace, rather than
-// failing the suite over an environment limitation this task's dynamic
-// proof does not depend on.
+// netnsRequireEnv is the environment variable that turns this test's
+// graceful skip into a hard failure carrying the identical reason. Unset
+// (or "", "0", "false") for a normal local `go test`, which degrades
+// gracefully on a sandbox that forbids unprivileged user namespaces; set
+// by CI so the strongest of this package's three proofs cannot silently
+// become optional. See this test's doc comment and docs/no-telemetry.md.
+const netnsRequireEnv = "NISE_REQUIRE_NETNS"
+
+// netnsRequired reports whether netnsRequireEnv asks a skip to become a
+// hard failure instead.
+func netnsRequired() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(netnsRequireEnv)))
+	return v != "" && v != "0" && v != "false"
+}
+
+// skipOrRequire reports reason exactly like t.Skipf, unless netnsRequired
+// says otherwise, in which case it reports the identical text through
+// t.Fatalf — turning "this sandbox can't prove it" into a build failure
+// rather than a skip a non-verbose `go test` run renders invisible.
+func skipOrRequire(t *testing.T, format string, args ...any) {
+	t.Helper()
+	reason := fmt.Sprintf(format, args...)
+	if netnsRequired() {
+		t.Fatalf("%s (failing, not skipping, because %s is set)", reason, netnsRequireEnv)
+	}
+	t.Skip(reason)
+}
+
+// requireUnprivilegedNetworkNamespace skips the test — or, with
+// netnsRequireEnv set, fails it — when this sandbox cannot create an
+// unprivileged user+network namespace.
 func requireUnprivilegedNetworkNamespace(t *testing.T) {
 	t.Helper()
 
 	if runtime.GOOS != "linux" {
-		t.Skipf("nonetwork: network namespace isolation is Linux-only (unshare(1)); skipping on %s", runtime.GOOS)
+		skipOrRequire(t, "nonetwork: network namespace isolation is Linux-only (unshare(1)); skipping on %s", runtime.GOOS)
+		return
 	}
 	if _, err := exec.LookPath("unshare"); err != nil {
-		t.Skip("nonetwork: unshare(1) not found on PATH; skipping the stricter network-namespace proof")
+		skipOrRequire(t, "nonetwork: unshare(1) not found on PATH; skipping the stricter network-namespace proof")
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -87,7 +128,7 @@ func requireUnprivilegedNetworkNamespace(t *testing.T) {
 	var stderr bytes.Buffer
 	probe.Stderr = &stderr
 	if err := probe.Run(); err != nil {
-		t.Skipf("nonetwork: this sandbox cannot create an unprivileged user+network namespace (%v: %s); "+
+		skipOrRequire(t, "nonetwork: this sandbox cannot create an unprivileged user+network namespace (%v: %s); "+
 			"skipping the stricter proof, which is additional to the dynamic proxy-based proof that already ran", err, stderr.String())
 	}
 }
