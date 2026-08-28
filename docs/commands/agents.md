@@ -8,8 +8,10 @@ versioned, machine-readable description of the same layout plus the
 project's selected modules.
 
 It is a **static artifact generator**. It performs no network request,
-invokes no external tool, and contains no AI or model-provider code
-(`privateDocs/DECISIONS.md`'s AI section). Both outputs are derived
+invokes no external tool, and contains no AI or model-provider code — Nise
+ships no AI, BYOK, or model-provider functionality anywhere, and this
+command is not an exception to that despite its audience being coding tools
+(see [No telemetry](../no-telemetry.md)). Both outputs are derived
 entirely from the project's recipe (`nise.json`) and this build's own
 compiled-in knowledge of
 [Generated application layout](../generated-application-layout.md).

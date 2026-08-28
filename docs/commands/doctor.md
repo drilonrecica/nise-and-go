@@ -7,7 +7,8 @@ currently running.
 
 It runs local executables only. It never contacts a network registry,
 proxy, or update endpoint (see [Toolchain](../toolchain.md) and
-constraints §4): every check below is either a version flag on a tool
+[No telemetry](../no-telemetry.md)): every check below is either a version
+flag on a tool
 already installed on this machine, or a read of a local file.
 
 ```

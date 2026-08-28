@@ -1,6 +1,6 @@
 # Metrics and the optional tracing interface
 
-`runtime/observability` ([ADR 0011](adr/0011-runtime-public-api.md)) is how a generated application collects the essential HTTP metrics the blueprint calls for (blueprint §15: "Essential HTTP, database-pool, and job metrics"), exposes them without a mandatory collector, and optionally wires in distributed tracing behind a narrow interface. This page documents the current, implemented behavior — it is not a design proposal.
+`runtime/observability` ([ADR 0011](adr/0011-runtime-public-api.md)) is how a generated application collects the essential HTTP, database-pool, and job metrics — the deliberately short list this project treats as the operational minimum — exposes them without a mandatory collector, and optionally wires in distributed tracing behind a narrow interface. This page documents the current, implemented behavior — it is not a design proposal.
 
 `runtime/observability` imports only the standard library. Adding it introduces no new dependency to this repository's `go.mod` — see [dependencies.md](dependencies.md).
 
@@ -42,7 +42,7 @@ Wire it into your router with `HTTPMetrics.Middleware(routeTemplate)`, where `ro
 | `db_pool_idle_conns` | gauge (sampled on scrape) | `pool` | Currently idle. |
 | `db_pool_in_use_conns` | gauge (sampled on scrape) | `pool` | Currently checked out. |
 
-No pool package exists in this repository yet (the blueprint places pgxpool through sqlc at M3, blueprint §7). `observability.PoolStats` and `observability.PoolStatsFunc` are the seam a future pool implementation is expected to satisfy — most directly by adapting `pgxpool.Pool.Stat()`. Call `PoolMetrics.Register(poolName, statsFunc)` once per pool at startup; `statsFunc` is invoked live, on every scrape, not pushed on a schedule, because a pool already tracks these counts internally. `runtime/observability`'s own test suite (`pool_test.go`) exercises this seam with a hand-written fake pool — never a real one, because a real one does not exist yet.
+No pool package exists in this repository yet; pgxpool arrives with the data layer at milestone M3. `observability.PoolStats` and `observability.PoolStatsFunc` are the seam a future pool implementation is expected to satisfy — most directly by adapting `pgxpool.Pool.Stat()`. Call `PoolMetrics.Register(poolName, statsFunc)` once per pool at startup; `statsFunc` is invoked live, on every scrape, not pushed on a schedule, because a pool already tracks these counts internally. `runtime/observability`'s own test suite (`pool_test.go`) exercises this seam with a hand-written fake pool — never a real one, because a real one does not exist yet.
 
 ### Background jobs (`observability.NewJobMetrics`) — a seam, not an implementation
 
@@ -51,7 +51,7 @@ No pool package exists in this repository yet (the blueprint places pgxpool thro
 | `jobs_completed_total` | counter | `queue`, `kind`, `outcome` | `outcome` is one of `success`, `failure`, `discarded`. |
 | `job_duration_seconds` | histogram | `queue`, `kind` | Buckets from `DefaultJobDurationBuckets()` (100ms–10min). |
 
-No job runner exists in this repository yet (the blueprint places River through pgx at M8, blueprint §11). `JobMetrics.Observe(queue, kind, outcome, duration)` is the seam a future job runner is expected to call once per job completion. `job_test.go` exercises this seam with a hand-written fake job runner, for the same reason as the pool seam above: this package does not fabricate a system it does not yet measure.
+No job runner exists in this repository yet; River, running transactionally through pgx, arrives at milestone M8. `JobMetrics.Observe(queue, kind, outcome, duration)` is the seam a future job runner is expected to call once per job completion. `job_test.go` exercises this seam with a hand-written fake job runner, for the same reason as the pool seam above: this package does not fabricate a system it does not yet measure.
 
 ## Cardinality is a security and cost boundary
 
@@ -72,7 +72,7 @@ This is why `db_pool_*` and `jobs_*`/`job_*` metrics are labeled by `pool`, `que
 
 ## The tracing seam
 
-`observability.Tracer` and `observability.Span` name exactly four operations — matching the blueprint's own scope for this seam (blueprint §15: "Optional tracing through a narrow interface; no mandatory collector"):
+`observability.Tracer` and `observability.Span` name exactly four operations. Tracing is optional and behind a narrow interface, with no mandatory collector: an application that wants tracing supplies an implementation, and one that does not pays nothing for the seam.
 
 ```go
 type Tracer interface {

@@ -23,7 +23,7 @@ Each project recipe records:
 - Runtime-package versions.
 - Selected profile and compile-time modules.
 
-`nise doctor` detects incompatible combinations. `nise upgrade` updates versioned runtime dependencies where safe and presents source migrations as reviewable changes.
+`nise doctor` detects incompatible combinations. A planned `nise upgrade` command — it does not exist yet — will update versioned runtime dependencies where safe and present source migrations as reviewable changes; the rules below describe what it is required to do when it ships.
 
 ## Upgrade rules
 

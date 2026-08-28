@@ -38,8 +38,6 @@ The residual is confined to `style-src-attr` and comes from framework-generated 
 
 `style-src-attr 'unsafe-inline'` is therefore **not** in the default policy. It is available as `AllowInlineStyleAttributes(reason)`, which records a waiver.
 
-`style-src-attr 'unsafe-inline'` is therefore **not** in the default policy. It is available as `AllowInlineStyleAttributes(reason)`, which records a waiver.
-
 ### The policy
 
 `runtime/secure` ([ADR 0011](0011-runtime-public-api.md) assigns the package) builds two policies. The production document policy is:

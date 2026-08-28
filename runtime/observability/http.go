@@ -31,8 +31,8 @@ func DefaultHTTPDurationBuckets() []float64 {
 // series.
 const unmatchedRoute = "unmatched"
 
-// HTTPMetrics holds the essential HTTP metrics blueprint §15 calls for:
-// request count and duration, labeled by method, route template, and
+// HTTPMetrics holds the essential HTTP metrics a generated application
+// needs: request count and duration, labeled by method, route template, and
 // status class, and in-flight requests, labeled by method. Construct one
 // with [NewHTTPMetrics] and wrap your router's top-level handler with
 // [HTTPMetrics.Middleware].

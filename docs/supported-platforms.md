@@ -8,8 +8,8 @@ on it — this page does not claim testing that does not happen.
 
 ## Release platforms (planned, M10)
 
-Blueprint §12 sets the release target as Linux, macOS, and Windows, each on
-amd64 and arm64 — six binaries per release:
+The release target is Linux, macOS, and Windows, each on amd64 and arm64 —
+six binaries per release:
 
 | OS | amd64 | arm64 |
 |---|---|---|
@@ -28,7 +28,8 @@ on Linux, macOS, and Windows:
 
 - The pinned toolchain (Go, Node, pnpm; see [toolchain.md](toolchain.md)) runs
   natively on all three.
-- `nise dev` requires a container runtime for PostgreSQL (blueprint §12).
+- `nise dev` requires a container runtime for PostgreSQL, which is the one
+  supporting service the development loop does not run on the host.
   Docker and Podman both satisfy this on Linux; Docker Desktop satisfies it on
   macOS and Windows. Nise does not pin a specific container runtime version
   (see toolchain.md).

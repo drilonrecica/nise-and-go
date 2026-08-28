@@ -7,7 +7,7 @@
 
 `runtime/` is the only Go API Nise offers to the applications it generates ([ADR 0007](0007-module-path-and-owner.md), `docs/repository-layout.md`). Everything else — `cmd/`, `internal/`, `templates/`, `test/`, `examples/` — is private and may change in any release.
 
-Two failure modes threaten that boundary. The surface can grow until an application cannot be understood without reading Nise, which contradicts the escape-hatch test in `BLUEPRINT.md` §5. Or it can be split so finely, or named so vaguely, that nobody can tell which package owns a concern, and shared helpers accumulate in whichever package was touched last.
+Two failure modes threaten that boundary. The surface can grow until an application cannot be understood without reading Nise, which fails this project's escape-hatch test: a developer who knows Go and Svelte should be able to understand, change, and eventually detach an application without reverse-engineering Nise internals. Or it can be split so finely, or named so vaguely, that nobody can tell which package owns a concern, and shared helpers accumulate in whichever package was touched last.
 
 Six milestone-2 tasks create packages here at roughly the same time. They need the names and the import rules fixed before they start, not discovered afterwards.
 

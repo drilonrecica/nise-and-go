@@ -12,7 +12,7 @@
 // and Shutdown take a [context.Context], and nothing in this package calls
 // [os/signal.Notify] or otherwise reaches for a signal on its own. A
 // runtime package that installed its own signal handler would be exactly
-// the hidden lifecycle behavior this project's blueprint forbids.
+// the hidden lifecycle behavior this project forbids.
 //
 // # Process modes
 //
