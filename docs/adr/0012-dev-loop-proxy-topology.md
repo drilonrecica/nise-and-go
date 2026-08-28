@@ -68,25 +68,52 @@ Under (a) the browser's origin is Vite's (`http://localhost:5173`) while the Go
 server believes its own origin is `http://localhost:8080`. Cookies still round-trip
 — Vite's proxy passes `Set-Cookie` through and the browser attributes it to
 `localhost:5173` — but every request the Go server sees arrives carrying
-`Origin: http://localhost:5173` against a `Host` of `localhost:8080`. That is a
-permanent, structural mismatch, and it lands squarely on the mechanism M5 will
-use for request-forgery defense. The only ways to live with it are to disable the
-origin check in development, or to add `http://localhost:5173` to an allowed-origin
-list that must never reach production. Both are development-only weakenings of a
-security control — the exact category this project forbids — and both make the
-check that matters most the one thing development never exercises.
+`Origin: http://localhost:5173`, which is not the origin the application is
+configured to serve. That is permanent and structural: it is a property of the
+topology, not of anything a developer could set.
 
-Under (b) the browser's origin **is** the Go server's origin. `Origin` matches
-`Host`, `Sec-Fetch-Site: same-origin` is genuine rather than an artifact, and the
+What it *looks like* at the server depends on one Vite setting, and the
+distinction is worth stating precisely, because the conclusion is the same
+either way and an overstated mechanism is the part of a record that gets quoted
+and found wrong:
+
+- With `server.proxy`'s `changeOrigin: true`, Vite rewrites `Host` to the
+  upstream's, so the server sees `Origin: http://localhost:5173` against
+  `Host: localhost:8080` — an explicit mismatch.
+- With `changeOrigin: false` — **the default** — Vite forwards the browser's
+  `Host`, so `Origin` and `Host` agree. They agree on the *wrong* value: both
+  name Vite's origin, and neither names the origin the application is actually
+  serving on. A check that compares `Origin` against `Host` therefore passes
+  while verifying nothing, since both sides are supplied by the same request; a
+  check against the application's own configured origin still fails.
+
+So the defect is not "two headers disagree". It is that **under (a) the
+application cannot verify a request against its own origin at all** — one
+configuration makes that visible as a mismatch and the other hides it behind a
+comparison that is vacuously true. Either way it lands squarely on the mechanism
+M5 will use for request-forgery defense, and the only ways to live with it are
+to disable the origin check in development, or to add `http://localhost:5173`
+to an allowed-origin list that must never reach production. Both are
+development-only weakenings of a security control — the exact category this
+project forbids — and both make the check that matters most the one thing
+development never exercises.
+
+Under (b) the browser's origin **is** the Go server's origin — the one it is
+listening behind and the one it would be configured with. `Origin`,
+`Host`, and the application's own notion of where it is all name the same
+thing, `Sec-Fetch-Site: same-origin` is genuine rather than an artifact, and the
 CSRF check that will run in production is the same check, unmodified, in
 development. There is nothing to exempt, because there is nothing that differs.
 
 Two properties of the proxy make this true rather than approximately true, and
 both are asserted by tests in `internal/dev/proxy_test.go`:
 
-- **The inbound `Host` header is forwarded unchanged** to both upstreams. A
-  proxy that rewrote `Host` to the upstream's loopback address would recreate
-  (a)'s mismatch from the other direction.
+- **The inbound `Host` header is forwarded unchanged** to both upstreams —
+  the equivalent of Vite's `changeOrigin: false`, chosen deliberately. Here it
+  is the right choice precisely because the browser's origin already *is* the
+  application's: forwarding `Host` preserves that, where rewriting it to the
+  child's loopback address would hand the application a `Host` naming a port no
+  browser ever typed.
 - **`Set-Cookie` is never rewritten.** Not the `Path`, not `Secure`, not
   `SameSite`, not the `__Host-` prefix. Whatever the Go server sets, the browser
   receives byte for byte.
@@ -173,9 +200,14 @@ The resolution is therefore not to relax the policy but to **route around it**:
 3. **`nise dev --embedded` exercises the production path on demand.** It builds
    the frontend into the `go:embed` target and runs the Go server alone on the
    dev port, with no Vite and no proxy. The browser then gets the real artifact
-   under the real enforced policy, with the real startup-computed script hash.
-   Verified: the `sha256-` source in the response's `script-src` is the SHA-256
-   of the inline script in the served document.
+   under the enforced Content Security Policy, with the real startup-computed
+   script hash. The header set is still the development one — production minus
+   HSTS, since `APP_ENV` remains `development` — and that is correct: the CSP is
+   what a frontend change can break and it is byte-identical to production's,
+   while `Strict-Transport-Security` on `http://localhost` would pin a
+   developer's browser for a year. Verified: the `sha256-` source in the
+   response's `script-src` is the SHA-256 of the inline script in the served
+   document, and no `Strict-Transport-Security` header is present.
 
 So development gets hot reload *or* an enforced CSP, one flag apart, and the
 strict policy is never quietly loosened to buy both at once. `nise dev`
