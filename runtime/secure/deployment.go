@@ -8,11 +8,10 @@ import "fmt"
 // [Development] and [Production].
 //
 // This package deliberately does not import runtime/config, which owns the
-// application's own environment type ([ADR 0011] forbids the import edge).
-// The application converts one to the other explicitly at its wiring site,
-// which is what [ParseDeployment] exists for.
-//
-// [ADR 0011]: https://github.com/drilonrecica/nise-and-go/blob/master/docs/adr/0011-runtime-public-api.md
+// application's own environment type (ADR 0011, in this repository at
+// docs/adr/0011-runtime-public-api.md, forbids the import edge). The
+// application converts one to the other explicitly at its wiring site, which
+// is what [ParseDeployment] exists for.
 type Deployment string
 
 // The recognized values of Deployment. There are two, not three, because

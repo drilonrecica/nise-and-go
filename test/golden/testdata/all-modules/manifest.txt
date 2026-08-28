@@ -9,7 +9,7 @@
 .gitignore file 0644 ccc454e599a681107318bf8e887057052022fe2f44dc80a4267d879ae7fc8e21
 .nise dir 0755
 .nise/architecture.json file 0644 075f0390ab61b77b64105cc801149c2ed5cbcd56475d61f32c6d3a559b929ae4
-AGENTS.md file 0644 3ca496373302b66f1b9e1cff4e9d5246f0a88925c6198b05eb89ebb672b5dd34
+AGENTS.md file 0644 25b57e201eda855e9c464478843ca5b5eba5a5fcb71fdbaecf518382c9e301d7
 Makefile file 0644 fdc558f996ef1be2bdbdb685de9b11ebe8088d4b1071a7e857d2d1031896c0c5
 README.md file 0644 c0aea6787bfa2c8b07be72944d27fbcb1dcd208cdd60a6bf3009e93f45b453aa
 api dir 0755
@@ -54,9 +54,9 @@ internal/platform/config/config.go file 0644 8a309a0891bc407e465d20db8b67c71c264
 internal/platform/database dir 0755
 internal/platform/database/README.md file 0644 bc302d9b678924842539687d302c90ed66fe0bcf14c1acdbf98fac0a1e198876
 internal/platform/httpapi dir 0755
-internal/platform/httpapi/router.go file 0644 2c9bf527efbf53c44cfd56c52a3463bad831abddc11e199f18564b1dbaeb739f
+internal/platform/httpapi/router.go file 0644 2d3365012f281ffcb90820a718fe235a90f2ee78d6d016d59a5b050c58eb8742
 internal/platform/webui dir 0755
 internal/platform/webui/embedded dir 0755
 internal/platform/webui/embedded/placeholder.html file 0644 e39daa990ad2cd225e7d4491092d4d56600b509705c9d63c4c082a111cbcf772
-internal/platform/webui/webui.go file 0644 67a0e9eb8789bf98f7f7957e4ac5ad8f72f068bd76aa4b04d58306a26e694fc1
+internal/platform/webui/webui.go file 0644 11f0795557e93fe31ea056c63e395e08e69e4e829812126c9a1c26c8b18ea57b
 nise.json file 0644 77ff6be087c5aad6f98d9d32a342e691ec33ad9765776f747be46c38b9ac3947
