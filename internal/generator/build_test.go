@@ -70,6 +70,9 @@ func TestGeneratedGoCodeBuilds(t *testing.T) {
 	if out, err := run("vet", "./cmd/...", "./internal/..."); err != nil {
 		t.Fatalf("go vet of the generated project failed: %v\n%s", err, out)
 	}
+	if out, err := run("test", "./cmd/...", "./internal/..."); err != nil {
+		t.Fatalf("go test of the generated project failed: %v\n%s", err, out)
+	}
 
 	// The generated project must build on every platform Nise supports,
 	// not merely on the one generating it. cmd/<app>/main.go references

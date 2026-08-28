@@ -6,10 +6,14 @@ The PostgreSQL connection pool and the migration runner live here: pool
 construction and configuration, the readiness check that pings it, and the
 Goose runner that applies `db/migrations/`.
 
-This directory is empty today. `{{.AppName}}` has no database yet. When it
-gains one, two seams are already waiting for it:
+`pool.go` applies explicit conservative limits instead of inheriting
+pgx's CPU-dependent maximum. `internal/app/app.go` wires the pool into
+two seams:
 
-- `internal/app/app.go` builds the `health.Prober` from an explicit slice of
-  checks. The pool's ping check is added there, as one more element.
+- `health.Prober` runs the pool ping for readiness.
 - `runtime/observability`'s `PoolMetrics` accepts a `PoolStatsFunc`. The
-  pool reports through it; nothing else changes.
+  pool reports live counters through it.
+
+Repositories receive this pool, or a transaction implementing the same
+sqlc-generated DBTX interface. They do not construct pools and do not begin
+transactions.

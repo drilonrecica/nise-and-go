@@ -1,0 +1,93 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package database
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestParseConfigAppliesEveryPoolLimit(t *testing.T) {
+	settings := Settings{
+		MaxConns:          7,
+		MinConns:          2,
+		MaxConnLifetime:   41 * time.Minute,
+		MaxConnIdleTime:   3 * time.Minute,
+		HealthCheckPeriod: 17 * time.Second,
+		ConnectTimeout:    4 * time.Second,
+	}
+
+	cfg, err := ParseConfig("postgres://app:secret@localhost/app?sslmode=disable", "", settings)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.MaxConns != 7 || cfg.MinConns != 2 {
+		t.Errorf("connection bounds = %d..%d, want 2..7", cfg.MinConns, cfg.MaxConns)
+	}
+	if cfg.MaxConnLifetime != 41*time.Minute || cfg.MaxConnIdleTime != 3*time.Minute {
+		t.Errorf("connection lifetimes = %s/%s, want 41m/3m", cfg.MaxConnLifetime, cfg.MaxConnIdleTime)
+	}
+	if cfg.HealthCheckPeriod != 17*time.Second {
+		t.Errorf("health check period = %s, want 17s", cfg.HealthCheckPeriod)
+	}
+	if cfg.ConnConfig.ConnectTimeout != 4*time.Second {
+		t.Errorf("connect timeout = %s, want 4s", cfg.ConnConfig.ConnectTimeout)
+	}
+}
+
+func TestParseConfigAcceptsSeparatePasswordWithoutURLQuoting(t *testing.T) {
+	settings, err := NewSettings(1, 0, time.Minute, time.Minute, time.Second, time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	const password = "reserved:/@% characters"
+	cfg, err := ParseConfig("postgres://app@localhost/app?sslmode=disable", password, settings)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.ConnConfig.Password != password {
+		t.Fatalf("password = %q, want exact separate value", cfg.ConnConfig.Password)
+	}
+}
+
+func TestParseConfigRejectsUnvalidatedSettings(t *testing.T) {
+	_, err := ParseConfig("postgres://app:secret@localhost/app?sslmode=disable", "", Settings{})
+	if err == nil {
+		t.Fatal("ParseConfig accepted zero-value settings")
+	}
+}
+
+func TestParseConfigDoesNotExposeDatabaseCredentials(t *testing.T) {
+	const password = "do-not-print-this-password"
+	_, err := ParseConfig("postgres://app:"+password+"@%zz/app", "", Settings{
+		MaxConns:          1,
+		MaxConnLifetime:   time.Minute,
+		MaxConnIdleTime:   time.Minute,
+		HealthCheckPeriod: time.Second,
+		ConnectTimeout:    time.Second,
+	})
+	if err == nil {
+		t.Fatal("ParseConfig accepted a malformed DATABASE_URL")
+	}
+	if strings.Contains(err.Error(), password) {
+		t.Fatalf("ParseConfig error exposed the database password: %q", err)
+	}
+}
+
+type pingStub struct{ err error }
+
+func (p pingStub) Ping(context.Context) error { return p.err }
+
+func TestReadinessCheckReportsPoolFailure(t *testing.T) {
+	want := errors.New("database unavailable")
+	check := ReadinessCheck(pingStub{err: want})
+	if check.Name != "postgres" {
+		t.Errorf("check name = %q, want postgres", check.Name)
+	}
+	if got := check.Func(context.Background()); !errors.Is(got, want) {
+		t.Fatalf("check error = %v, want %v", got, want)
+	}
+}

@@ -71,7 +71,10 @@ This is the unstripped `./cmd/testapp/testapp` binary for the default profile.
 
 **Generated application startup (cold):**
 
-Measured by starting the generated binary and polling `/healthz/ready` until it returns HTTP 200. Excludes any database migration time (none exists in this slice; M3 and later introduce persistent state).
+Measured by starting the generated binary with `DATABASE_URL` pointing to an
+already-ready PostgreSQL instance and polling `/healthz/ready` until it
+returns HTTP 200. It includes pool construction and the startup ping, and
+excludes explicit database migration time.
 
 Three independent runs, five samples except run 3 (three samples):
 
@@ -103,7 +106,10 @@ Five samples:
 - **Median:** 8.9 MB
 - **Spread:** 8.8–9.1 MB (Δ = 0.3 MB, ~3% variance)
 
-No database process is running (this slice has no M3 database layer). RSS is measured for the application process alone. A future controlled benchmark will measure full-stack memory (application + PostgreSQL).
+RSS is measured for the application process alone; PostgreSQL resource use
+is reported separately. When `DATABASE_URL` is absent,
+`scripts/measure-baselines.sh` skips startup and RSS instead of reporting a
+failed sample as a measurement.
 
 ## Baseline stability and regression review policy
 

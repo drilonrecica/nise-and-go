@@ -152,3 +152,28 @@ func Load() (AppConfig, error) {
 ```
 
 Running with `APP_ENV=production` but no `SESSION_SECRET` or `DATABASE_URL` set, and `DEBUG=true`, fails startup with one error naming all three problems — not just the first one encountered.
+
+## Generated PostgreSQL pool settings
+
+The golden-profile application requires `DATABASE_URL` (or
+`DATABASE_URL_FILE`) and applies fixed conservative pgxpool defaults.
+`DATABASE_PASSWORD` (or `DATABASE_PASSWORD_FILE`) may supply the
+password separately; when set, its exact value overrides URL userinfo. This
+is the safe form for deployment systems interpolating a secret that may
+contain URL-reserved characters.
+
+| Variable | Default | Constraint |
+|---|---:|---|
+| `DB_MAX_CONNS` | `10` | 1 through 2,147,483,647 |
+| `DB_MIN_CONNS` | `0` | 0 through `DB_MAX_CONNS` |
+| `DB_MAX_CONN_LIFETIME` | `30m` | greater than zero |
+| `DB_MAX_CONN_IDLE_TIME` | `5m` | greater than zero and no longer than the maximum lifetime |
+| `DB_HEALTH_CHECK_PERIOD` | `30s` | greater than zero |
+| `DB_CONNECT_TIMEOUT` | `5s` | greater than zero |
+
+The maximum is explicit instead of pgxpool's CPU-derived default: adding CPU
+to an application replica must not silently consume more PostgreSQL
+connections. `DB_MIN_CONNS=0` also avoids holding open idle connections
+for small deployments. The application proves one connection during startup,
+registers the pool ping with readiness, reports bounded pool metrics, and
+closes the pool during shutdown.

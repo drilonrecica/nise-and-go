@@ -42,7 +42,11 @@ Wire it into your router with `HTTPMetrics.Middleware(routeTemplate)`, where `ro
 | `db_pool_idle_conns` | gauge (sampled on scrape) | `pool` | Currently idle. |
 | `db_pool_in_use_conns` | gauge (sampled on scrape) | `pool` | Currently checked out. |
 
-No pool package exists in this repository yet; pgxpool arrives with the data layer at milestone M3. `observability.PoolStats` and `observability.PoolStatsFunc` are the seam a future pool implementation is expected to satisfy — most directly by adapting `pgxpool.Pool.Stat()`. Call `PoolMetrics.Register(poolName, statsFunc)` once per pool at startup; `statsFunc` is invoked live, on every scrape, not pushed on a schedule, because a pool already tracks these counts internally. `runtime/observability`'s own test suite (`pool_test.go`) exercises this seam with a hand-written fake pool — never a real one, because a real one does not exist yet.
+The generated application's `internal/platform/database` package adapts
+`pgxpool.Pool.Stat()` to `observability.PoolStats`. Constructor
+wiring calls `PoolMetrics.Register("primary", statsFunc)` once at
+startup; `statsFunc` is invoked live on every scrape rather than pushed
+on a schedule.
 
 ### Background jobs (`observability.NewJobMetrics`) — a seam, not an implementation
 

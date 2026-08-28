@@ -80,7 +80,7 @@ version; those entries name the package only.
 | Import path | Why it is allowed |
 |---|---|
 | `github.com/go-chi/chi/v5` | The HTTP router. The V1 profile is Go + chi + PostgreSQL + SvelteKit; chi is a `net/http`-compatible router, so generated handlers stay ordinary `http.Handler`s and the middleware chain stays readable in application code. |
-| `github.com/jackc/pgx/v5` | The PostgreSQL driver and pool underlying sqlc-generated code. It is also the documented escape hatch: exceptional bulk operations, PostgreSQL-specific behavior, and carefully optimized paths may use pgx directly, keeping the application's own transaction boundaries. |
+| `github.com/jackc/pgx/v5` (`v5.10.0`) | The PostgreSQL driver and pool underlying sqlc-generated code. It is also the documented escape hatch: exceptional bulk operations, PostgreSQL-specific behavior, and carefully optimized paths may use pgx directly, keeping the application's own transaction boundaries. The generated pool pins explicit limits rather than accepting pgx's CPU-dependent maximum. |
 | `github.com/riverqueue/river` | The background-job runner, used transactionally through pgx. Jobs are PostgreSQL-backed so a job can be enqueued in the same transaction as the business change that requires it — which is why there is no separate message broker in the denylist below. |
 | sqlc-generated query code | Output of `sqlc generate`; application-owned, checked in. |
 | goose migration files and runtime support | Handwritten SQL migrations run by goose, embedded in the binary and applied as an explicit deployment step. |

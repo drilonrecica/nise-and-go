@@ -1,0 +1,154 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package database constructs and observes this application's PostgreSQL
+// connection pool. It does not own transaction boundaries or migrations.
+package database
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/drilonrecica/nise-and-go/runtime/health"
+	"github.com/drilonrecica/nise-and-go/runtime/observability"
+)
+
+// Settings are the explicit, bounded pgxpool settings this application
+// accepts. No pgxpool concurrency default is inherited from machine CPU
+// count, so the same deployment configuration behaves the same on every
+// host.
+type Settings struct {
+	MaxConns          int32
+	MinConns          int32
+	MaxConnLifetime   time.Duration
+	MaxConnIdleTime   time.Duration
+	HealthCheckPeriod time.Duration
+	ConnectTimeout    time.Duration
+}
+
+// NewSettings validates integer inputs before converting them to pgx's int32
+// connection counts.
+func NewSettings(maxConns, minConns int, maxLifetime, maxIdle, healthPeriod, connectTimeout time.Duration) (Settings, error) {
+	var errs []error
+	if maxConns < 1 || maxConns > math.MaxInt32 {
+		errs = append(errs, fmt.Errorf("DB_MAX_CONNS: must be between 1 and %d", math.MaxInt32))
+	}
+	if minConns < 0 || minConns > math.MaxInt32 {
+		errs = append(errs, fmt.Errorf("DB_MIN_CONNS: must be between 0 and %d", math.MaxInt32))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return Settings{}, err
+	}
+	settings := Settings{
+		MaxConns:          int32(maxConns),
+		MinConns:          int32(minConns),
+		MaxConnLifetime:   maxLifetime,
+		MaxConnIdleTime:   maxIdle,
+		HealthCheckPeriod: healthPeriod,
+		ConnectTimeout:    connectTimeout,
+	}
+	if err := settings.Validate(); err != nil {
+		return Settings{}, err
+	}
+	return settings, nil
+}
+
+// Validate rejects an incomplete Settings value even when a caller builds
+// it directly instead of using NewSettings.
+func (s Settings) Validate() error {
+	var errs []error
+	if s.MaxConns < 1 {
+		errs = append(errs, errors.New("DB_MAX_CONNS: must be greater than zero"))
+	}
+	if s.MinConns < 0 {
+		errs = append(errs, errors.New("DB_MIN_CONNS: must not be negative"))
+	}
+	if s.MinConns > s.MaxConns {
+		errs = append(errs, errors.New("DB_MIN_CONNS: must not exceed DB_MAX_CONNS"))
+	}
+	if s.MaxConnLifetime <= 0 {
+		errs = append(errs, errors.New("DB_MAX_CONN_LIFETIME: must be greater than zero"))
+	}
+	if s.MaxConnIdleTime <= 0 {
+		errs = append(errs, errors.New("DB_MAX_CONN_IDLE_TIME: must be greater than zero"))
+	}
+	if s.MaxConnLifetime > 0 && s.MaxConnIdleTime > s.MaxConnLifetime {
+		errs = append(errs, errors.New("DB_MAX_CONN_IDLE_TIME: must not exceed DB_MAX_CONN_LIFETIME"))
+	}
+	if s.HealthCheckPeriod <= 0 {
+		errs = append(errs, errors.New("DB_HEALTH_CHECK_PERIOD: must be greater than zero"))
+	}
+	if s.ConnectTimeout <= 0 {
+		errs = append(errs, errors.New("DB_CONNECT_TIMEOUT: must be greater than zero"))
+	}
+	return errors.Join(errs...)
+}
+
+// ParseConfig parses databaseURL, applies an optional separately supplied
+// password, and applies every Settings field. A separate password lets
+// deployments accept URL-reserved characters without constructing a
+// connection URL through unsafe string interpolation.
+func ParseConfig(databaseURL, password string, settings Settings) (*pgxpool.Config, error) {
+	if err := settings.Validate(); err != nil {
+		return nil, err
+	}
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, errors.New("parse DATABASE_URL: invalid PostgreSQL connection string")
+	}
+	if password != "" {
+		cfg.ConnConfig.Password = password
+	}
+	cfg.MaxConns = settings.MaxConns
+	cfg.MinConns = settings.MinConns
+	cfg.MaxConnLifetime = settings.MaxConnLifetime
+	cfg.MaxConnIdleTime = settings.MaxConnIdleTime
+	cfg.HealthCheckPeriod = settings.HealthCheckPeriod
+	cfg.ConnConfig.ConnectTimeout = settings.ConnectTimeout
+	return cfg, nil
+}
+
+// Open constructs the pool and proves one connection before returning. A
+// server never advertises startup readiness with a lazily configured but
+// unreachable database.
+func Open(ctx context.Context, databaseURL, password string, settings Settings) (*pgxpool.Pool, error) {
+	cfg, err := ParseConfig(databaseURL, password, settings)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create PostgreSQL pool: %w", err)
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, settings.ConnectTimeout)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("connect to PostgreSQL: %w", err)
+	}
+	return pool, nil
+}
+
+type pinger interface {
+	Ping(context.Context) error
+}
+
+// ReadinessCheck returns the fixed-name PostgreSQL dependency check.
+func ReadinessCheck(pool pinger) health.Check {
+	return health.Check{Name: "postgres", Func: pool.Ping}
+}
+
+// Stats adapts pgxpool's live counters to the framework's metric seam.
+func Stats(pool *pgxpool.Pool) observability.PoolStats {
+	stat := pool.Stat()
+	return observability.PoolStats{
+		MaxConns:   stat.MaxConns(),
+		OpenConns:  stat.TotalConns(),
+		IdleConns:  stat.IdleConns(),
+		InUseConns: stat.AcquiredConns(),
+	}
+}

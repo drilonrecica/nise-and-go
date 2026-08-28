@@ -127,6 +127,7 @@ type templateData struct {
 	NiseModule     string
 	NiseVersion    string
 	ChiVersion     string
+	PgxVersion     string
 	GoVersion      string
 	GoImageTag     string
 	NodeVersion    string
@@ -154,6 +155,7 @@ func newTemplateData(opts Options) templateData {
 		NiseModule:         NiseModulePath,
 		NiseVersion:        NiseModuleVersion,
 		ChiVersion:         ChiVersion,
+		PgxVersion:         PgxVersion,
 		GoVersion:          GoDirective,
 		GoImageTag:         GoImageTag,
 		NodeVersion:        NodeVersion,

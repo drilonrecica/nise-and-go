@@ -276,8 +276,13 @@ myapp/
     │   └── modules.gen.go        [nise]  the compile-time module selection
     ├── features/README.md        [app]   reserved for vertical slices (M5, M7)
     └── platform/
-        ├── config/config.go      [app]   typed configuration over runtime/config
-        ├── database/README.md    [app]   reserved for the pool and migrations (M3)
+        ├── config/
+        │   ├── config.go         [app]   typed configuration over runtime/config
+        │   └── config_test.go    [app]   pool default and validation contracts
+        ├── database/
+        │   ├── README.md         [app]
+        │   ├── pool.go           [app]   bounded pgxpool plus health/metric adapters
+        │   └── pool_test.go      [app]
         ├── httpapi/router.go     [app]   the ordered middleware chain and the routes
         └── webui/
             ├── webui.go          [nise]  embeds the built frontend and serves the SPA
@@ -285,7 +290,7 @@ myapp/
 
 ```
 
-37 files. Ownership markers are from
+40 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Every generated file declares the same thing in a header
@@ -305,6 +310,10 @@ files and omitted directories.
   refuses to start with `DEBUG` enabled, a non-JSON log format, or a
   wildcard bind without `ALLOW_PUBLIC_BIND=true` — reporting every
   violation at once.
+- **A conservative PostgreSQL pool** with explicit connection/lifetime
+  bounds, startup connectivity proof, readiness integration, live pool
+  metrics, and lifecycle closure. `nise dev` supplies its managed
+  database URL automatically.
 - **Structured logging** in JSON or a readable text format, with a request
   ID and a correlation ID on every request and central redaction applied by
   the handler, not by call sites.
@@ -344,7 +353,7 @@ scaffold code for subsystems that do not exist yet.
 
 | Absent | Arrives with |
 |---|---|
-| Database pool, migrations, `sqlc` output | M3 — `db/` and `internal/platform/database/` are the reserved seams |
+| Migrations and `sqlc` output | Later M3 tasks — the pool is present; `db/` remains the readable migration seam |
 | OpenAPI document, generated server bindings, typed frontend client | M4 — `api/` is the reserved seam, and `router.go` marks the `/api/v1` mount point |
 | Sessions, authentication, authorization, audit log | M5 — `internal/features/` is the reserved seam |
 | **The application shell**: sidebar, navigation, theme and language controls, authentication screens, tables, the component set, and the Vitest and Playwright suites | **M6** — `frontend/` is a minimal but real SvelteKit project today: it installs, builds, type-checks, and renders one page served by the Go binary. Nothing in the layout moves when M6 fills it in. |

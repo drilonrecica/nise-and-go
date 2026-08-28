@@ -33,10 +33,11 @@ go mod edit -replace {{.NiseModule}}={{.ReplacePlaceholder}}  # temporary; see a
 go mod tidy                      # resolve and record the Go dependencies
 pnpm --dir frontend install      # resolve the frontend dependencies
 pnpm --dir frontend build        # build the frontend into the Go package
-go run ./cmd/{{.AppName}}        # start the application
+nise dev                         # start PostgreSQL, Go, and Vite
 ```
 
-Then open <http://127.0.0.1:8080>.
+Then open <http://127.0.0.1:8080>. To run the application binary directly,
+set `DATABASE_URL`; the application does not load `.env` files.
 
 `go build ./cmd/... ./internal/...` also works before the frontend has ever
 been built: a placeholder page is committed inside the embedding Go package
@@ -69,8 +70,16 @@ each one does.
 
 Production fails closed: `APP_ENV=production` refuses to start with `DEBUG`
 enabled, with a non-JSON log format, or bound to every interface without
-`ALLOW_PUBLIC_BIND=true`. Every violation is reported at once, so a failed
-startup names everything to fix.
+`ALLOW_PUBLIC_BIND=true`, or without `DATABASE_URL`. Every
+violation is reported at once, so a failed startup names everything to fix.
+
+The PostgreSQL pool defaults to at most 10 connections, creates no idle
+connections eagerly, and recycles connections after 30 minutes. The complete
+set of bounds is in `.env.example`. Size `DB_MAX_CONNS` against
+PostgreSQL's limit across every application replica rather than per process
+in isolation. A password may be supplied separately through
+`DATABASE_PASSWORD` or `DATABASE_PASSWORD_FILE`; this avoids
+putting URL-reserved secret characters into `DATABASE_URL`.
 
 Any secret may be supplied as `<NAME>_FILE` naming a file whose contents are
 the value, for an orchestrator's mounted-file secret store. Setting both
@@ -123,7 +132,7 @@ deliberately withhold.
 ```text
 api/                      OpenAPI document (arrives with the API milestone)
 cmd/{{.AppName}}/         the binary: flag parsing and mode selection
-db/                       SQL migrations (arrives with the database milestone)
+db/                       readable SQL migrations (added by the next database task)
 deploy/                   Dockerfile and compose file
 frontend/                 the SvelteKit project — see frontend/README.md
 internal/app/             constructor wiring and process modes
