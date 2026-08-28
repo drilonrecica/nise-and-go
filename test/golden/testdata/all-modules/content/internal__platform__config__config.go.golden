@@ -1,0 +1,152 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package config loads this application's typed configuration from the
+// process environment.
+//
+// Every setting is read once, at startup, through runtime/config's explicit
+// combinators. There is no reflection, no struct-tag decoder, and no .env
+// file: the source of every value is visible at its call site in Load.
+package config
+
+import (
+	"fmt"
+	"log/slog"
+	"net"
+	"strings"
+
+	rtconfig "github.com/drilonrecica/nise-and-go/runtime/config"
+	"github.com/drilonrecica/nise-and-go/runtime/lifecycle"
+	"github.com/drilonrecica/nise-and-go/runtime/secure"
+)
+
+// Config is this application's fully resolved configuration.
+type Config struct {
+	// Env is the deployment environment. Production enables the
+	// fail-closed checks in Load.
+	Env rtconfig.Environment
+	// Mode is the default process mode when the binary is started without
+	// an explicit -mode flag.
+	Mode lifecycle.Mode
+	// BindAddr is the interface the HTTP server listens on.
+	BindAddr string
+	// Port is the TCP port the HTTP server listens on.
+	Port string
+	// Debug enables developer-facing behavior. It must be false in
+	// production.
+	Debug bool
+	// LogLevel is the minimum slog level that is emitted.
+	LogLevel slog.Level
+	// LogFormat is "json" or "text".
+	LogFormat string
+	// TrustProxyHeaders allows inbound X-Request-Id and X-Correlation-Id
+	// headers to be adopted instead of freshly generated. Enable it only
+	// behind an ingress that sanitizes those headers.
+	TrustProxyHeaders bool
+	// AllowPublicBind is the explicit opt-in that lets production bind a
+	// public address.
+	AllowPublicBind bool
+	// OperatorToken gates the operator-only endpoints. When it is unset,
+	// those endpoints are not mounted at all.
+	OperatorToken rtconfig.Secret
+}
+
+// Addr is the host:port the HTTP server listens on.
+func (c Config) Addr() string {
+	return net.JoinHostPort(c.BindAddr, c.Port)
+}
+
+// Deployment maps Env onto the two-value deployment axis runtime/secure
+// uses. Only Production gets Strict-Transport-Security; Test is treated as
+// Development so a test run never pins HSTS in a browser.
+func (c Config) Deployment() secure.Deployment {
+	if c.Env == rtconfig.Production {
+		return secure.Production
+	}
+	return secure.Development
+}
+
+// Load reads the configuration from the process environment. The returned
+// warnings are non-fatal problems an operator should fix (for example an
+// over-permissive secret file); they never contain a secret value.
+//
+// Load fails rather than guessing: an unparseable value, a missing required
+// value, or a production configuration that breaks one of the checks below
+// stops the process before it serves a single request.
+func Load() (Config, []string, error) {
+	l := rtconfig.NewLoader()
+
+	env := l.Environment("APP_ENV", rtconfig.Default("development"))
+	rawMode := l.String("APP_MODE", rtconfig.Default("all"))
+	rawLevel := l.String("LOG_LEVEL", rtconfig.Default("info"))
+
+	cfg := Config{
+		Env:               env,
+		BindAddr:          l.String("BIND_ADDR", rtconfig.Default("127.0.0.1")),
+		Port:              l.String("PORT", rtconfig.Default("8080")),
+		Debug:             l.Bool("DEBUG", rtconfig.Default("false")),
+		LogFormat:         l.String("LOG_FORMAT", rtconfig.Default("json")),
+		TrustProxyHeaders: l.Bool("TRUST_PROXY_HEADERS", rtconfig.Default("false")),
+		AllowPublicBind:   l.Bool("ALLOW_PUBLIC_BIND", rtconfig.Default("false")),
+		OperatorToken:     l.Secret("OPERATOR_TOKEN", rtconfig.Default("")),
+	}
+	if err := l.Err(); err != nil {
+		return Config{}, nil, err
+	}
+	warnings := l.Warnings()
+
+	mode, err := lifecycle.ParseMode(rawMode)
+	if err != nil {
+		return Config{}, warnings, fmt.Errorf("APP_MODE: %w", err)
+	}
+	cfg.Mode = mode
+
+	level, err := parseLevel(rawLevel)
+	if err != nil {
+		return Config{}, warnings, err
+	}
+	cfg.LogLevel = level
+
+	if cfg.LogFormat != "json" && cfg.LogFormat != "text" {
+		return Config{}, warnings, fmt.Errorf(`LOG_FORMAT: must be "json" or "text", found %q`, cfg.LogFormat)
+	}
+
+	if err := rtconfig.Validate(cfg.Env, func(v *rtconfig.Validator) {
+		v.Check(!cfg.Debug, "DEBUG",
+			"debug mode is enabled in production",
+			"set DEBUG=false")
+		v.Check(cfg.LogFormat == "json", "LOG_FORMAT",
+			"production logs must be machine-readable",
+			"set LOG_FORMAT=json")
+		v.Check(!isWildcardAddr(cfg.BindAddr) || cfg.AllowPublicBind, "BIND_ADDR",
+			"bound to every interface without an explicit opt-in",
+			"set BIND_ADDR to a private address, or set ALLOW_PUBLIC_BIND=true if a public bind is intended")
+	}); err != nil {
+		return Config{}, warnings, err
+	}
+
+	return cfg, warnings, nil
+}
+
+// parseLevel converts a LOG_LEVEL value into a slog.Level. It refuses an
+// unrecognized value rather than falling back to Info: a typo that silently
+// downgraded logging would hide exactly the events an operator set the
+// variable to see.
+func parseLevel(raw string) (slog.Level, error) {
+	switch strings.ToLower(raw) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf(`LOG_LEVEL: must be one of debug, info, warn, error; found %q`, raw)
+	}
+}
+
+// isWildcardAddr reports whether addr binds every interface.
+func isWildcardAddr(addr string) bool {
+	return addr == "" || addr == "0.0.0.0" || addr == "::" || addr == "[::]"
+}

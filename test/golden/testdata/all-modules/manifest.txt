@@ -1,0 +1,62 @@
+# nise generated-tree golden manifest
+# variant: all-modules
+# sorted by path; regenerate with: UPDATE_GOLDEN=1 go test ./test/golden/...
+#
+# <path> dir <mode>
+# <path> file <mode> <sha256>
+.dockerignore file 0644 e67c07ed17a9271672b7bac7dd99034f3f55e864a847558d67481a4f31e8a392
+.env.example file 0644 3ceedc7802a27c28440f7d818a451eedcf6c30c82113327714d8a06d789e289d
+.gitignore file 0644 ccc454e599a681107318bf8e887057052022fe2f44dc80a4267d879ae7fc8e21
+.nise dir 0755
+.nise/architecture.json file 0644 075f0390ab61b77b64105cc801149c2ed5cbcd56475d61f32c6d3a559b929ae4
+AGENTS.md file 0644 3ca496373302b66f1b9e1cff4e9d5246f0a88925c6198b05eb89ebb672b5dd34
+Makefile file 0644 fdc558f996ef1be2bdbdb685de9b11ebe8088d4b1071a7e857d2d1031896c0c5
+README.md file 0644 c0aea6787bfa2c8b07be72944d27fbcb1dcd208cdd60a6bf3009e93f45b453aa
+api dir 0755
+api/README.md file 0644 066c84dc26ecf2a1a4f24df8f5917b12ee829c6d899b76188615e2130d03b491
+cmd dir 0755
+cmd/myapp dir 0755
+cmd/myapp/main.go file 0644 c7d9481d2313ebd6b8653588807d6b8d62938f0073b94426efccb930d83686b1
+db dir 0755
+db/README.md file 0644 7abc1ac35c0baae2845a5c95caabce8105c47ce9fc76422e40e9d9fed433b8ee
+deploy dir 0755
+deploy/Dockerfile file 0644 6465a86bc43a1a17ecbe326ba666b3ba814ee21338426d00b5e1dab3fbe42008
+deploy/README.md file 0644 874b388cfa1745a805cc0a1c298b5173020644646ff16576e21d38e5885ec6e3
+deploy/compose.yaml file 0644 74db778717228c93cc9614a4ba8eec5058a8e82a67c66c6ed1e620b4d4293070
+frontend dir 0755
+frontend/.gitignore file 0644 2dd21d60d8b83062584d4be22e8b314de402773497ce0041fccdd6968fbc34aa
+frontend/README.md file 0644 a0a77d07a04eb550bf3def234d9e31b3e94fb64c5f6b63772444ace81fdaf43a
+frontend/package.json file 0644 e2866bd83ca7a1aa07d311f229a0c538f2a685dc4e76cb49dd3f2f4320d2f57b
+frontend/src dir 0755
+frontend/src/app.css file 0644 5015474a40107560eb09eb5bc3f28bef1beae96d7030fc2068f11253e7c58033
+frontend/src/app.d.ts file 0644 d231593a748a2379dc8248d2a06d2d8ef723c8e8f8a4a3b18291444dac38f861
+frontend/src/app.html file 0644 7e5338b791f818f9e4cbb2d84d9a2e04dc674415292da1061d6634cb206dbb18
+frontend/src/routes dir 0755
+frontend/src/routes/+layout.svelte file 0644 7fd5a3d417470dc49c42f74fbfa39e12d138f22e5c879215d9738c2800c5d1a6
+frontend/src/routes/+layout.ts file 0644 48e77d596307eaae3c74ffe8785ead5af1bda4a96218306fab7ee34658d132e1
+frontend/src/routes/+page.svelte file 0644 450d50da52e4e0210b94e2148b3c9cecca3211f3f23f0663fb19ffed2775c69e
+frontend/static dir 0755
+frontend/static/favicon.svg file 0644 eb78958ea23231a46ef84123653ecbeb7eda847b779fa4e72981933e1e7a5285
+frontend/svelte.config.js file 0644 d290c5b3e673ab33a1b79e093db8acd30dac7cc3b56c90bd5452f1da0e2d3af1
+frontend/tsconfig.json file 0644 d8a3f998af73617b07026a41adfbf33f7004647bc4a6759c00d7cc8b06c29e2a
+frontend/vite.config.ts file 0644 57a86e48dcebe27e59bcfe9d7336f5329b32df27390426ef77826c3c65c4d69d
+go.mod file 0644 ce545b0ca35dbc70304fcab5e3e94a1d7591177c8770bbd2e1ee04fcc3161108
+internal dir 0755
+internal/app dir 0755
+internal/app/app.go file 0644 9a65400ab44b94869f502ec8073a9ac2afff6c5c744c3ee3c9b76ad66048217f
+internal/app/modes.go file 0644 0ce6c95c483fe4cf922ae6c44cd80ad6c5c5583d403b469161520633fef9875d
+internal/app/modules.gen.go file 0644 52ab6fe8acba04a0d3c54f654c34c051ae6d7c453720a52edeac2d882199fcc2
+internal/features dir 0755
+internal/features/README.md file 0644 b99be1cdca45db51b13a9b532975e282ceec27457c9ff19e2e1313fa9f22fe93
+internal/platform dir 0755
+internal/platform/config dir 0755
+internal/platform/config/config.go file 0644 8a309a0891bc407e465d20db8b67c71c2648e3974bc06e4f4891e539ce1180e7
+internal/platform/database dir 0755
+internal/platform/database/README.md file 0644 bc302d9b678924842539687d302c90ed66fe0bcf14c1acdbf98fac0a1e198876
+internal/platform/httpapi dir 0755
+internal/platform/httpapi/router.go file 0644 2c9bf527efbf53c44cfd56c52a3463bad831abddc11e199f18564b1dbaeb739f
+internal/platform/webui dir 0755
+internal/platform/webui/embedded dir 0755
+internal/platform/webui/embedded/placeholder.html file 0644 e39daa990ad2cd225e7d4491092d4d56600b509705c9d63c4c082a111cbcf772
+internal/platform/webui/webui.go file 0644 67a0e9eb8789bf98f7f7957e4ac5ad8f72f068bd76aa4b04d58306a26e694fc1
+nise.json file 0644 77ff6be087c5aad6f98d9d32a342e691ec33ad9765776f747be46c38b9ac3947
