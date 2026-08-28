@@ -71,6 +71,7 @@ func New(d Deps) (http.Handler, error) {
 	policy, err := secure.NewDocumentPolicy(
 		d.Config.Deployment(),
 		secure.WithScriptHashes(d.UI.ScriptHashes()...),
+		secure.WithStyleHashes(d.UI.StyleHashes()...),
 	)
 	if err != nil {
 		return nil, err

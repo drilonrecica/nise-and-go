@@ -14,6 +14,22 @@ import (
 // deterministic output.
 const niseRepoURL = "https://github.com/drilonrecica/nise-and-go"
 
+// niseRepoDefaultBranch is the repository's default branch, as reported by
+// `git symbolic-ref refs/remotes/origin/HEAD`. A generated AGENTS.md links
+// into the repository by branch, so a wrong value here is a 404 in every
+// project nise has ever generated — the one artifact whose audience is an
+// external coding tool that will not sanity-check the link.
+const niseRepoDefaultBranch = "master"
+
+// niseRepoBlobURL is the base for a link to a file in the repository, and
+// is deliberately the only place in the tree that spells a repository blob
+// URL. TestRepositoryBlobLinksUseOneBranch enforces that: it scans every
+// tracked file for a blob link and fails if any of them names a branch
+// other than niseRepoDefaultBranch, so renaming the default branch is one
+// edit here rather than a hunt through Go source, templates, fixtures, and
+// documentation.
+const niseRepoBlobURL = niseRepoURL + "/blob/" + niseRepoDefaultBranch
+
 // buildAgentsMDBody renders AGENTS.md's content, excluding the ownership
 // header and content-hash comment that wrapMarkdown prepends. Calling it
 // twice with an equal r always returns byte-identical output: every list
@@ -82,7 +98,7 @@ func writeLayoutSection(b *strings.Builder) {
 	b.WriteString("directory names `store/`, `openapigen/`, and `embedded/`, and any file\n")
 	b.WriteString("ending `.gen.go`, are always regenerated Nise output. The same layout,\n")
 	b.WriteString("with the full rationale, is documented at [Generated application\n")
-	b.WriteString("layout](" + niseRepoURL + "/blob/main/docs/generated-application-layout.md).\n\n")
+	b.WriteString("layout](" + niseRepoBlobURL + "/docs/generated-application-layout.md).\n\n")
 	b.WriteString("The machine-readable form of this same table, plus this project's module\n")
 	b.WriteString("selection, is `.nise/architecture.json` (schema version " +
 		fmt.Sprintf("%d", ArchitectureSchemaVersion) + "), alongside this file.\n\n")
@@ -153,7 +169,7 @@ func writeDocsSection(b *strings.Builder) {
 		"docs/adr/0010-project-recipe-format.md",
 	}
 	for _, d := range docs {
-		b.WriteString("- [" + d + "](" + niseRepoURL + "/blob/main/" + d + ")\n")
+		b.WriteString("- [" + d + "](" + niseRepoBlobURL + "/" + d + ")\n")
 	}
 	b.WriteString("\n`nise.json` in this project's root records the exact profile and module\n")
 	b.WriteString("selection this document was generated from.\n")

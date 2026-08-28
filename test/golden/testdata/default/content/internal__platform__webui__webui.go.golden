@@ -16,7 +16,7 @@
 // of the adapter's output, and it is the only reason go build succeeds in a
 // fresh clone where pnpm build has never run.
 //
-// # Inline script hashes
+// # Inline script and style hashes
 //
 // The built fallback page carries exactly one inline <script>: SvelteKit's
 // hydration bootstrap. Its contents change on every build, so its hash
@@ -25,6 +25,14 @@
 // from the embedded artifact at startup; the router passes it to
 // secure.WithScriptHashes. Without it the strict Content-Security-Policy
 // blocks the bootstrap and the page never hydrates.
+//
+// StyleHashes does the same for inline <style> elements, and exists for the
+// same reason in the other direction: the committed placeholder page carries
+// its whole appearance in one inline <style>, which style-src 'self' blocks
+// on its own. Serving an unstyled page with a CSP error in the console is
+// the first thing a new user would otherwise see on `go run ./cmd/...`. A
+// hash names that exact block; it is not a weakening, so it records no
+// waiver.
 package webui
 
 import (
@@ -65,12 +73,18 @@ var ErrNoBuild = errors.New("webui: no frontend build is embedded; run \"pnpm --
 // capture must not be trimmed or re-encoded in any way.
 var inlineScriptRE = regexp.MustCompile(`(?is)<script([^>]*)>(.*?)</script\s*>`)
 
+// inlineStyleRE matches a <style> element and captures its exact body, with
+// the same no-trimming rule as inlineScriptRE: the bytes between the tags
+// are exactly what the browser hashes.
+var inlineStyleRE = regexp.MustCompile(`(?is)<style[^>]*>(.*?)</style\s*>`)
+
 // UI serves the embedded single-page application.
 type UI struct {
-	client fs.FS
-	built  bool
-	page   []byte
-	hashes []string
+	client      fs.FS
+	built       bool
+	page        []byte
+	hashes      []string
+	styleHashes []string
 }
 
 // New builds the UI from the embedded artifact. When requireBuild is true
@@ -94,14 +108,25 @@ func New(requireBuild bool) (*UI, error) {
 		if phErr != nil {
 			return nil, fmt.Errorf("webui: reading %s: %w", placeholderPath, phErr)
 		}
-		return &UI{client: client, built: false, page: placeholder}, nil
+		return &UI{
+			client:      client,
+			built:       false,
+			page:        placeholder,
+			styleHashes: inlineStyleHashes(placeholder),
+		}, nil
 	}
 
 	hashes, err := inlineScriptHashes(page)
 	if err != nil {
 		return nil, err
 	}
-	return &UI{client: client, built: true, page: page, hashes: hashes}, nil
+	return &UI{
+		client:      client,
+		built:       true,
+		page:        page,
+		hashes:      hashes,
+		styleHashes: inlineStyleHashes(page),
+	}, nil
 }
 
 // Built reports whether a frontend build is embedded. When it is false the
@@ -114,6 +139,21 @@ func (u *UI) Built() bool { return u.built }
 func (u *UI) ScriptHashes() []string {
 	out := make([]string, len(u.hashes))
 	copy(out, u.hashes)
+	return out
+}
+
+// StyleHashes returns one CSP source expression ("sha256-…") per inline
+// <style> element in the served document, ready to pass to
+// secure.WithStyleHashes. It is empty for a document that carries none.
+//
+// The placeholder page served before a frontend build exists carries one,
+// and without its hash style-src 'self' blocks it: the page renders
+// unstyled with a console violation. A hash covers exactly those bytes, so
+// it allows that one block and nothing else — unlike 'unsafe-inline', which
+// this package never asks for.
+func (u *UI) StyleHashes() []string {
+	out := make([]string, len(u.styleHashes))
+	copy(out, u.styleHashes)
 	return out
 }
 
@@ -185,6 +225,21 @@ func inlineScriptHashes(doc []byte) ([]string, error) {
 		return nil, errors.New("webui: the embedded index.html carries no inline script; the frontend build is not the expected adapter-static output")
 	}
 	return hashes, nil
+}
+
+// inlineStyleHashes returns the CSP hash source expression for every inline
+// <style> element in doc. Unlike inlineScriptHashes it does not treat an
+// empty result as an error: a document with no inline style is a perfectly
+// ordinary document, and a built frontend whose styling is entirely in an
+// external stylesheet is exactly what this project's CSP prefers.
+func inlineStyleHashes(doc []byte) []string {
+	matches := inlineStyleRE.FindAllSubmatch(doc, -1)
+	hashes := make([]string, 0, len(matches))
+	for _, m := range matches {
+		sum := sha256.Sum256(m[1])
+		hashes = append(hashes, "sha256-"+base64.StdEncoding.EncodeToString(sum[:]))
+	}
+	return hashes
 }
 
 // hasSrcAttribute reports whether a <script> tag's attribute text declares
