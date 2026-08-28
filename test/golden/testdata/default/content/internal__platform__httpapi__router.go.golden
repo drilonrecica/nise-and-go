@@ -1,0 +1,190 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package httpapi builds this application's HTTP handler: the ordered
+// middleware chain and the routes mounted under it.
+//
+// The middleware order is application code on purpose. No package under
+// runtime/ aggregates middleware, so the one place a reader has to look to
+// know what wraps a request is New, below.
+package httpapi
+
+import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+
+	rtconfig "github.com/drilonrecica/nise-and-go/runtime/config"
+	"github.com/drilonrecica/nise-and-go/runtime/health"
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/observability"
+	"github.com/drilonrecica/nise-and-go/runtime/secure"
+
+	"github.com/example/myapp/internal/platform/config"
+	"github.com/example/myapp/internal/platform/webui"
+)
+
+// Deps are everything the router needs, passed explicitly. There is no
+// container and no locator: if a dependency is not in this struct, no
+// handler below can reach it.
+type Deps struct {
+	// Config is the application's resolved configuration.
+	Config config.Config
+	// Logger is the process logger the request middleware derives a
+	// request-scoped logger from.
+	Logger *slog.Logger
+	// Gate is the readiness gate the lifecycle package flips during
+	// shutdown.
+	Gate *health.Gate
+	// Prober aggregates the registered dependency checks behind readiness.
+	Prober *health.Prober
+	// Registry holds the process's metrics.
+	Registry *observability.Registry
+	// Metrics is the HTTP metrics middleware's collector.
+	Metrics *observability.HTTPMetrics
+	// UI serves the embedded single-page application.
+	UI *webui.UI
+}
+
+// New builds the application's HTTP handler.
+//
+// The chain, outermost first:
+//
+//  1. secure.Middleware — security headers and the Content Security
+//     Policy, outermost so that every response carries them, including one
+//     produced by a panic or by chi's own 404.
+//  2. recoverer — turns a panic into a logged 500 instead of a dropped
+//     connection.
+//  3. logging.Middleware — assigns the request and correlation IDs and
+//     stores a request-scoped logger in the context.
+//  4. observability.HTTPMetrics.Middleware — counts and times the request,
+//     labeled by chi's resolved route template rather than the raw path.
+//
+// Metrics is inside logging so that a request already carries its IDs when
+// a handler logs, and inside recoverer so a panic is still observed as a
+// request: the metrics middleware deliberately re-panics after recording.
+func New(d Deps) (http.Handler, error) {
+	policy, err := secure.NewDocumentPolicy(
+		d.Config.Deployment(),
+		secure.WithScriptHashes(d.UI.ScriptHashes()...),
+	)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range policy.Waivers() {
+		d.Logger.Warn("security policy weakened", slog.String("waiver", w.String()))
+	}
+
+	r := chi.NewRouter()
+	r.Use(secure.Middleware(policy))
+	r.Use(recoverer(d.Logger))
+	r.Use(logging.Middleware(d.Logger, logging.MiddlewareOptions{
+		TrustInbound: d.Config.TrustProxyHeaders,
+	}))
+	r.Use(d.Metrics.Middleware(routeTemplate))
+
+	// The three probes are unauthenticated by design: each answers with a
+	// status code and one of two fixed bodies, and never names a
+	// dependency. See docs/operations-runtime.md.
+	r.Method(http.MethodGet, "/healthz/startup", health.NewStartupHandler(d.Gate))
+	r.Method(http.MethodGet, "/healthz/live", health.NewLivenessHandler(d.Gate))
+	r.Method(http.MethodGet, "/healthz/ready", health.NewReadinessHandler(d.Gate, d.Prober))
+
+	// The operator subtree exposes the metrics endpoint and the detailed
+	// readiness report, both of which reveal internal topology. They are
+	// mounted only when OPERATOR_TOKEN is set, and always behind the token
+	// check — an unset token means the routes do not exist, in every
+	// environment.
+	if d.Config.OperatorToken.IsSet() {
+		token := d.Config.OperatorToken
+		r.Group(func(op chi.Router) {
+			op.Use(requireOperatorToken(token))
+			op.Method(http.MethodGet, "/internal/metrics", observability.NewHandler(d.Registry))
+			op.Method(http.MethodGet, "/internal/healthz/ready/report", health.NewReadinessReportHandler(d.Gate, d.Prober))
+		})
+	}
+
+	// The JSON API mounts here, under /api/v1, with secure.NewAPIPolicy
+	// applied to its own subtree. It arrives with the OpenAPI milestone;
+	// nothing is mounted for it today.
+
+	r.Handle("/*", d.UI)
+	return r, nil
+}
+
+// routeTemplate reports the route pattern chi matched, so an HTTP metric is
+// labeled "/widgets/{id}" and never a raw path carrying a record
+// identifier. An unmatched request has no pattern; returning "" lets
+// runtime/observability apply its own fixed fallback label.
+func routeTemplate(r *http.Request) string {
+	if rc := chi.RouteContext(r.Context()); rc != nil {
+		return rc.RoutePattern()
+	}
+	return ""
+}
+
+// recoverer turns a panic in a downstream handler into a logged 500. It
+// logs through the request-scoped logger, so the failing request's own IDs
+// are on the record, and never writes the panic value to the response.
+func recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				p := recover()
+				if p == nil {
+					return
+				}
+				if err, ok := p.(error); ok && errors.Is(err, http.ErrAbortHandler) {
+					panic(p)
+				}
+				log := logger
+				if scoped := logging.FromContext(r.Context()); scoped != nil {
+					log = scoped
+				}
+				log.Error("panic serving request",
+					slog.String("method", r.Method),
+					slog.String("route", routeTemplate(r)),
+					slog.Any("panic", p),
+				)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// requireOperatorToken gates the operator subtree on a bearer token
+// compared in constant time. It answers 404 rather than 401 for a wrong or
+// absent token, so an unauthorized caller cannot learn that the endpoint
+// exists at all.
+// Both sides are hashed before the comparison so that the fixed-width
+// digests, rather than the credentials themselves, are what the constant-
+// time compare sees — otherwise the comparison's length check would leak
+// the token's length.
+func requireOperatorToken(token rtconfig.Secret) func(http.Handler) http.Handler {
+	want := sha256.Sum256([]byte(token.Reveal()))
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got := sha256.Sum256([]byte(bearerToken(r)))
+			if subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
+				http.NotFound(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// bearerToken extracts the credential from an Authorization: Bearer header.
+func bearerToken(r *http.Request) string {
+	const prefix = "Bearer "
+	value := r.Header.Get("Authorization")
+	if len(value) <= len(prefix) || !strings.EqualFold(value[:len(prefix)], prefix) {
+		return ""
+	}
+	return value[len(prefix):]
+}

@@ -1,0 +1,31 @@
+# Generated once by nise; owned by this application. Nise will not overwrite it.
+#
+# Run from the repository root:
+#   docker compose -f deploy/compose.yaml up --build
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      APP_ENV: production
+      APP_MODE: all
+      BIND_ADDR: 0.0.0.0
+      ALLOW_PUBLIC_BIND: "true"
+      PORT: "8080"
+      LOG_FORMAT: json
+      LOG_LEVEL: info
+      DEBUG: "false"
+
+# No healthcheck is declared. The runtime image is distroless: it carries no
+# shell and no curl, so a Compose healthcheck would have to run the
+# application binary against itself, which proves nothing an exited process
+# does not already prove. Probe /healthz/ready from outside instead — that is
+# the endpoint your load balancer and your orchestrator should both use.
+
+# PostgreSQL and the other supporting services are added here with the
+# database milestone. myapp has no database dependency yet, so
+# declaring one now would be a service nothing connects to.

@@ -1,0 +1,13 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+//
+// The require block is pinned rather than resolved: generation performs no
+// network access at all. Run `go mod tidy` once to record go.sum.
+
+module github.com/example/myapp
+
+go 1.26.0
+
+require (
+	github.com/drilonrecica/nise-and-go v0.1.0
+	github.com/go-chi/chi/v5 v5.3.2
+)
