@@ -6,6 +6,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,21 @@ func TestRepositoryBlobLinksUseOneBranch(t *testing.T) {
 	}
 	defer func() { _ = root.Close() }()
 
+	// This test file itself contains an example blob link in its own doc
+	// comment (above), which would let the walk count itself and make the
+	// checked != 0 guard below pass even if every real link in the tree were
+	// removed. Exclude it by its own path so the zero-check measures the
+	// worktree, not this file's documentation of the pattern it looks for.
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed to report this test's own file")
+	}
+	thisRel, err := filepath.Rel(dir, thisFile)
+	if err != nil {
+		t.Fatalf("relativizing %s to %s: %v", thisFile, dir, err)
+	}
+	thisRel = filepath.ToSlash(thisRel)
+
 	var checked int
 	walkErr := fs.WalkDir(root.FS(), ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -49,6 +65,9 @@ func TestRepositoryBlobLinksUseOneBranch(t *testing.T) {
 			case ".git", "node_modules", "privateDocs":
 				return fs.SkipDir
 			}
+			return nil
+		}
+		if name == thisRel {
 			return nil
 		}
 		if !textFileExtension(path.Ext(d.Name())) {
