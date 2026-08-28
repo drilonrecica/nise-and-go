@@ -2,11 +2,11 @@ package observability
 
 import "context"
 
-// Tracer starts spans of traced work. It names exactly the four operations
-// the blueprint's optional tracing seam requires (blueprint §15: "Optional
-// tracing through a narrow interface; no mandatory collector") — start a
-// span, end it, record an error on it, and propagate it through a
-// [context.Context] — and nothing else. This package imports no tracing
+// Tracer starts spans of traced work. Tracing in this project is optional
+// and behind a narrow interface, with no mandatory collector, so this
+// interface names exactly four operations — start a span, end it, record an
+// error on it, and propagate it through a [context.Context] — and nothing
+// else. This package imports no tracing
 // SDK, so this interface names none in its signature either.
 //
 // [NoopTracer] is the zero-cost default every generated application gets

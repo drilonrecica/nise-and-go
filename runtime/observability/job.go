@@ -3,8 +3,8 @@ package observability
 import "time"
 
 // JobOutcome is the closed set of terminal states a background job can end
-// in. The background-job runner the blueprint describes for M8 (River
-// through pgx, blueprint §11) does not exist in this repository yet;
+// in. The background-job runner planned for milestone M8 (River through
+// pgx) does not exist in this repository yet;
 // JobOutcome and [JobMetrics] are the seam that future runner is expected
 // to report through.
 type JobOutcome string

@@ -4,8 +4,9 @@ This page is the first dependency allowlist for Nise (see
 [ADR 0008](adr/0008-toolchain-and-dependencies.md)). It governs code Nise
 itself maintains: `cmd/`, `internal/`, `runtime/`, and `modules/`. It does not
 govern application code an owner writes after generation — see
-[repository layout](repository-layout.md) and blueprint §5's escape-hatch
-notes for that boundary.
+[repository layout](repository-layout.md) for that boundary. An application
+owner may add any dependency they like; the Nise allowlist governs what Nise
+itself maintains and what Nise generates by default, and nothing more.
 
 ## The rule
 
@@ -40,9 +41,9 @@ to import. The table records the dependency graph that already exists in
 
 | Import path | Layer | Why it is allowed | What would remove it |
 |---|---|---|---|
-| `github.com/sqlc-dev/sqlc/cmd/sqlc` | Framework tool (`tool` directive) | Generates type-safe Go from SQL for the generated application's data layer; sqlc is the database default (`DECISIONS.md`). Never imported by `runtime/`, `internal/`, or `cmd/` — invoked only as `go tool sqlc`. | Nise stops using sqlc as the generated-application query generator. |
-| `github.com/pressly/goose/v3/cmd/goose` | Framework tool (`tool` directive) | Runs and generates handwritten SQL migrations; goose is the migration runner (`DECISIONS.md`). Never imported by `runtime/`, `internal/`, or `cmd/` — invoked only as `go tool goose`. | Nise stops using goose as the migration runner. |
-| `github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen` | Framework tool (`tool` directive) | Generates the strict chi server and client stubs from the authoritative OpenAPI document (`DECISIONS.md`, blueprint §8). Never imported by `runtime/`, `internal/`, or `cmd/` — invoked only as `go tool oapi-codegen`. | Nise stops treating OpenAPI as authoritative for generated server/client code. |
+| `github.com/sqlc-dev/sqlc/cmd/sqlc` | Framework tool (`tool` directive) | Generates type-safe Go from SQL for the generated application's data layer. sqlc is the database default: queries are handwritten SQL colocated with the feature that owns them, and sqlc generates the typed Go for them, so there is no ORM, query builder, or schema DSL between the application and its SQL. Never imported by `runtime/`, `internal/`, or `cmd/` — invoked only as `go tool sqlc`. | Nise stops using sqlc as the generated-application query generator. |
+| `github.com/pressly/goose/v3/cmd/goose` | Framework tool (`tool` directive) | Runs and generates handwritten SQL migrations. goose is the migration runner because migrations are primarily handwritten SQL, embedded in the application binary while staying readable SQL in the repository, and applied as an explicit deployment step rather than on startup. Never imported by `runtime/`, `internal/`, or `cmd/` — invoked only as `go tool goose`. | Nise stops using goose as the migration runner. |
+| `github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen` | Framework tool (`tool` directive) | Generates the strict chi server and client stubs from the OpenAPI document, which is the authoritative transport boundary: the server bindings and the frontend's types are both generated from it, so the two cannot drift from the contract or from each other. Never imported by `runtime/`, `internal/`, or `cmd/` — invoked only as `go tool oapi-codegen`. | Nise stops treating OpenAPI as authoritative for generated server/client code. |
 
 The remaining 101 entries in `go.mod`'s `require (... // indirect)` block
 are transitive dependencies of the three tools above (for example
@@ -64,11 +65,12 @@ target for M0, M1, and M2 (see the rule above).
 ## Generated-application allowlist
 
 This is the dependency set Nise generates into a new project's `go.mod` and
-`package.json`, derived from `DECISIONS.md`. It governs generated and
-Nise-maintained templates, not ad hoc application choices — an application
-owner may add further dependencies directly; the Nise allowlist does not
-gate them (blueprint §5, "Applications may directly add dependencies Nise
-does not use").
+`package.json`. It governs generated and Nise-maintained templates, not ad hoc
+application choices: an application owner may add further dependencies
+directly, and the Nise allowlist does not gate them. That is deliberate — a
+generated application is an ordinary Go and Svelte project its owner is
+expected to be able to change, extend, and eventually detach from Nise
+entirely.
 
 Versions are not recorded here where this task has not verified a released
 version; those entries name the package only.
@@ -77,11 +79,11 @@ version; those entries name the package only.
 
 | Import path | Why it is allowed |
 |---|---|
-| `github.com/go-chi/chi/v5` | The HTTP router (`DECISIONS.md`: "V1: Go + chi + PostgreSQL + SvelteKit"). |
-| `github.com/jackc/pgx/v5` | The PostgreSQL driver underlying sqlc-generated code and the exceptional direct-pgx escape hatch (blueprint §5, §7). |
-| `github.com/riverqueue/river` | The background-job runner, used transactionally through pgx (`DECISIONS.md`: "River through pgx"). |
+| `github.com/go-chi/chi/v5` | The HTTP router. The V1 profile is Go + chi + PostgreSQL + SvelteKit; chi is a `net/http`-compatible router, so generated handlers stay ordinary `http.Handler`s and the middleware chain stays readable in application code. |
+| `github.com/jackc/pgx/v5` | The PostgreSQL driver and pool underlying sqlc-generated code. It is also the documented escape hatch: exceptional bulk operations, PostgreSQL-specific behavior, and carefully optimized paths may use pgx directly, keeping the application's own transaction boundaries. |
+| `github.com/riverqueue/river` | The background-job runner, used transactionally through pgx. Jobs are PostgreSQL-backed so a job can be enqueued in the same transaction as the business change that requires it — which is why there is no separate message broker in the denylist below. |
 | sqlc-generated query code | Output of `sqlc generate`; application-owned, checked in. |
-| goose migration files and runtime support | Handwritten SQL migrations run by goose (`DECISIONS.md`). |
+| goose migration files and runtime support | Handwritten SQL migrations run by goose, embedded in the binary and applied as an explicit deployment step. |
 | oapi-codegen-generated server/client code | Output of `oapi-codegen` from the authoritative OpenAPI document; application-owned, checked in. |
 
 Version numbers for the above are not yet verified against a specific
@@ -94,19 +96,19 @@ Named without a version — none has been verified yet:
 
 | Package | Why it is allowed |
 |---|---|
-| SvelteKit | The generated frontend framework (`DECISIONS.md`, blueprint §10). |
-| Tailwind CSS v4 | The generated styling system (`DECISIONS.md`). |
-| Valibot | Schema validation paired with the generated API client (`DECISIONS.md`). |
-| TanStack Table | The table primitive behind the generated resource-table wrapper (`DECISIONS.md`). |
-| Paraglide | Compile-time i18n for the generated frontend (`DECISIONS.md`). |
-| openapi-typescript | Generates the typed frontend API client from the authoritative OpenAPI document (`DECISIONS.md`, blueprint §8). |
-| Vitest | Svelte browser-component tests (blueprint §13). |
-| Playwright | The deliberately small end-to-end suite for critical user journeys (blueprint §13). |
+| SvelteKit | The generated frontend framework. The authenticated application is built with adapter-static and embedded in the Go binary, so it ships as one artifact; protected routes are never prerendered and universal `load` functions run in the browser. |
+| Tailwind CSS v4 | The generated styling system. Its output is an external stylesheet, which is what lets the Content Security Policy keep `style-src` free of `'unsafe-inline'` ([ADR 0013](adr/0013-security-headers-and-csp.md)). |
+| Valibot | Frontend form validation and ergonomics, paired with the generated API client. Go remains authoritative: this is for the user's benefit in the browser, never the security boundary. |
+| TanStack Table | The table primitive. It is wrapped behind Nise-owned Svelte 5 components rather than exposed directly, so a generated resource table has one shape an application can read and edit. |
+| Paraglide | Compile-time internationalization for the generated frontend: messages compile to code, so unused translations do not ship. |
+| openapi-typescript | Generates the frontend's types from the same authoritative OpenAPI document the Go server bindings come from, so client and server cannot drift. The client itself is a lightweight typed fetch wrapper, not a client framework. |
+| Vitest | Svelte component tests, in browser mode, covering component behavior. |
+| Playwright | A deliberately small end-to-end suite for critical user journeys — end-to-end tests are the slowest and most brittle layer, so they cover journeys, not coverage. |
 
 ## Denylist
 
-Restating blueprint non-goals: these are explicitly rejected for
-Nise-maintained code and for what Nise generates by default. An application
+These are explicitly rejected for Nise-maintained code and for what Nise
+generates by default. An application
 owner remains free to add any of these to their own generated project.
 
 - No generic cache abstraction (for example a Redis-backed cache layer as a

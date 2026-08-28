@@ -7,7 +7,7 @@
 
 The Go module path is a public contract. It appears in every `go install` instruction, in every application's `go.mod` that imports a Nise runtime package, and in the project recipe used by `nise doctor` and `nise upgrade`. Changing it after the first tag breaks every installation instruction and every generated application's imports.
 
-The repository already lives at `github.com/drilonrecica/nise-and-go`, and `DECISIONS.md` records Nise as a personal, maintainer-driven project rather than an organization.
+The repository already lives at `github.com/drilonrecica/nise-and-go`, and Nise is a personal, maintainer-driven open-source project rather than an organization's ([GOVERNANCE.md](../../GOVERNANCE.md)).
 
 ## Decision
 

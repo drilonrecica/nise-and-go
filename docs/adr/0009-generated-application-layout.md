@@ -7,12 +7,12 @@
 
 `nise new` writes a whole repository. Every later decision inherits that tree: `nise generate` places files in it, `nise check` asserts invariants over it, `nise upgrade` migrates it, and the OCI image copies from it. Applications built on `0.1` keep this shape for years, so moving a directory later is a migration for every project in the field, not a refactor.
 
-Four blueprint constraints pull against each other:
+Four constraints pull against each other:
 
-- One binary embeds the built SvelteKit application, the migrations, and the mail templates (`BLUEPRINT.md` §6).
+- One binary embeds the built SvelteKit application, the migrations, and the mail templates, so a deployment is a single artifact with no sidecar asset server and no separately versioned migration bundle.
 - `go:embed` cannot reach outside the directory of the package that declares it, so the embedding Go package must be an ancestor of the build output.
-- The frontend must stay a normal pnpm project that a frontend developer recognizes (`BLUEPRINT.md` §10).
-- Ownership must be legible from the path: a reader must be able to tell whether a directory is regenerated or hand-owned without consulting a manifest (`BLUEPRINT.md` §5, [ADR 0003](0003-application-ownership.md)).
+- The frontend must stay a normal pnpm project that a frontend developer recognizes, editable with the usual tools and without learning a Nise-specific layout.
+- Ownership must be legible from the path: a reader must be able to tell whether a directory is regenerated or hand-owned without consulting a manifest ([ADR 0003](0003-application-ownership.md)).
 
 ## Decision
 
@@ -55,7 +55,7 @@ Three details are load-bearing:
 
 ### Core services and optional modules
 
-Every generated application contains the core services from `BLUEPRINT.md` §11 — sessions and authentication, authorization, the audit log, jobs, and mail. They get no privileged layer of their own. One rule places them, and it is the same rule that places anything else in the tree:
+Every generated application contains the same core services — sessions and authentication, authorization, the audit log, jobs, and mail. They get no privileged layer of their own. One rule places them, and it is the same rule that places anything else in the tree:
 
 > A core service is a **feature** when it owns domain rules, its own tables, and its own endpoints. It is **platform** when it is a technical adapter with no domain rules of its own.
 

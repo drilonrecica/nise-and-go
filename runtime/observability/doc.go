@@ -1,11 +1,11 @@
-// Package observability provides the essential HTTP metrics blueprint §15
-// requires (request count, duration, and in-flight requests), the
+// Package observability provides the essential HTTP metrics a generated
+// application needs (request count, duration, and in-flight requests), the
 // documented seams a future database pool (M3) and background-job runner
 // (M8) report through, and an optional, zero-cost-when-unused tracing
 // interface. It has no dependency beyond the standard library and no
-// mandatory collector: the blueprint's non-goals explicitly forbid a
-// mandatory OpenTelemetry collector, and the dependency policy targets zero
-// runtime dependencies through M2.
+// mandatory collector: a mandatory OpenTelemetry collector is an explicitly
+// rejected dependency, and the dependency policy targets zero runtime
+// dependencies through M2.
 //
 // # Collection is independent of exposition
 //

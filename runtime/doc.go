@@ -16,13 +16,16 @@
 //     optional tracing interface
 //   - runtime/secure        security headers and Content Security Policy
 //
-// Shared implementation lives in runtime/internal, which the Go toolchain makes
-// invisible to applications and which carries no compatibility promise.
+// The name runtime/internal is reserved for shared implementation. No such
+// package exists yet: every package above compiles against the standard library
+// alone. If one is added, the Go toolchain makes it invisible to applications,
+// and it will carry no compatibility promise.
 //
 // # Boundaries
 //
-// A runtime package may import the standard library and runtime/internal. It
-// may import another runtime package only along an edge named in ADR 0011;
+// A runtime package may import the standard library and, should one ever exist,
+// runtime/internal. It may import another runtime package only along an edge
+// named in ADR 0011;
 // today that is lifecycle depending on config, logging, and health. No runtime
 // package imports internal, cmd, templates, test, or examples.
 //

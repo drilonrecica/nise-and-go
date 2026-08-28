@@ -1,9 +1,9 @@
 package observability
 
 // PoolStats is a snapshot of one database connection pool's state.
-// [runtime/config] and [runtime/lifecycle] exist; the pool package the
-// blueprint describes for M3 (pgxpool through sqlc, blueprint §7) does
-// not. PoolStats is the seam that future pool package is expected to
+// [runtime/config] and [runtime/lifecycle] exist; the pool package planned
+// for milestone M3 (pgxpool through sqlc) does not. PoolStats is the
+// seam that future pool package is expected to
 // satisfy — most directly by adapting *pgxpool.Pool.Stat() — so M3 has a
 // fixed contract to build against. This package does not fabricate a pool
 // implementation to have something to measure; pool_test.go exercises this

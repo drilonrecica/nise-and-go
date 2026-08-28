@@ -13,9 +13,12 @@ lands:
 1. Without pinned tool versions, `sqlc`, `goose`, and `oapi-codegen` code
    generation is not reproducible across machines, and Node/pnpm drift
    produces different `pnpm-lock.yaml` output for the same source.
-2. Without a dependency allowlist with reasons, "standard library first"
-   (blueprint §6) is a slogan, not an enforceable rule, and framework-owned
-   `go.mod`/`package.json` accrete convenience dependencies over time.
+2. Without a dependency allowlist with reasons, "standard library first" —
+   the project's stated rule that a dependency is added only when it
+   provides a specific, documented benefit the standard library cannot
+   provide at reasonable effort — is a slogan, not an enforceable rule, and
+   framework-owned `go.mod`/`package.json` accrete convenience dependencies
+   over time.
 
 The repository already has one Go module at the root
 (`github.com/drilonrecica/nise-and-go`, ADR 0007) with no `go.work`
@@ -31,9 +34,9 @@ and `modules/` placeholders. The verified development environment is Go
 
 The repository uses one Go module rooted at `github.com/drilonrecica/nise-and-go`.
 `cmd/nise`, `internal/`, `runtime/`, and `modules/` are packages within it,
-not separate modules. This matches the project recipe recording "CLI version
-and runtime versions" as one compatibility unit (blueprint §12,
-`versioning.md`): a single module guarantees the CLI and the runtime
+not separate modules. This matches the project recipe recording the CLI
+version and the runtime versions as one compatibility unit (see
+[versioning.md](../versioning.md)): a single module guarantees the CLI and the runtime
 packages an application imports are always built from one consistent,
 version-locked dependency graph, and there is nothing today that needs an
 independent release cadence.
@@ -42,9 +45,9 @@ independent release cadence.
 repositories) only when `runtime/` genuinely needs to release on its own
 schedule, independent of `cmd/nise` — for example if application
 maintainers need a runtime security patch without taking an unrelated CLI
-change, and coupling the two starts causing real upgrade friction. Blueprint
-§5 sets the same bar: "split only when independent release cycles are truly
-required."
+change, and coupling the two starts causing real upgrade friction. That is
+the standing bar for this repository: split a component out only when it
+truly requires an independent release cycle.
 
 ### Go directive stays at the `go mod tidy`-produced value
 
@@ -86,8 +89,10 @@ These three tools are tool-only dependencies: `runtime/`, `internal/`, and
 
 ### Frontend: pnpm, Node 22 LTS, Corepack
 
-pnpm is the package manager for every generated frontend (`DECISIONS.md`,
-blueprint §12). Generated projects commit `pnpm-lock.yaml` and carry a
+pnpm is the package manager for every generated frontend, chosen for its
+content-addressed store and strict, non-flat `node_modules`, which makes an
+undeclared transitive import fail rather than resolve by accident. Generated
+projects commit `pnpm-lock.yaml` and carry a
 `packageManager` field in `package.json` so Corepack activates the exact
 pinned pnpm version (`corepack enable`, `corepack use pnpm@<version>`)
 without a separate global install step. The pinned Node major is 22 LTS,
@@ -108,9 +113,9 @@ in sync by hand when any version changes.
 [`docs/dependencies.md`](../dependencies.md) is the enforceable form of
 "standard library first": it states the rule, lists every dependency
 currently allowed into Nise-maintained code with a reason and a removal
-condition, records the generated-application allowlist derived from
-`DECISIONS.md` (chi, pgx, River, sqlc/goose/oapi-codegen output, and the
-frontend stack), and restates the denylist of rejected categories (generic
+condition, records the generated-application allowlist (chi, pgx, River,
+sqlc/goose/oapi-codegen output, and the frontend stack), each with the reason
+it is there, and states the denylist of rejected categories (generic
 cache, message broker, plugin system, reflection DI, schema DSL/ORM,
 mandatory OpenTelemetry collector, CLI framework, AI/model-provider SDK).
 Adding or removing a framework dependency requires updating that page and

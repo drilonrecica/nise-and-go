@@ -16,7 +16,7 @@ which files are tracked.
 
 ## What an invariant is, and what it is not
 
-The blueprint draws this line explicitly:
+The project draws this line explicitly:
 
 > `nise check` enforces safety, compatibility, migration, and generation
 > invariants. It does not enforce every starter folder, dependency,
@@ -169,10 +169,10 @@ upgrade path milestone M6 builds — reads that field rather than `go.mod`.
 
 **Skips** when `go.mod` is absent, unreadable, or states no single `require`
 for the Nise module. A project that no longer requires the Nise module at all
-is *not* a failure: the blueprint's escape hatch says detaching means
-"removing the project recipe, replacing any remaining small runtime imports,
-and ceasing to use the CLI", and a project part-way through that is not
-broken.
+is *not* a failure. Detaching from Nise means removing the project recipe,
+replacing any remaining runtime imports, and ceasing to use the CLI — there
+is no `nise eject` because there is nothing further to undo — and a project
+part-way through that is not broken.
 
 The `go.mod` reader is a deliberately narrow line scanner, not a `go.mod`
 parser: `golang.org/x/mod` would be this module's first runtime dependency
@@ -425,25 +425,26 @@ orchestrator) is not broken.
 ### 4. Starter directory and file presence
 
 `nise check` does not verify that `internal/features/`, `api/openapi.yaml`,
-`deploy/compose.yaml`, or any other application-owned path still exists. The
-blueprint's escape-hatch section is explicit that generated application
-components "may be edited, replaced, or removed", and the ownership check
-already treats a deleted application-owned file as allowed.
+`deploy/compose.yaml`, or any other application-owned path still exists. Generated
+application components are owned by the application and may be edited,
+replaced, or removed, and the ownership check already treats a deleted
+application-owned file as allowed.
 
 ### 5. The dependency set
 
 `nise check` does not verify that `go.mod` still requires chi, or that
-`frontend/package.json` still pins the versions `nise new` wrote. The
-blueprint: "Applications may directly add dependencies Nise does not use. The
-Nise dependency allowlist governs generated and maintained framework code,
-not application owners." The one dependency fact that *is* checked —
+`frontend/package.json` still pins the versions `nise new` wrote. Applications
+may directly add dependencies Nise does not use: the Nise dependency
+allowlist governs generated and maintained framework code, not application
+owners ([Dependency allowlist](../dependencies.md)). The one dependency
+fact that *is* checked —
 `runtime-version-consistency` — is checked because the recipe claims it, not
 because the starter chose it.
 
 ### 6. Middleware order in the generated router
 
-`internal/platform/httpapi/router.go` is application-owned, and the blueprint
-provides for applications extending the chain. The invariant that matters
+`internal/platform/httpapi/router.go` is application-owned, and applications
+are expected to extend the chain. The invariant that matters
 here — that application middleware cannot silently move ahead of critical
 protections — belongs in `runtime/secure`'s own construction, enforced at
 compile and run time, not in a text inspection of a file the application

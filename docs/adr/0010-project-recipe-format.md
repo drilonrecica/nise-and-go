@@ -5,7 +5,7 @@
 
 ## Context
 
-`nise new` records what it built so that `nise doctor`, `nise check`, and `nise upgrade` can act on a project they did not create. `BLUEPRINT.md` §12 and §17 require that record to hold the selected profile, the selected compile-time modules, and the CLI and runtime versions that produced the project — and to stop there, without becoming an application configuration DSL. Runtime configuration is typed environment variables (M2-001), not this file.
+`nise new` records what it built so that `nise doctor`, `nise check`, and `nise upgrade` can act on a project they did not create. That record holds the selected profile, the selected compile-time modules, and the CLI and runtime versions that produced the project — and stops there. It is deliberately not an application configuration DSL: a file that grows settings becomes a second, competing source of truth for behavior that belongs in typed environment variables. Runtime configuration is typed environment variables (M2-001), not this file.
 
 The file is read by a CLI that must be able to refuse a project it does not understand rather than silently misread it, and it is written by a generator that must produce byte-identical output on every machine ([ADR 0002](0002-deterministic-generation.md)).
 
@@ -13,7 +13,7 @@ The file is read by a CLI that must be able to refuse a project it does not unde
 
 ### File
 
-`nise.json`, at the root of the generated project, committed to version control. Commands locate it by walking up from the working directory to the first ancestor containing it; that directory is the project root. Deleting the file is the detach step described in `BLUEPRINT.md` §5.
+`nise.json`, at the root of the generated project, committed to version control. Commands locate it by walking up from the working directory to the first ancestor containing it; that directory is the project root. Deleting the file is the detach step: an application detaches from Nise by removing this recipe, replacing any remaining runtime imports, and ceasing to use the CLI. There is no `nise eject` because there is nothing further to undo.
 
 JSON is the format because `encoding/json` is in the standard library, and the framework's dependency target for M0–M2 is zero runtime dependencies. TOML and YAML are excluded for that reason alone; both would read better with comments.
 
@@ -38,7 +38,7 @@ Every field is required. Field order is fixed as written above, indentation is t
 
 - `schemaVersion` is an integer, currently `1`. It exists so a future CLI can reject or migrate an unknown recipe instead of misreading it.
 - `profile` names the golden profile from [ADR 0001](0001-golden-profile.md). `go-chi-postgres-svelte` is the only accepted value; the name describes the stack so a later profile can be added beside it rather than renumbering.
-- `modules` holds the compile-time modules from `DECISIONS.md`: `notifications`, `organizations`, `totp`, `uploads`. No other name is valid. The array is sorted and must contain no duplicates. An empty selection is written as `[]`; the field is never omitted and is never `null`.
+- `modules` holds the compile-time modules, which are a closed set: `notifications`, `organizations`, `totp`, `uploads`. No other name is valid. The array is sorted and must contain no duplicates. An empty selection is written as `[]`; the field is never omitted and is never `null`.
 - `cliVersion` is the version of the `nise` binary that created or last upgraded the project.
 - `runtimeVersion` is the version of `runtime/` the project targets. It is a separate field because an application may pin an older runtime in `go.mod` than the CLI that generated it.
 

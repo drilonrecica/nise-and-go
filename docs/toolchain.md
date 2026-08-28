@@ -59,7 +59,9 @@ version instead:
 
 ## Frontend: Node and pnpm
 
-- Package manager: **pnpm** (see `DECISIONS.md` / blueprint §12).
+- Package manager: **pnpm**, for every generated frontend. It is chosen for
+  its content-addressed store and strict, non-flat `node_modules`, which
+  makes an undeclared transitive import fail rather than resolve by accident.
 - Node major: **22 LTS**. Minimum verified version: **22.22.2** (the version
   installed and verified in the reference development environment; no older
   22.x version has been verified, so none is claimed as a floor).
@@ -88,8 +90,10 @@ this file, so the two must be kept in sync by hand when either changes.
 
 ## Containers
 
-PostgreSQL and other supporting development services run in containers
-(blueprint §12). Docker 29.6.2 and Podman 5.8.4 were verified in the
+PostgreSQL and other supporting development services run in containers, while
+Go and the frontend build run on the host: the development loop stays fast and
+debuggable, and only the stateful services need isolating. Docker 29.6.2 and
+Podman 5.8.4 were verified in the
 reference development environment; Nise does not pin a specific container
 runtime version because neither is embedded in a generated artifact or
 required at a specific version for correctness. Any container runtime that
