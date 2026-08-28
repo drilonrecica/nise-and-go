@@ -30,12 +30,18 @@ SHELL := /bin/sh
 # `./modules/...` here the day it does — an empty `...` root mixed with
 # non-empty roots is silently skipped by `go build`/`go vet`, so adding it
 # early is harmless, but there is nothing to gain by doing so before it
-# holds a package), and templates/, examples/, and test/ are exactly the
+# holds a package), and templates/ and examples/ are exactly the
 # kind of tree that risks holding a vendored frontend in this slice, so
 # they are named explicitly only once a future task confirms what belongs
 # in each.
-GO_PACKAGES := ./cmd/... ./internal/... ./runtime/...
-GO_FMT_DIRS := cmd internal runtime
+#
+# test/ was excluded for that same reason until M1-009 and M1-010 confirmed
+# what it holds: Go conformance suites only (test/golden, test/nonetwork),
+# with fixture data under testdata/ where the Go toolchain already ignores
+# it. Those suites were committed but gated by nothing, which is the worst
+# of both worlds — so test/ is named here now.
+GO_PACKAGES := ./cmd/... ./internal/... ./runtime/... ./test/...
+GO_FMT_DIRS := cmd internal runtime test
 
 GOLANGCI_LINT_VERSION := 2.11.3
 
