@@ -82,6 +82,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     ├── app/
     │   ├── app.go                     [app]   explicit constructor wiring; no container, no registry
     │   ├── database.go                [app]   explicit status/migrate application surface
+    │   ├── database_runtime.go        [app]   pool and transaction-runner construction
     │   ├── modes.go                   [app]   all, web, and worker process modes
     │   └── modules.gen.go             [nise]  wiring for the selected compile-time modules
     │
@@ -102,7 +103,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │
     └── platform/
         ├── config/                    [app]   typed configuration over runtime/config
-        ├── database/                  [app]   pgxpool, read-only compatibility, and Goose runner
+        ├── database/                  [app]   pgxpool, transactions, compatibility, and Goose
         ├── httpapi/
         │   ├── router.go              [app]   middleware order and the /api/v1 mount
         │   └── openapigen/            [nise]  oapi-codegen strict chi server types and bindings
@@ -127,7 +128,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
 
 **A feature is a vertical slice.** `internal/features/invoice/` owns its handlers, use cases, SQL, domain rules, and tests. Its frontend half is `frontend/src/routes/(app)/invoices/` plus `frontend/src/lib/features/invoice/`.
 
-**Transactions.** The use case opens and commits. Handlers do transport work. The `store` package runs queries and never begins a business transaction on its own.
+**Transactions.** The use case calls the explicit transaction runner. Its callback receives the concrete `pgx.Tx` and passes it to the feature-local sqlc query constructor. Handlers do transport work. The `store` package runs queries and never begins a business transaction on its own. Propagating the callback context lets the runner reject accidental nesting; it never invents a savepoint or an independent inner commit. See [Database transactions](database-transactions.md).
 
 ## Core services and optional modules
 

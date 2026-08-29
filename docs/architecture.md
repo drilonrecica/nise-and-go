@@ -22,7 +22,7 @@ The same binary supports three modes:
 
 Application code is organized by feature. A feature owns its handlers, use cases, queries, domain rules, and tests, plus its routes in the application's SvelteKit tree (the generated layout is documented with the first generated project). Shared infrastructure stays deliberately small.
 
-HTTP handlers perform transport work and call use cases. Use cases own business transaction boundaries. Repositories and sqlc queries do not secretly begin or commit transactions.
+HTTP handlers perform transport work and call use cases. Use cases own business transaction boundaries through the explicit transaction runner; the callback's `pgx.Tx` is passed directly to feature-local sqlc query constructors. Repositories and sqlc queries do not secretly begin or commit transactions, and nested runners are rejected instead of inventing savepoints.
 
 ## Data layer
 
@@ -57,4 +57,3 @@ Nise is primarily build-time. Applications import only a small number of stable 
 ## Frontend boundary
 
 The authenticated SvelteKit application is statically built and embedded. Public marketing sites remain separate when SSR, content workflows, or SEO justify them.
-

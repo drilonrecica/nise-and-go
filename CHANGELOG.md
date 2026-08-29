@@ -9,6 +9,8 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
 ### Added
 
 - Initial public project documentation.
+- Add the public `runtime/transaction` package and generated pgx/sqlc wiring
+  for use-case-owned business transactions.
 
 ## Release policy
 
@@ -16,4 +18,3 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
 - Security fixes are described without publishing exploitable details before users can update.
 - Breaking `0.x` changes include an explicit migration section.
 - Release tags and artifacts published through GitHub Releases are canonical.
-

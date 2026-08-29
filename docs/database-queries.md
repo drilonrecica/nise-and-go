@@ -70,3 +70,8 @@ sqlc-generated repositories execute queries only. They accept a pgx pool or
 transaction implementing the generated DBTX interface; they do not open
 pools, begin transactions, authorize users, or translate transport input.
 Those boundaries remain visible in application wiring and use cases.
+
+For writes spanning a business operation, the use case calls the generated
+application's `database.Transactor.Within` and passes the callback's `pgx.Tx`
+to `store.New(tx)`. See [Database transactions](database-transactions.md) for
+the lifecycle, cancellation, panic, nested-use, and option contracts.

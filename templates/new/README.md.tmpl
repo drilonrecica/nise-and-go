@@ -113,6 +113,17 @@ Startup allows an empty or behind schema with a warning, but fails closed for
 ahead, malformed, partial, or missing history. Migration is never a server
 startup side effect.
 
+## Database transactions
+
+Business use cases own transaction boundaries through
+`internal/platform/database.Transactor`. Its callback receives a concrete
+`pgx.Tx`, which is passed directly to the feature-local sqlc query constructor;
+repositories never begin or commit. Successful work commits, while errors and
+cancellation roll back through a detached but bounded cleanup context. Panic
+rolls back and re-panics unchanged. Propagate the callback context: a nested
+`Within` call made with it fails instead of creating a hidden savepoint or
+independent inner commit.
+
 ## Process modes
 
 The same binary runs every process this application has.

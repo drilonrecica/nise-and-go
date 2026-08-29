@@ -25,5 +25,6 @@ ADRs record consequential decisions, their context, and their tradeoffs. They pr
 - [0012: Dev-loop proxy topology](0012-dev-loop-proxy-topology.md)
 - [0013: Security headers and Content Security Policy](0013-security-headers-and-csp.md)
 - [0014: Keep sqlc configuration with each feature](0014-feature-colocated-sqlc.md)
+- [0015: Keep transaction ownership in use cases](0015-use-case-owned-transactions.md)
 
 New records copy [template.md](template.md) and use the next four-digit number. Do not rewrite an accepted ADR to hide a reversal; add a new ADR that supersedes it.

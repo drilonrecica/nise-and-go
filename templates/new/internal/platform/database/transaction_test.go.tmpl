@@ -1,0 +1,70 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package database
+
+import (
+	"context"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+)
+
+// sqlcStyleDBTX deliberately matches sqlc's pgx/v5 DBTX output. This compile
+// contract proves pgx.Tx can flow from Transactor into a feature's generated
+// Queries without a repository opening a second transaction.
+type sqlcStyleDBTX interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+var _ sqlcStyleDBTX = (pgx.Tx)(nil)
+
+type sqlcStyleQueries struct {
+	db sqlcStyleDBTX
+}
+
+func newSQLCStyleQueries(db sqlcStyleDBTX) *sqlcStyleQueries {
+	return &sqlcStyleQueries{db: db}
+}
+
+func (q *sqlcStyleQueries) probe(ctx context.Context) error {
+	var value int
+	return q.db.QueryRow(ctx, `SELECT 1`).Scan(&value)
+}
+
+type transactionOwnedUseCase struct {
+	transactor *Transactor
+}
+
+func (u transactionOwnedUseCase) execute(ctx context.Context) error {
+	return u.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := newSQLCStyleQueries(tx)
+		return queries.probe(ctx)
+	})
+}
+
+func TestPGXTransactionOptionMapping(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   transaction.Options
+		want pgx.TxOptions
+	}{
+		{name: "defaults", in: transaction.Options{}, want: pgx.TxOptions{}},
+		{name: "read committed read write", in: transaction.Options{Isolation: transaction.ReadCommitted, Access: transaction.ReadWrite}, want: pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite}},
+		{name: "repeatable read", in: transaction.Options{Isolation: transaction.RepeatableRead}, want: pgx.TxOptions{IsoLevel: pgx.RepeatableRead}},
+		{name: "serializable read only", in: transaction.Options{Isolation: transaction.Serializable, Access: transaction.ReadOnly}, want: pgx.TxOptions{IsoLevel: pgx.Serializable, AccessMode: pgx.ReadOnly}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := pgxTransactionOptions(tc.in); got != tc.want {
+				t.Errorf("pgxTransactionOptions() = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

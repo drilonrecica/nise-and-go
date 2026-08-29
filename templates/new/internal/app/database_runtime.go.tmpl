@@ -1,0 +1,40 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package app
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"{{.ModulePath}}/internal/platform/config"
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// databaseRuntime is the database part of the explicit application object
+// graph. Feature constructors receive Transactions; repositories receive Pool
+// only when they intentionally run outside a business transaction.
+type databaseRuntime struct {
+	Pool         *pgxpool.Pool
+	Transactions *database.Transactor
+}
+
+func openDatabaseRuntime(ctx context.Context, cfg config.Config) (databaseRuntime, error) {
+	pool, err := database.Open(ctx, cfg.DatabaseURL.Reveal(), cfg.DatabasePassword.Reveal(), cfg.Database)
+	if err != nil {
+		return databaseRuntime{}, err
+	}
+	transactions, err := database.NewTransactor(pool)
+	if err != nil {
+		pool.Close()
+		return databaseRuntime{}, fmt.Errorf("construct transaction runner: %w", err)
+	}
+	return databaseRuntime{Pool: pool, Transactions: transactions}, nil
+}
+
+func (runtime databaseRuntime) Close() {
+	if runtime.Pool != nil {
+		runtime.Pool.Close()
+	}
+}
