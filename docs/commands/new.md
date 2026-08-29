@@ -244,7 +244,9 @@ myapp/
 ├── nise.json                     [nise]  the project recipe
 │
 ├── api/README.md                 [app]   reserved for the OpenAPI document (M4)
-├── cmd/myapp/main.go             [app]   flag parsing, signal handling, mode selection
+├── cmd/myapp/
+│   ├── main.go                   [app]   process and explicit database command dispatch
+│   └── main_test.go              [app]   strict database command parsing
 ├── db/
 │   ├── README.md                 [app]   migration conventions and safety boundary
 │   ├── embed.gen.go              [nise]  embeds only readable migration SQL
@@ -277,6 +279,7 @@ myapp/
 └── internal/
     ├── app/
     │   ├── app.go                [app]   the whole object graph, in one function
+    │   ├── database.go           [app]   explicit status/migrate application surface
     │   ├── modes.go              [app]   mode resolution and the worker component
     │   └── modules.gen.go        [nise]  the compile-time module selection
     ├── features/README.md        [app]   reserved for vertical slices (M5, M7)
@@ -286,6 +289,8 @@ myapp/
         │   └── config_test.go    [app]   pool default and validation contracts
         ├── database/
         │   ├── README.md         [app]
+        │   ├── compatibility.go  [app]   read-only history and startup gate
+        │   ├── compatibility_test.go [app] full history-state matrix
         │   ├── migrate.go        [app]   instance-scoped, advisory-locked Goose provider
         │   ├── migrate_test.go   [app]   disposable PostgreSQL apply/rollback contract
         │   ├── pool.go           [app]   bounded pgxpool plus health/metric adapters
@@ -297,7 +302,7 @@ myapp/
 
 ```
 
-45 files. Ownership markers are from
+49 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Every generated file declares the same thing in a header
@@ -323,7 +328,9 @@ files and omitted directories.
   database URL automatically.
 - **Readable embedded Goose migrations** with a schema-neutral version-one
   baseline, an instance-scoped provider, a dedicated connection, and a
-  PostgreSQL advisory lock. Opening the server never applies them.
+  PostgreSQL advisory lock. `nise db status` inspects without mutation,
+  `nise db migrate` applies explicitly, and startup blocks ahead, malformed,
+  partial, or missing history without ever migrating.
 - **Structured logging** in JSON or a readable text format, with a request
   ID and a correlation ID on every request and central redaction applied by
   the handler, not by call sites.
@@ -363,7 +370,7 @@ scaffold code for subsystems that do not exist yet.
 
 | Absent | Arrives with |
 |---|---|
-| Migration commands, compatibility gating, and `sqlc` output | Later M3 tasks — readable embedded migrations and their runner are present |
+| Generated feature `sqlc` output and database test/SQL safety instrumentation | Later M3 tasks — migration commands and compatibility gating are present |
 | OpenAPI document, generated server bindings, typed frontend client | M4 — `api/` is the reserved seam, and `router.go` marks the `/api/v1` mount point |
 | Sessions, authentication, authorization, audit log | M5 — `internal/features/` is the reserved seam |
 | **The application shell**: sidebar, navigation, theme and language controls, authentication screens, tables, the component set, and the Vitest and Playwright suites | **M6** — `frontend/` is a minimal but real SvelteKit project today: it installs, builds, type-checks, and renders one page served by the Go binary. Nothing in the layout moves when M6 fills it in. |

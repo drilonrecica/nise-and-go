@@ -25,6 +25,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Performance baselines](performance-baselines.md)
 - [`nise new`](commands/new.md)
 - [`nise dev`](commands/dev.md)
+- [`nise db`](commands/db.md)
 - [`nise doctor`](commands/doctor.md)
 - [`nise agents`](commands/agents.md)
 - [`nise test`](commands/test.md)

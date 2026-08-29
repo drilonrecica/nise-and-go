@@ -27,6 +27,7 @@ func Commands() []*Command {
 		agentsCommand(),
 		testCommand(),
 		devCommand(),
+		dbCommand(),
 		generateCommand(),
 		checkCommand(),
 	}

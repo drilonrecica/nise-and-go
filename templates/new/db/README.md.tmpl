@@ -17,3 +17,7 @@ The migrator lives in `internal/platform/database/`; server startup never
 applies migrations implicitly. Treat applied files as immutable and normally
 recover with a new forward migration. Down sections remain useful for
 disposable-database tests and deliberate operator recovery.
+
+Run `nise db status` for a read-only history check and `nise db migrate` to
+apply pending files under PostgreSQL advisory locking. There is no generated
+`db down` command; production fixes are forward migrations by default.

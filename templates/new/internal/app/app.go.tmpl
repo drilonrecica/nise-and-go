@@ -21,6 +21,7 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/logging"
 	"github.com/drilonrecica/nise-and-go/runtime/observability"
 
+	migrationdb "{{.ModulePath}}/db"
 	"{{.ModulePath}}/internal/platform/config"
 	"{{.ModulePath}}/internal/platform/database"
 	"{{.ModulePath}}/internal/platform/httpapi"
@@ -54,6 +55,17 @@ func Run(ctx context.Context, modeOverride string) error {
 		return fmt.Errorf("starting database: %w", err)
 	}
 	defer pool.Close()
+	compatibility, err := database.CheckCompatibility(ctx, pool, migrationdb.Migrations())
+	if err != nil {
+		return fmt.Errorf("checking database schema compatibility: %w", err)
+	}
+	if compatibility.State != database.SchemaCurrent {
+		logger.Warn("database schema is behind the embedded migration head",
+			slog.String("state", string(compatibility.State)),
+			slog.Int64("current_version", compatibility.Current),
+			slog.Int64("target_version", compatibility.Target),
+			slog.String("fix", "run the explicit database migration command before enabling features that need the pending schema"))
+	}
 
 	// Fail closed in production: a production binary with no frontend
 	// build embedded would serve the development placeholder to real

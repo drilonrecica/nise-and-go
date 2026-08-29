@@ -251,7 +251,12 @@ func childEnv(f devFlags, pg *dev.Postgres, color bool) []string {
 		overlay["FORCE_COLOR"] = "0"
 	}
 
-	base := os.Environ()
+	return overlayEnvironment(os.Environ(), overlay)
+}
+
+// overlayEnvironment returns base with each named value replaced exactly once.
+// Sorting the overlay also makes command construction deterministic in tests.
+func overlayEnvironment(base []string, overlay map[string]string) []string {
 	out := make([]string, 0, len(base)+len(overlay))
 	for _, kv := range base {
 		name, _, _ := strings.Cut(kv, "=")

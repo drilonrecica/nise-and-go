@@ -29,6 +29,22 @@ The server does not migrate on startup. Deployment and operator commands are
 the only mutation boundary; application startup may inspect compatibility
 but must remain read-only.
 
+## Commands and compatibility
+
+Run `nise db status` to inspect and `nise db migrate` to apply pending
+migrations. Both delegate to the generated application's own command surface;
+see [`nise db`](commands/db.md) for output and error contracts.
+
+Status and startup use the same read-only compatibility check. Empty or
+valid-but-behind schemas are allowed and reported. A database ahead of the
+binary, malformed or partial Goose history, or a nonempty schema with no
+history fails closed. Status never creates the Goose table.
+
+This check is deliberately about history, not full schema introspection.
+Goose does not store migration checksums, so it cannot prove that nobody
+manually changed a table or edited already-applied SQL. Applied migration
+immutability and controlled production DDL remain operational requirements.
+
 ## Authoring rules
 
 - Use zero-padded sequential names: `00002_add_accounts.sql`.

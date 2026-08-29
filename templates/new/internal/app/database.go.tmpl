@@ -1,0 +1,103 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package app
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/platform/config"
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// DatabaseResult is the stable output of the application's database command
+// surface. Nise delegates to this surface instead of interpreting application
+// migrations itself.
+type DatabaseResult struct {
+	Action  string               `json:"action"`
+	State   database.SchemaState `json:"state"`
+	Current int64                `json:"current"`
+	Target  int64                `json:"target"`
+	Pending int64                `json:"pending"`
+	Applied []int64              `json:"applied,omitempty"`
+}
+
+// String renders an operator-readable single-line summary.
+func (r DatabaseResult) String() string {
+	if r.Action == "migrate" {
+		return fmt.Sprintf("database migrated: current=%d target=%d applied=%d state=%s", r.Current, r.Target, len(r.Applied), r.State)
+	}
+	return fmt.Sprintf("database schema: current=%d target=%d pending=%d state=%s", r.Current, r.Target, r.Pending, r.State)
+}
+
+// RunDatabase executes one explicit database action. Opening the ordinary
+// application server never reaches the mutating branch.
+func RunDatabase(ctx context.Context, action string) (DatabaseResult, error) {
+	if action != "status" && action != "migrate" {
+		return DatabaseResult{}, fmt.Errorf("database action must be status or migrate, found %q", action)
+	}
+	cfg, _, err := config.Load()
+	if err != nil {
+		return DatabaseResult{}, fmt.Errorf("loading configuration: %w", err)
+	}
+	pool, err := database.Open(ctx, cfg.DatabaseURL.Reveal(), cfg.DatabasePassword.Reveal(), cfg.Database)
+	if err != nil {
+		return DatabaseResult{}, fmt.Errorf("opening database for %s: %w", action, err)
+	}
+	defer pool.Close()
+
+	compatibility, err := database.CheckCompatibility(ctx, pool, migrationdb.Migrations())
+	if err != nil {
+		return DatabaseResult{}, fmt.Errorf("checking database schema before %s: %w", action, err)
+	}
+	result := databaseResult(action, compatibility)
+	if action == "status" {
+		return result, nil
+	}
+
+	migrator, err := database.OpenMigrator(
+		ctx,
+		cfg.DatabaseURL.Reveal(),
+		cfg.DatabasePassword.Reveal(),
+		cfg.Database.ConnectTimeout,
+		migrationdb.Migrations(),
+	)
+	if err != nil {
+		return DatabaseResult{}, fmt.Errorf("opening migration runner: %w", err)
+	}
+	results, migrateErr := migrator.Up(ctx)
+	closeErr := migrator.Close()
+	if migrateErr != nil {
+		return DatabaseResult{}, fmt.Errorf("applying migrations: %w", migrateErr)
+	}
+	if closeErr != nil {
+		return DatabaseResult{}, fmt.Errorf("closing migration runner: %w", closeErr)
+	}
+	for _, migration := range results {
+		if migration.Error != nil {
+			return DatabaseResult{}, fmt.Errorf("migration %05d failed: %w", migration.Source.Version, migration.Error)
+		}
+	}
+
+	compatibility, err = database.CheckCompatibility(ctx, pool, migrationdb.Migrations())
+	if err != nil {
+		return DatabaseResult{}, fmt.Errorf("checking database schema after migrate: %w", err)
+	}
+	result = databaseResult(action, compatibility)
+	for _, migration := range results {
+		result.Applied = append(result.Applied, migration.Source.Version)
+	}
+	return result, nil
+}
+
+func databaseResult(action string, compatibility database.Compatibility) DatabaseResult {
+	return DatabaseResult{
+		Action:  strings.ToLower(action),
+		State:   compatibility.State,
+		Current: compatibility.Current,
+		Target:  compatibility.Target,
+		Pending: compatibility.Pending,
+	}
+}

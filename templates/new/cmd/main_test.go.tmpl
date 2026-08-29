@@ -1,0 +1,44 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestParseDatabaseArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantAction string
+		wantJSON   bool
+		wantError  string
+	}{
+		{name: "migrate", args: []string{"migrate"}, wantAction: "migrate"},
+		{name: "status JSON", args: []string{"status", "--json"}, wantAction: "status", wantJSON: true},
+		{name: "missing", wantError: "db migrate or db status"},
+		{name: "unknown", args: []string{"repair"}, wantError: "unknown database action"},
+		{name: "extra", args: []string{"status", "extra"}, wantError: "takes no positional arguments"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			action, jsonOutput, err := parseDatabaseArgs(tc.args)
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("error = %v, want text %q", err, tc.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseDatabaseArgs: %v", err)
+			}
+			if action != tc.wantAction || jsonOutput != tc.wantJSON {
+				t.Errorf("result = %q/%v, want %q/%v", action, jsonOutput, tc.wantAction, tc.wantJSON)
+			}
+		})
+	}
+}

@@ -99,6 +99,20 @@ The database integration test runs only when `TEST_DATABASE_URL` names a
 fresh disposable PostgreSQL database. It applies and rolls back the complete
 embedded migration set; never point it at a database containing useful data.
 
+Inspect and migrate the configured database explicitly:
+
+```sh
+nise db status
+nise db migrate
+```
+
+The same application-owned surface is available without Nise as
+`go run ./cmd/{{.AppName}} db status` and `... db migrate`. Status is
+read-only and does not create the Goose history table on a fresh database.
+Startup allows an empty or behind schema with a warning, but fails closed for
+ahead, malformed, partial, or missing history. Migration is never a server
+startup side effect.
+
 ## Process modes
 
 The same binary runs every process this application has.
@@ -112,6 +126,9 @@ The same binary runs every process this application has.
 ```sh
 go run ./cmd/{{.AppName}} -mode web
 ```
+
+`db status` and `db migrate` are commands, not process modes: they run one
+bounded database operation and exit without starting HTTP or worker loops.
 
 Under `all`, if either component stops, the other is shut down before the
 process exits.

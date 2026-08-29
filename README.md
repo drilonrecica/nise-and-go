@@ -29,10 +29,11 @@ Nise is not trying to support every router, database, frontend, or deployment pl
 nise new acme
 cd acme
 nise dev
+nise db status
+nise db migrate
 nise generate resource customer
 nise check
 nise test
-nise db migrate
 ```
 
 Generation is deterministic. Generated business features and frontend components belong to the application and can be edited normally. Nise should remain primarily a build-time tool with a small, explicit runtime surface.
@@ -91,4 +92,3 @@ Do not report vulnerabilities in public issues. See [SECURITY.md](SECURITY.md).
 ## License
 
 [MIT](LICENSE)
-

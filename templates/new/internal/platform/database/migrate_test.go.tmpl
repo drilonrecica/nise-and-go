@@ -4,6 +4,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"strings"
@@ -41,6 +42,39 @@ func TestEmbeddedMigrationsApplyAndRollback(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	settings, err := NewSettings(2, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	pool, err := Open(ctx, databaseURL, os.Getenv("TEST_DATABASE_PASSWORD"), settings)
+	if err != nil {
+		t.Fatalf("Open pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	if _, err := pool.Exec(ctx, `CREATE TABLE compatibility_probe (id bigint PRIMARY KEY)`); err != nil {
+		t.Fatalf("create compatibility probe: %v", err)
+	}
+	_, err = CheckCompatibility(ctx, pool, db.Migrations())
+	assertCompatibilityProblem(t, err, SchemaHistoryMissing)
+	if _, err := pool.Exec(ctx, `DROP TABLE compatibility_probe`); err != nil {
+		t.Fatalf("drop compatibility probe: %v", err)
+	}
+	compatibility, err := CheckCompatibility(ctx, pool, db.Migrations())
+	if err != nil {
+		t.Fatalf("CheckCompatibility on empty schema: %v", err)
+	}
+	if compatibility.State != SchemaUninitialized {
+		t.Fatalf("empty schema state = %q, want %q", compatibility.State, SchemaUninitialized)
+	}
+	var historyExists bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('goose_db_version') IS NOT NULL`).Scan(&historyExists); err != nil {
+		t.Fatalf("inspect history table after read-only status: %v", err)
+	}
+	if historyExists {
+		t.Fatal("CheckCompatibility created goose_db_version")
+	}
+
 	migrator, err := OpenMigrator(ctx, databaseURL, os.Getenv("TEST_DATABASE_PASSWORD"), 5*time.Second, db.Migrations())
 	if err != nil {
 		t.Fatalf("OpenMigrator: %v", err)
@@ -77,6 +111,31 @@ func TestEmbeddedMigrationsApplyAndRollback(t *testing.T) {
 	if int64(len(status)) != target {
 		t.Fatalf("status count after Up = %d, want %d", len(status), target)
 	}
+	compatibility, err = CheckCompatibility(ctx, pool, db.Migrations())
+	if err != nil {
+		t.Fatalf("CheckCompatibility after Up: %v", err)
+	}
+	if compatibility.State != SchemaCurrent || compatibility.Current != target {
+		t.Fatalf("compatibility after Up = %+v, want current at %d", compatibility, target)
+	}
+
+	if _, err := pool.Exec(ctx, `INSERT INTO goose_db_version (version_id, is_applied) VALUES ($1, true)`, target+1); err != nil {
+		t.Fatalf("insert ahead history: %v", err)
+	}
+	_, err = CheckCompatibility(ctx, pool, db.Migrations())
+	assertCompatibilityProblem(t, err, SchemaAhead)
+	if _, err := pool.Exec(ctx, `DELETE FROM goose_db_version WHERE version_id = $1`, target+1); err != nil {
+		t.Fatalf("delete ahead history: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `INSERT INTO goose_db_version (version_id, is_applied) VALUES ($1, false)`, target+1); err != nil {
+		t.Fatalf("insert dirty history: %v", err)
+	}
+	_, err = CheckCompatibility(ctx, pool, db.Migrations())
+	assertCompatibilityProblem(t, err, SchemaDirty)
+	if _, err := pool.Exec(ctx, `DELETE FROM goose_db_version WHERE version_id = $1`, target+1); err != nil {
+		t.Fatalf("delete dirty history: %v", err)
+	}
 	for i, item := range status {
 		if item.State != "applied" {
 			t.Errorf("status %d after Up = %#v, want applied", i, item)
@@ -97,5 +156,16 @@ func TestEmbeddedMigrationsApplyAndRollback(t *testing.T) {
 	}
 	if current != 0 || target < 1 {
 		t.Fatalf("versions after Down = %d/%d, want 0/nonempty target", current, target)
+	}
+}
+
+func assertCompatibilityProblem(t *testing.T, err error, want SchemaProblem) {
+	t.Helper()
+	var compatibilityErr *CompatibilityError
+	if !errors.As(err, &compatibilityErr) {
+		t.Fatalf("compatibility error = %v, want *CompatibilityError", err)
+	}
+	if compatibilityErr.Problem != want {
+		t.Fatalf("compatibility problem = %q, want %q", compatibilityErr.Problem, want)
 	}
 }

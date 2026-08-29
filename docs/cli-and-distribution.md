@@ -9,11 +9,12 @@ The public developer interface is one cross-platform binary named `nise`.
 ```text
 nise new
 nise dev
+nise db status
+nise db migrate
 nise doctor
 nise generate
 nise check
 nise test
-nise db migrate
 nise db backup
 nise db restore
 nise db verify-backup
@@ -54,4 +55,3 @@ Nise does not self-update, collect telemetry, or perform automatic update checks
 ## AI
 
 Nise has no built-in AI, BYOK, model-provider adapter, or autonomous patch behavior. It may generate static architecture and agent-instruction files for use by external tools.
-

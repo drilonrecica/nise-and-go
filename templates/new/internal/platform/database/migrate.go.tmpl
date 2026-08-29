@@ -48,6 +48,7 @@ func OpenMigrator(ctx context.Context, databaseURL, password string, connectTime
 		db,
 		migrations,
 		goose.WithDisableGlobalRegistry(true),
+		goose.WithLogger(goose.NopLogger()),
 		goose.WithSessionLocker(locker),
 	)
 	if err != nil {
