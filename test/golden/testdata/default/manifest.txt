@@ -11,9 +11,9 @@
 .nise/architecture.json file 0644 2c1b7fa51a2f42102a4cc0ee94e4f3ab46fafa949c4bcfb6cd4c8ddbff1b6eaa
 AGENTS.md file 0644 1a53a2c39c6f292c18ed89e1c6095758f0d0e7d8ad2b5e439cfd87e7a3c7a76c
 Makefile file 0644 95a01ca70a1bfe631003ffd72013dcd63eaa59df284309e9de758757012ebebc
-README.md file 0644 cfcdaa59533439981e3a5b2a5ea1783bdbc177cca6a3dbb7b881407f5018ee5f
+README.md file 0644 859ba45b86c4b9aea641b11c99b414e0f64a1241afee8ec63d062c8dbca86ef0
 api dir 0755
-api/README.md file 0644 066c84dc26ecf2a1a4f24df8f5917b12ee829c6d899b76188615e2130d03b491
+api/README.md file 0644 070a9d2d6418150051b6fe10e3eb3d826efc445db31bbc4c60250ab55f7cb8fd
 cmd dir 0755
 cmd/myapp dir 0755
 cmd/myapp/main.go file 0644 63f3365d397387f6a33691be538d77a893a16e95ec1f674be2e8e4eef0a65c7a
@@ -83,7 +83,8 @@ internal/platform/database/testdata/migration-upgrades/00001_baseline.sql file 0
 internal/platform/database/transaction.go file 0644 ce4a448d06884dc199f3e5b496d96815fef57fa4ae0ab1237a6f264f2e28742b
 internal/platform/database/transaction_test.go file 0644 afd0840cc8f1c8f4a845367865af78be3875699f781d63c1a12a11e92b3bd9fd
 internal/platform/httpapi dir 0755
-internal/platform/httpapi/router.go file 0644 2d3365012f281ffcb90820a718fe235a90f2ee78d6d016d59a5b050c58eb8742
+internal/platform/httpapi/router.go file 0644 4063346efba9ffea1bca1cb76e292ba48c90b0870202045f2a5ef14c759e9d62
+internal/platform/httpapi/router_test.go file 0644 8c4b5798c55e33b561a6f3144ad72cd0519585c6b48d2296905f586c9a7bdf98
 internal/platform/webui dir 0755
 internal/platform/webui/embedded dir 0755
 internal/platform/webui/embedded/placeholder.html file 0644 e39daa990ad2cd225e7d4491092d4d56600b509705c9d63c4c082a111cbcf772

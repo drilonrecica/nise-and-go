@@ -120,6 +120,7 @@ var templateFiles = []templateFile{
 	{Template: "internal/platform/database/transaction.go.tmpl", Output: "internal/platform/database/transaction.go", Owner: OwnerApp},
 	{Template: "internal/platform/database/transaction_test.go.tmpl", Output: "internal/platform/database/transaction_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/router.go.tmpl", Output: "internal/platform/httpapi/router.go", Owner: OwnerApp},
+	{Template: "internal/platform/httpapi/router_test.go.tmpl", Output: "internal/platform/httpapi/router_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/webui/embedded/placeholder.html.tmpl", Output: "internal/platform/webui/embedded/placeholder.html", Owner: OwnerNise},
 	{Template: "internal/platform/webui/webui.go.tmpl", Output: "internal/platform/webui/webui.go", Owner: OwnerNise},
 }

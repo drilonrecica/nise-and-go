@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -48,52 +49,79 @@ type Deps struct {
 	Metrics *observability.HTTPMetrics
 	// UI serves the embedded single-page application.
 	UI *webui.UI
+	// Middleware contains the only supported application extension points in
+	// the document and API chains. Both slots run inside the complete core.
+	Middleware MiddlewareSlots
+	// RegisterAPI mounts application API routes relative to /api/v1. Nil is a
+	// valid empty API; unmatched API paths still use the API policy and never
+	// fall through to the single-page application.
+	RegisterAPI func(chi.Router)
+}
+
+// Middleware is one ordinary net/http middleware.
+type Middleware func(http.Handler) http.Handler
+
+// MiddlewareSlots are the application-owned extension points. Entries run in
+// slice order, first entry outermost, after security, request IDs, logging,
+// recovery, and metrics but before route dispatch. Application middleware can
+// therefore extend either surface without moving ahead of a core protection.
+type MiddlewareSlots struct {
+	Document []Middleware
+	API      []Middleware
 }
 
 // New builds the application's HTTP handler.
 //
-// The chain, outermost first:
+// Each sibling chain has this fixed core, outermost first:
 //
 //  1. secure.Middleware — security headers and the Content Security
 //     Policy, outermost so that every response carries them, including one
 //     produced by a panic or by chi's own 404.
-//  2. recoverer — turns a panic into a logged 500 instead of a dropped
-//     connection.
-//  3. logging.Middleware — assigns the request and correlation IDs and
+//
+//  2. logging.Middleware — assigns the request and correlation IDs and
 //     stores a request-scoped logger in the context.
+//
+//  3. recoverer — turns a panic into a request-scoped logged 500 instead of
+//     a dropped connection.
+//
 //  4. observability.HTTPMetrics.Middleware — counts and times the request,
 //     labeled by chi's resolved route template rather than the raw path.
 //
-// Metrics is inside logging so that a request already carries its IDs when
-// a handler logs, and inside recoverer so a panic is still observed as a
-// request: the metrics middleware deliberately re-panics after recording.
+//  5. the matching application middleware slot.
+//
+//  6. route dispatch.
+//
+// Recovery is inside logging so it can use the request-scoped logger. Metrics
+// is inside recovery so a panic is observed before it deliberately re-panics.
+// Application middleware is inside the entire core. The document and API
+// security policies are siblings, so neither can overwrite the other.
 func New(d Deps) (http.Handler, error) {
-	policy, err := secure.NewDocumentPolicy(
+	if err := validateMiddlewareSlots(d.Middleware); err != nil {
+		return nil, err
+	}
+	documentPolicy, err := secure.NewDocumentPolicy(
 		d.Config.Deployment(),
 		secure.WithScriptHashes(d.UI.ScriptHashes()...),
 		secure.WithStyleHashes(d.UI.StyleHashes()...),
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("construct document security policy: %w", err)
 	}
-	for _, w := range policy.Waivers() {
-		d.Logger.Warn("security policy weakened", slog.String("waiver", w.String()))
+	apiPolicy, err := secure.NewAPIPolicy(d.Config.Deployment())
+	if err != nil {
+		return nil, fmt.Errorf("construct API security policy: %w", err)
 	}
+	logPolicyWaivers(d.Logger, "document", documentPolicy)
+	logPolicyWaivers(d.Logger, "api", apiPolicy)
 
-	r := chi.NewRouter()
-	r.Use(secure.Middleware(policy))
-	r.Use(recoverer(d.Logger))
-	r.Use(logging.Middleware(d.Logger, logging.MiddlewareOptions{
-		TrustInbound: d.Config.TrustProxyHeaders,
-	}))
-	r.Use(d.Metrics.Middleware(routeTemplate))
+	document := chi.NewRouter()
 
 	// The three probes are unauthenticated by design: each answers with a
 	// status code and one of two fixed bodies, and never names a
 	// dependency. See docs/operations-runtime.md.
-	r.Method(http.MethodGet, "/healthz/startup", health.NewStartupHandler(d.Gate))
-	r.Method(http.MethodGet, "/healthz/live", health.NewLivenessHandler(d.Gate))
-	r.Method(http.MethodGet, "/healthz/ready", health.NewReadinessHandler(d.Gate, d.Prober))
+	document.Method(http.MethodGet, "/healthz/startup", health.NewStartupHandler(d.Gate))
+	document.Method(http.MethodGet, "/healthz/live", health.NewLivenessHandler(d.Gate))
+	document.Method(http.MethodGet, "/healthz/ready", health.NewReadinessHandler(d.Gate, d.Prober))
 
 	// The operator subtree exposes the metrics endpoint and the detailed
 	// readiness report, both of which reveal internal topology. They are
@@ -102,19 +130,67 @@ func New(d Deps) (http.Handler, error) {
 	// environment.
 	if d.Config.OperatorToken.IsSet() {
 		token := d.Config.OperatorToken
-		r.Group(func(op chi.Router) {
+		document.Group(func(op chi.Router) {
 			op.Use(requireOperatorToken(token))
 			op.Method(http.MethodGet, "/internal/metrics", observability.NewHandler(d.Registry))
 			op.Method(http.MethodGet, "/internal/healthz/ready/report", health.NewReadinessReportHandler(d.Gate, d.Prober))
 		})
 	}
+	document.Handle("/*", d.UI)
 
-	// The JSON API mounts here, under /api/v1, with secure.NewAPIPolicy
-	// applied to its own subtree. It arrives with the OpenAPI milestone;
-	// nothing is mounted for it today.
+	api := chi.NewRouter()
+	if d.RegisterAPI != nil {
+		d.RegisterAPI(api)
+	}
 
-	r.Handle("/*", d.UI)
-	return r, nil
+	// Mount sibling chains at the unprotected dispatch layer. Mounting the API
+	// below the document policy would let the outer document middleware
+	// overwrite the stricter API CSP as the response unwinds.
+	root := chi.NewRouter()
+	// Each core is composed around its router as an opaque http.Handler. This
+	// keeps an empty API's default 404 inside the core without adding a wildcard
+	// route that would turn a known path's native 405 into a 404.
+	root.Mount("/api/v1", newCoreHandler(d, apiPolicy, d.Middleware.API, api))
+	root.Mount("/", newCoreHandler(d, documentPolicy, d.Middleware.Document, document))
+	return root, nil
+}
+
+// newCoreHandler fixes the core ordering in one place. Application middleware
+// cannot move ahead of security, recovery, request identity/logging, or
+// metrics through Deps.
+func newCoreHandler(d Deps, policy *secure.Policy, application []Middleware, routes http.Handler) http.Handler {
+	handler := routes
+	for index := len(application) - 1; index >= 0; index-- {
+		handler = application[index](handler)
+	}
+	handler = d.Metrics.Middleware(routeTemplate)(handler)
+	handler = recoverer(d.Logger)(handler)
+	handler = logging.Middleware(d.Logger, logging.MiddlewareOptions{
+		TrustInbound: d.Config.TrustProxyHeaders,
+	})(handler)
+	return secure.Middleware(policy)(handler)
+}
+
+func validateMiddlewareSlots(slots MiddlewareSlots) error {
+	for index, middleware := range slots.Document {
+		if middleware == nil {
+			return fmt.Errorf("document middleware slot %d must not be nil", index)
+		}
+	}
+	for index, middleware := range slots.API {
+		if middleware == nil {
+			return fmt.Errorf("api middleware slot %d must not be nil", index)
+		}
+	}
+	return nil
+}
+
+func logPolicyWaivers(logger *slog.Logger, surface string, policy *secure.Policy) {
+	for _, waiver := range policy.Waivers() {
+		logger.Warn("security policy weakened",
+			slog.String("surface", surface),
+			slog.String("waiver", waiver.String()))
+	}
 }
 
 // routeTemplate reports the route pattern chi matched, so an HTTP metric is

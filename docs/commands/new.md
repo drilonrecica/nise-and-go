@@ -243,7 +243,7 @@ myapp/
 ├── go.mod                        [app]   pinned requires; no go.sum until `go mod tidy`
 ├── nise.json                     [nise]  the project recipe
 │
-├── api/README.md                 [app]   reserved for the OpenAPI document (M4)
+├── api/README.md                 [app]   API contract and generation boundary
 ├── cmd/myapp/
 │   ├── main.go                   [app]   process and explicit database command dispatch
 │   └── main_test.go              [app]   strict database command parsing
@@ -310,14 +310,16 @@ myapp/
         │   │   └── 00001_baseline.sql [app] immutable release-schema fixture
         │   ├── transaction.go    [app]   pgx adapter for use-case-owned transactions
         │   └── transaction_test.go [app] sqlc DBTX propagation and option mapping
-        ├── httpapi/router.go     [app]   the ordered middleware chain and the routes
+        ├── httpapi/
+        │   ├── router.go        [app]   sibling API/document chains and extension slots
+        │   └── router_test.go   [app]   routing and middleware-order contract
         └── webui/
             ├── webui.go          [nise]  embeds the built frontend and serves the SPA
             └── embedded/placeholder.html  [nise]  makes `go build` work before `pnpm build`
 
 ```
 
-61 files. Ownership markers are from
+62 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Every generated file declares the same thing in a header
@@ -379,6 +381,9 @@ files and omitted directories.
   `APP_MODE`. `worker` never binds the HTTP port at all.
 - **Security headers and a strict CSP** on every response, including
   responses produced by a panic or by a 404.
+- **An exact `/api/v1` boundary** with separate API and document security
+  policies, a fixed protected middleware core, explicit application slots,
+  and API `404` responses that never fall through to the SPA.
 - **HTTP metrics** labeled by the router's resolved route template, exposed
   at `/internal/metrics` in Prometheus text format — mounted only when
   `OPERATOR_TOKEN` is set, and always behind it. Without the token the
@@ -406,7 +411,7 @@ scaffold code for subsystems that do not exist yet.
 | Absent | Arrives with |
 |---|---|
 | Generated feature `sqlc` output | M7 — the feature generator will write configs carrying the M3 query-safety contract; the validator and `sqlc-vet` target are present now |
-| OpenAPI document, generated server bindings, typed frontend client | M4 — `api/` is the reserved seam, and `router.go` marks the `/api/v1` mount point |
+| OpenAPI document, generated server bindings, typed frontend client | Later M4 tasks — the exact `/api/v1` router boundary and registration seam are present now |
 | Sessions, authentication, authorization, audit log | M5 — `internal/features/` is the reserved seam |
 | **The application shell**: sidebar, navigation, theme and language controls, authentication screens, tables, the component set, and the Vitest and Playwright suites | **M6** — `frontend/` is a minimal but real SvelteKit project today: it installs, builds, type-checks, and renders one page served by the Go binary. Nothing in the layout moves when M6 fills it in. |
 | Feature and resource generation | M7 — see [`nise generate`](generate.md) |

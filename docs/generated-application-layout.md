@@ -106,6 +106,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
         ├── database/                  [app]   pgxpool, transactions, query tracing, Goose, dbtest, SQL safety
         ├── httpapi/
         │   ├── router.go              [app]   middleware order and the /api/v1 mount
+        │   ├── router_test.go         [app]   surface boundary and middleware-order contract
         │   └── openapigen/            [nise]  oapi-codegen strict chi server types and bindings
         ├── jobs/                      [app]   core: the River runner, queues, and registration
         ├── mail/
@@ -142,6 +143,13 @@ It counts round trips through derived contexts, exposes count and duration
 metrics under closed labels, and emits sanitized slow warnings. SQL and query
 data never become metric labels or log attributes. See
 [Database query instrumentation](database-query-instrumentation.md).
+
+**API and document routing are sibling security boundaries.** The unprotected
+root dispatcher sends the exact `/api/v1` subtree into a complete API chain
+and everything else into the document chain. Both use the fixed core order;
+application middleware has separate slots inside that core. Unmatched API
+paths remain API `404` responses and never become SPA pages. See
+[API routing and middleware](api-routing.md).
 
 ## Core services and optional modules
 

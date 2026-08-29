@@ -443,11 +443,12 @@ because the starter chose it.
 ### 6. Middleware order in the generated router
 
 `internal/platform/httpapi/router.go` is application-owned, and applications
-are expected to extend the chain. The invariant that matters
-here — that application middleware cannot silently move ahead of critical
-protections — belongs in `runtime/secure`'s own construction, enforced at
-compile and run time, not in a text inspection of a file the application
-owns.
+may deliberately change its contract. The generated starting point exposes
+separate API and document middleware slots inside a fixed protected core and
+locks the behavior in an application-owned router test ([API routing and
+middleware](../api-routing.md)). `nise check` does not text-inspect or rewrite
+that application-owned code: if an application changes the boundary, it owns
+the corresponding security reasoning and test update.
 
 ## `--fix` is not implemented
 

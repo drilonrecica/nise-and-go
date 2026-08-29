@@ -182,6 +182,22 @@ bounded database operation and exit without starting HTTP or worker loops.
 Under `all`, if either component stops, the other is shut down before the
 process exits.
 
+## API routing
+
+`/api/v1` is an exact JSON API boundary. Register routes relative to that
+prefix through `httpapi.Deps.RegisterAPI`; `/widgets/{id}` becomes
+`/api/v1/widgets/{id}`. A nil callback is a valid empty API, and unknown API
+paths receive an API-policy `404` rather than falling through to the embedded
+SPA.
+
+The API and document surfaces are sibling chains with independently built
+security policies. Both run security, request identity/logging, recovery, and
+metrics before the matching application middleware slot and route dispatch.
+Add cross-cutting application middleware only through
+`httpapi.MiddlewareSlots`; entries run in slice order inside the fixed core.
+`internal/platform/httpapi/router_test.go` is application-owned and locks this
+boundary so deliberate changes can update code and contract together.
+
 ## Health probes
 
 | Path | Wire it to |
@@ -210,7 +226,7 @@ deliberately withhold.
 ## Layout
 
 ```text
-api/                      OpenAPI document (arrives with the API milestone)
+api/                      API contract and generation boundary
 cmd/{{.AppName}}/         the binary: flag parsing and mode selection
 db/                       readable SQL migrations and their generated embed package
 deploy/                   Dockerfile and compose file

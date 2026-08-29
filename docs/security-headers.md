@@ -250,11 +250,11 @@ if err != nil {
     return nil, err
 }
 
-mux.Handle("/api/v1/", secure.Middleware(apiPolicy)(apiRouter))
-mux.Handle("/", secure.Middleware(documentPolicy)(webuiHandler))
+mux.Mount("/api/v1", secure.Middleware(apiPolicy)(apiRouter))
+mux.Mount("/", secure.Middleware(documentPolicy)(webuiHandler))
 ```
 
-Mount `secure.Middleware` as the outermost middleware in each chain, so a response produced by an inner middleware — a rejected request, a rate-limit refusal, a recovered panic — carries the headers too. The ordered chain lives in the application's own `internal/platform/httpapi/router.go` ([ADR 0009](adr/0009-generated-application-layout.md)), which is where the order is meant to be read and changed.
+Mount `secure.Middleware` as the outermost middleware in each chain, so a response produced by an inner middleware — a rejected request, a rate-limit refusal, a recovered panic — carries the headers too. The generated router uses sibling API and document chains so the outer document policy cannot overwrite the API policy while a response unwinds; exact and unmatched `/api/v1` requests remain in the API chain. The ordered contract lives in the application's own `internal/platform/httpapi/router.go` ([API routing and middleware](api-routing.md), [ADR 0009](adr/0009-generated-application-layout.md)), which is where the order is meant to be read and changed.
 
 `ParseDeployment` accepts `development`, `test`, and `production`, mapping `test` to development. An unrecognized value is an error, so a typo fails at startup rather than silently selecting the weaker policy.
 
