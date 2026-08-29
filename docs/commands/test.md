@@ -142,6 +142,10 @@ past a single Ctrl-C.
 
 ## Safety notes
 
+- Generated PostgreSQL integration tests use the isolated `dbtest` harness.
+  Set `TEST_DATABASE_URL` to an administrative database on disposable test
+  infrastructure; absence skips locally and fails under `CI=true` or `CI=1`.
+  See [PostgreSQL integration testing](../database-testing.md).
 - Every suite's command is one of this file's own fixed argv shapes
   (`go test <fixed targets>` or `pnpm --dir frontend run <script name
   read from package.json>`); no shell is invoked, and no part of the

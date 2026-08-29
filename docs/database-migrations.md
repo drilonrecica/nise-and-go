@@ -61,6 +61,8 @@ immutability and controlled production DDL remain operational requirements.
 ## Testing
 
 The generated package test compares every embedded migration byte-for-byte
-with the readable source. Its PostgreSQL integration test runs when
-`TEST_DATABASE_URL` is set, and that URL must identify a fresh disposable
-database: the test applies and rolls back the complete embedded history.
+with the readable source. Its PostgreSQL integration test uses
+`internal/platform/database/dbtest` to create a fresh isolated database from
+the administrative `TEST_DATABASE_URL`, then applies and rolls back the
+complete embedded history. See [PostgreSQL integration testing](database-testing.md)
+for the local-skip, CI-required, connection-limit, and cleanup contracts.

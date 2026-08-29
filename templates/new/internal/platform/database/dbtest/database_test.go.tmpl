@@ -1,0 +1,144 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package dbtest
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	rtconfig "github.com/drilonrecica/nise-and-go/runtime/config"
+)
+
+func TestAvailabilityPolicy(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		url      string
+		ci       string
+		wantSkip bool
+		wantErr  bool
+	}{
+		{name: "local absence skips", wantSkip: true},
+		{name: "CI true requires database", ci: "true", wantErr: true},
+		{name: "CI one requires database", ci: "1", wantErr: true},
+		{name: "explicit false is local", ci: "false", wantSkip: true},
+		{name: "configured", url: "postgres://example.invalid/test"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			skip, err := availabilityPolicy(tc.url, tc.ci)
+			if skip != tc.wantSkip || (err != nil) != tc.wantErr {
+				t.Errorf("availabilityPolicy() = (%t, %v)", skip, err)
+			}
+		})
+	}
+}
+
+func TestDatabaseFormattingRedactsConnectionMaterial(t *testing.T) {
+	t.Parallel()
+	const secret = "postgres://user:password@example.invalid/database"
+	database := Database{name: "safe_name", url: rtconfig.NewSecret(secret), password: rtconfig.NewSecret("password")}
+	for _, formatted := range []string{fmt.Sprint(database), fmt.Sprintf("%+v", database), fmt.Sprintf("%#v", database)} {
+		if strings.Contains(formatted, secret) || strings.Contains(formatted, "password") {
+			t.Fatalf("formatted Database exposed connection material: %q", formatted)
+		}
+	}
+}
+
+func TestIsolatedDatabaseURLChangesDatabaseAndRemovesPassword(t *testing.T) {
+	t.Parallel()
+	got, err := isolatedDatabaseURL("postgres://user:secret@example.invalid/base?sslmode=require&password=query-secret", "isolated_name")
+	if err != nil {
+		t.Fatalf("isolatedDatabaseURL: %v", err)
+	}
+	if got != "postgres://user@example.invalid/isolated_name?sslmode=require" {
+		t.Fatalf("isolatedDatabaseURL() = %q", got)
+	}
+	if strings.Contains(got, "secret") {
+		t.Fatal("isolated URL retained a password")
+	}
+}
+
+func TestDatabaseCreatesIsolatedDatabasesWithConnectionLimitAndCleanup(t *testing.T) {
+	baseURL := os.Getenv("TEST_DATABASE_URL")
+	if strings.TrimSpace(baseURL) == "" {
+		if _, err := availabilityPolicy(baseURL, os.Getenv("CI")); err != nil {
+			t.Fatal(err)
+		}
+		t.Skip("TEST_DATABASE_URL is not set; skipping PostgreSQL harness integration test")
+	}
+
+	var names []string
+	for _, label := range []string{"first", "second"} {
+		ok := t.Run(label, func(t *testing.T) {
+			database := New(t)
+			names = append(names, database.Name())
+			config, err := pgx.ParseConfig(database.URL().Reveal())
+			if err != nil {
+				t.Fatal("parse isolated test database URL")
+			}
+			config.Password = database.Password().Reveal()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			connection, err := pgx.ConnectConfig(ctx, config)
+			if err != nil {
+				t.Fatal("connect to isolated test database")
+			}
+			if _, err := connection.Exec(ctx, `CREATE TABLE isolation_probe (id bigint PRIMARY KEY)`); err != nil {
+				t.Fatal("create isolation probe")
+			}
+			var connectionLimit int
+			if err := connection.QueryRow(ctx, `SELECT datconnlimit FROM pg_database WHERE datname = current_database()`).Scan(&connectionLimit); err != nil {
+				t.Fatal("read isolated database connection limit")
+			}
+			if connectionLimit != testDatabaseConnectionLimit {
+				t.Fatalf("connection limit = %d, want %d", connectionLimit, testDatabaseConnectionLimit)
+			}
+			if err := connection.Close(ctx); err != nil {
+				t.Fatal("close isolated database connection")
+			}
+		})
+		if !ok {
+			return
+		}
+		if databaseExists(t, baseURL, os.Getenv("TEST_DATABASE_PASSWORD"), names[len(names)-1]) {
+			t.Fatalf("cleanup left database %s behind", names[len(names)-1])
+		}
+	}
+	if names[0] == names[1] {
+		t.Fatalf("isolated database names are equal: %s", names[0])
+	}
+}
+
+func databaseExists(t *testing.T, baseURL, password, name string) bool {
+	t.Helper()
+	config, err := pgx.ParseConfig(baseURL)
+	if err != nil {
+		t.Fatal("parse TEST_DATABASE_URL for cleanup verification")
+	}
+	if password != "" {
+		config.Password = password
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	connection, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		t.Fatal("connect to TEST_DATABASE_URL for cleanup verification")
+	}
+	defer func() {
+		if err := connection.Close(ctx); err != nil {
+			t.Error("close cleanup-verification connection")
+		}
+	}()
+	var exists bool
+	if err := connection.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, name).Scan(&exists); err != nil {
+		t.Fatal("inspect isolated database cleanup")
+	}
+	return exists
+}

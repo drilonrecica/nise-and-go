@@ -1,0 +1,177 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package dbtest creates one bounded, isolated PostgreSQL database per test.
+package dbtest
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/url"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	rtconfig "github.com/drilonrecica/nise-and-go/runtime/config"
+)
+
+const (
+	testDatabaseConnectionLimit = 8
+	adminOperationTimeout       = 10 * time.Second
+)
+
+// Database is one isolated test database. Its connection material is wrapped
+// in runtime/config.Secret and every formatting path is redacted.
+type Database struct {
+	name     string
+	url      rtconfig.Secret
+	password rtconfig.Secret
+}
+
+// Name returns the random, non-secret database identifier.
+func (d Database) Name() string { return d.name }
+
+// URL returns the password-free connection string as a protected secret.
+func (d Database) URL() rtconfig.Secret { return d.url }
+
+// Password returns the resolved test database password as a protected secret.
+func (d Database) Password() rtconfig.Secret { return d.password }
+
+// String redacts all connection material.
+func (Database) String() string { return "[REDACTED TEST DATABASE]" }
+
+// GoString redacts all connection material from %#v formatting.
+func (Database) GoString() string { return "[REDACTED TEST DATABASE]" }
+
+// LogValue redacts all connection material from structured logs.
+func (Database) LogValue() slog.Value { return slog.StringValue("[REDACTED TEST DATABASE]") }
+
+// New creates a database and registers forceful cleanup with t. Locally, an
+// absent TEST_DATABASE_URL skips. Under CI=true or CI=1 it is a hard failure.
+// The configured role must be allowed to create and drop disposable databases.
+func New(t testing.TB) Database {
+	t.Helper()
+	baseURL := os.Getenv("TEST_DATABASE_URL")
+	skip, err := availabilityPolicy(baseURL, os.Getenv("CI"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skip {
+		t.Skip("TEST_DATABASE_URL is not set; skipping PostgreSQL integration test outside CI")
+	}
+
+	adminConfig, err := pgx.ParseConfig(baseURL)
+	if err != nil {
+		t.Fatal("TEST_DATABASE_URL is not a valid PostgreSQL connection string")
+	}
+	if password := os.Getenv("TEST_DATABASE_PASSWORD"); password != "" {
+		adminConfig.Password = password
+	}
+	name, err := newDatabaseName(t.Name())
+	if err != nil {
+		t.Fatal("generate isolated PostgreSQL database name")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), adminOperationTimeout)
+	defer cancel()
+	admin, err := pgx.ConnectConfig(ctx, adminConfig)
+	if err != nil {
+		t.Fatal("connect to TEST_DATABASE_URL; verify the server, role, and credentials")
+	}
+	identifier := pgx.Identifier{name}.Sanitize()
+	createSQL := fmt.Sprintf("CREATE DATABASE %s WITH TEMPLATE template0 CONNECTION LIMIT %d", identifier, testDatabaseConnectionLimit)
+	_, createErr := admin.Exec(ctx, createSQL)
+	closeErr := admin.Close(ctx)
+	if createErr != nil {
+		t.Fatal("create isolated PostgreSQL test database; verify the role has CREATEDB")
+	}
+	cleanupConfig := adminConfig.Copy()
+	t.Cleanup(func() { cleanup(t, cleanupConfig, name) })
+	if closeErr != nil {
+		t.Fatal("close PostgreSQL administrative connection after database creation")
+	}
+
+	testURL, err := isolatedDatabaseURL(baseURL, name)
+	if err != nil {
+		t.Fatal("derive isolated PostgreSQL test database URL")
+	}
+	return Database{
+		name:     name,
+		url:      rtconfig.NewSecret(testURL),
+		password: rtconfig.NewSecret(adminConfig.Password),
+	}
+}
+
+func availabilityPolicy(baseURL, ci string) (skip bool, err error) {
+	if strings.TrimSpace(baseURL) != "" {
+		return false, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(ci)) {
+	case "1", "true":
+		return false, errors.New("TEST_DATABASE_URL is required when CI is true")
+	default:
+		return true, nil
+	}
+}
+
+func newDatabaseName(testName string) (string, error) {
+	random := make([]byte, 8)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	var slug strings.Builder
+	for _, char := range strings.ToLower(testName) {
+		if slug.Len() >= 24 {
+			break
+		}
+		if char >= 'a' && char <= 'z' || char >= '0' && char <= '9' {
+			slug.WriteRune(char)
+		} else if slug.Len() > 0 && !strings.HasSuffix(slug.String(), "_") {
+			slug.WriteByte('_')
+		}
+	}
+	return "nise_test_" + strings.Trim(slug.String(), "_") + "_" + hex.EncodeToString(random), nil
+}
+
+func isolatedDatabaseURL(baseURL, name string) (string, error) {
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Host == "" || parsed.Fragment != "" || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") {
+		return "", errors.New("TEST_DATABASE_URL must use postgres:// or postgresql:// URL syntax")
+	}
+	parsed.Path = "/" + name
+	parsed.RawPath = ""
+	if parsed.User != nil {
+		parsed.User = url.User(parsed.User.Username())
+	}
+	query := parsed.Query()
+	query.Del("password")
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
+}
+
+func cleanup(t testing.TB, adminConfig *pgx.ConnConfig, name string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), adminOperationTimeout)
+	defer cancel()
+	admin, err := pgx.ConnectConfig(ctx, adminConfig)
+	if err != nil {
+		t.Error("reconnect to TEST_DATABASE_URL to clean up isolated database")
+		return
+	}
+	identifier := pgx.Identifier{name}.Sanitize()
+	_, dropErr := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+identifier+" WITH (FORCE)")
+	closeErr := admin.Close(ctx)
+	if err := errors.Join(dropErr, closeErr); err != nil {
+		t.Errorf("clean up isolated PostgreSQL database %s", name)
+	}
+}
+
+var _ fmt.Stringer = Database{}
+var _ fmt.GoStringer = Database{}
+var _ slog.LogValuer = Database{}
