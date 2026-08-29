@@ -9,13 +9,13 @@ GO_FMT_DIRS := cmd db internal
 BINARY := bin/{{.AppName}}
 SQLC_CONFIGS := $(shell find internal/features -type f -name sqlc.yaml -print | LC_ALL=C sort)
 
-.PHONY: help build run test migration-test fmt lint sqlc-generate sqlc-compile web-install web-build all
+.PHONY: help build run test migration-test fmt lint sqlc-generate sqlc-compile sqlc-vet web-install web-build all
 
 help: ## List the available targets.
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
 
-all: fmt lint test build ## Format, lint, test, and build.
+all: fmt lint sqlc-vet test build ## Format, lint, vet SQL, test, and build.
 
 build: ## Build the application binary into bin/.
 	go build -o $(BINARY) ./cmd/{{.AppName}}
@@ -54,6 +54,18 @@ sqlc-compile: ## Compile-check every feature-local SQL contract.
 		for config in $(SQLC_CONFIGS); do \
 			echo "sqlc compile -f $$config"; \
 			go tool sqlc compile --no-remote -f "$$config"; \
+		done; \
+	fi
+
+sqlc-vet: ## Enforce output confinement and project SQL safety rules.
+	@if [ -z "$(strip $(SQLC_CONFIGS))" ]; then \
+		echo "no feature-local sqlc.yaml files found"; \
+	else \
+		set -e; \
+		go test ./internal/platform/database/sqlcsafety; \
+		for config in $(SQLC_CONFIGS); do \
+			echo "sqlc vet -f $$config"; \
+			go tool sqlc vet --no-remote -f "$$config"; \
 		done; \
 	fi
 

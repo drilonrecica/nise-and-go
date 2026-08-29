@@ -53,6 +53,15 @@ CREATE TABLE widgets (
 SELECT id, name
 FROM widgets
 ORDER BY id;
+
+-- name: RenameWidget :execrows
+UPDATE widgets
+SET name = $1
+WHERE id = $2;
+
+-- name: DeleteWidget :execrows
+DELETE FROM widgets
+WHERE id = $1;
 `)
 	writeProbeFile(t, filepath.Join(feature, "sqlc.yaml"), `
 version: "2"
@@ -70,6 +79,25 @@ sql:
         emit_empty_slices: true
         query_parameter_limit: 0
         omit_unused_structs: true
+    rules:
+      - nise-no-unbounded-delete
+      - nise-no-unbounded-update
+      - nise-no-truncate
+rules:
+  - name: nise-no-unbounded-delete
+    message: "DELETE statements must contain a WHERE clause"
+    rule: |
+      query.sql.matches("(?is).*\\bDELETE\\s+FROM\\b.*") &&
+      !query.sql.matches("(?is).*\\bDELETE\\s+FROM\\b.*\\bWHERE\\b.*")
+  - name: nise-no-unbounded-update
+    message: "UPDATE statements must contain a WHERE clause"
+    rule: |
+      query.sql.matches("(?is).*\\bUPDATE\\b.*\\bSET\\b.*") &&
+      !query.sql.matches("(?is).*\\bUPDATE\\b.*\\bSET\\b.*\\bWHERE\\b.*")
+  - name: nise-no-truncate
+    message: "TRUNCATE is forbidden in application queries; use an explicit migration"
+    rule: |
+      query.sql.matches("(?is).*\\bTRUNCATE\\b.*")
 `)
 
 	run := func(bin string, args ...string) string {
@@ -88,6 +116,7 @@ sql:
 	run(goBin, "mod", "edit", "-replace", generator.NiseModulePath+"="+frameworkRoot)
 	run(goBin, "mod", "tidy")
 	run(makeBin, "sqlc-compile")
+	run(makeBin, "sqlc-vet")
 	run(makeBin, "sqlc-generate")
 
 	store := filepath.Join(feature, "store")
@@ -112,6 +141,65 @@ sql:
 		}
 	}
 	run(goBin, "test", "./internal/features/widgets/store")
+
+	for _, tc := range []struct {
+		name    string
+		query   string
+		message string
+	}{
+		{
+			name:    "unbounded delete",
+			query:   "-- name: DeleteWidgets :exec\nDELETE FROM widgets;",
+			message: "DELETE statements must contain a WHERE clause",
+		},
+		{
+			name:    "unbounded update",
+			query:   "-- name: RenameWidgets :exec\nUPDATE widgets SET name = 'unsafe';",
+			message: "UPDATE statements must contain a WHERE clause",
+		},
+		{
+			name:    "truncate",
+			query:   "-- name: TruncateWidgets :exec\nTRUNCATE widgets;",
+			message: "TRUNCATE is forbidden in application queries",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeProbeFile(t, filepath.Join(queries, "widgets.sql"), tc.query)
+			cmd := exec.Command(makeBin, "sqlc-vet") // #nosec G204 -- makeBin is resolved above and argv is fixed.
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOFLAGS=-mod=mod")
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("make sqlc-vet accepted %s", tc.name)
+			}
+			if !strings.Contains(string(out), tc.message) {
+				t.Fatalf("make sqlc-vet output lacks %q:\n%s", tc.message, out)
+			}
+		})
+	}
+
+	writeProbeFile(t, filepath.Join(queries, "widgets.sql"), `
+-- name: ListWidgets :many
+SELECT id, name
+FROM widgets
+ORDER BY id;
+`)
+	configPath := filepath.Join(feature, "sqlc.yaml")
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read sqlc config: %v", err)
+	}
+	writeProbeFile(t, configPath, strings.Replace(string(config), "out: store", "out: ../../forbidden", 1))
+	cmd := exec.Command(makeBin, "sqlc-vet") // #nosec G204 -- makeBin is resolved above and argv is fixed.
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOFLAGS=-mod=mod")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("make sqlc-vet accepted generated output outside the feature-local store")
+	}
+	if !strings.Contains(string(out), "sqlc Go output must be exactly store") {
+		t.Fatalf("forbidden output failure lacks safety guidance:\n%s", out)
+	}
 }
 
 func TestGeneratedSQLCTargetsAreHonestBeforeFirstFeature(t *testing.T) {
@@ -127,7 +215,7 @@ func TestGeneratedSQLCTargetsAreHonestBeforeFirstFeature(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	for _, target := range []string{"sqlc-compile", "sqlc-generate"} {
+	for _, target := range []string{"sqlc-compile", "sqlc-vet", "sqlc-generate"} {
 		cmd := exec.Command(makeBin, "--no-print-directory", target) // #nosec G204 -- makeBin is resolved and args are fixed literals.
 		cmd.Dir = root
 		out, err := cmd.CombinedOutput()
@@ -142,6 +230,7 @@ func TestGeneratedSQLCTargetsAreHonestBeforeFirstFeature(t *testing.T) {
 
 func writeProbeFile(t *testing.T, path, body string) {
 	t.Helper()
+	// #nosec G703 -- every caller constructs path beneath this test's t.TempDir-owned generated project.
 	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}

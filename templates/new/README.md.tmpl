@@ -56,6 +56,7 @@ Commit `go.sum` and `frontend/pnpm-lock.yaml` after the first run.
 | `make fmt` | `gofmt -s -w` over `cmd`, `db`, and `internal` |
 | `make lint` | `go vet` over the Go packages |
 | `make sqlc-compile` | Compile-check every feature-local SQL contract |
+| `make sqlc-vet` | Enforce bounded mutations and feature-local `store/` output |
 | `make sqlc-generate` | Regenerate every feature-local `store/` |
 | `make web-install` | `pnpm --dir frontend install` |
 | `make web-build` | `pnpm --dir frontend build` |
@@ -118,6 +119,13 @@ read-only and does not create the Goose history table on a fresh database.
 Startup allows an empty or behind schema with a warning, but fails closed for
 ahead, malformed, partial, or missing history. Migration is never a server
 startup side effect.
+
+Feature-local `sqlc.yaml` files enable the canonical
+`nise-no-unbounded-delete`, `nise-no-unbounded-update`, and
+`nise-no-truncate` CEL rules. Run `make sqlc-vet` to evaluate them with pinned
+sqlc and to reject any generated Go output outside that feature's `store/`.
+The target is an explicit no-op before the first query-owning feature exists
+and is included in `make all`.
 
 ## Database transactions
 

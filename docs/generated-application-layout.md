@@ -103,7 +103,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │
     └── platform/
         ├── config/                    [app]   typed configuration over runtime/config
-        ├── database/                  [app]   pgxpool, transactions, Goose, dbtest, migration matrix
+        ├── database/                  [app]   pgxpool, transactions, Goose, dbtest, SQL safety
         ├── httpapi/
         │   ├── router.go              [app]   middleware order and the /api/v1 mount
         │   └── openapigen/            [nise]  oapi-codegen strict chi server types and bindings

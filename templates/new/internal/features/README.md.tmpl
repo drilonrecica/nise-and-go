@@ -23,10 +23,13 @@ Two rules hold across every feature:
   sqlc and never hand-edited. The config points to
   `../../../db/migrations` rather than duplicating the schema.
 
-Run `make sqlc-compile` to statically validate every feature's SQL and
-`make sqlc-generate` to rebuild every `store/`, in stable feature
-path order. Both commands are honest no-ops while this directory has no
-feature-local `sqlc.yaml`.
+Run `make sqlc-compile` to statically validate every feature's SQL,
+`make sqlc-vet` to enforce bounded mutation and output-confinement rules, and
+`make sqlc-generate` to rebuild every `store/`, in stable feature path order.
+All three commands are honest no-ops while this directory has no feature-local
+`sqlc.yaml`. Each config must emit exactly to its own `store/` and carry the
+canonical `nise-no-unbounded-delete`, `nise-no-unbounded-update`, and
+`nise-no-truncate` CEL rules documented in the project README.
 
 This directory is empty today. The core features — sessions and
 authentication, authorization, and the audit log — arrive with the
