@@ -30,7 +30,9 @@ HTTP handlers perform transport work and call use cases. Use cases own business 
 - pgx supplies connections and pooling.
 - sqlc generates typed query code.
 - Goose manages readable SQL migrations.
-- Direct pgx remains an explicit escape hatch for exceptional PostgreSQL operations.
+- [Direct pgx](direct-pgx.md) remains a reviewed, feature-owned escape hatch
+  for exceptional PostgreSQL operations; it preserves use-case transaction
+  ownership and pgx tracing.
 - Tests use disposable PostgreSQL instances.
 
 Optional multitenancy uses `org_id` plus PostgreSQL row-level security as defense in depth. RLS requires tests for pooled connections, background jobs, administrative paths, and cross-tenant failures.

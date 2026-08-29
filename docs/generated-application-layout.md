@@ -103,7 +103,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │
     └── platform/
         ├── config/                    [app]   typed configuration over runtime/config
-        ├── database/                  [app]   pgxpool, transactions, Goose, dbtest, SQL safety
+        ├── database/                  [app]   pgxpool, transactions, Goose, dbtest, SQL safety, direct-pgx example
         ├── httpapi/
         │   ├── router.go              [app]   middleware order and the /api/v1 mount
         │   └── openapigen/            [nise]  oapi-codegen strict chi server types and bindings
@@ -129,6 +129,12 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
 **A feature is a vertical slice.** `internal/features/invoice/` owns its handlers, use cases, SQL, domain rules, and tests. Its frontend half is `frontend/src/routes/(app)/invoices/` plus `frontend/src/lib/features/invoice/`.
 
 **Transactions.** The use case calls the explicit transaction runner. Its callback receives the concrete `pgx.Tx` and passes it to the feature-local sqlc query constructor. Handlers do transport work. The `store` package runs queries and never begins a business transaction on its own. Propagating the callback context lets the runner reject accidental nesting; it never invents a savepoint or an independent inner commit. See [Database transactions](database-transactions.md).
+
+**Direct pgx is exceptional.** A PostgreSQL operation sqlc cannot model lives
+in a narrow feature-owned adapter, receives the use case's callback `pgx.Tx`,
+and stays on tracer-covered pgx methods. The generated database package
+contains a compile-checked example and real transaction test, not a shared raw
+repository. See [Direct pgx escape hatch](direct-pgx.md).
 
 ## Core services and optional modules
 

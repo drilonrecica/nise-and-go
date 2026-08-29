@@ -52,3 +52,11 @@ walks feature-local configs, requires generated Go output to remain exactly in
 that feature's `store/`, and requires the canonical unbounded-DELETE,
 unbounded-UPDATE, and no-TRUNCATE CEL rules unchanged and enabled. sqlc itself
 remains the YAML and SQL parser; run both layers with `make sqlc-vet`.
+
+`directpgx_test.go` is a compile-checked example for the rare PostgreSQL
+operation sqlc cannot model. A real adapter belongs beside its owning feature,
+accepts only the tracer-covered pgx methods it needs, and is constructed from
+the use case's callback `pgx.Tx`. Do not grow a shared raw repository or expose
+`Conn`/`PgConn`. The example's disposable-PostgreSQL test proves it commits and
+rolls back with the caller-owned transaction. The complete review checklist is
+in Nise's `docs/direct-pgx.md`.
