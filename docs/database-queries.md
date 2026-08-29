@@ -118,3 +118,7 @@ For writes spanning a business operation, the use case calls the generated
 application's `database.Transactor.Within` and passes the callback's `pgx.Tx`
 to `store.New(tx)`. See [Database transactions](database-transactions.md) for
 the lifecycle, cancellation, panic, nested-use, and option contracts.
+
+When sqlc genuinely cannot express a PostgreSQL protocol operation, use the
+narrow, reviewed [direct-pgx escape hatch](direct-pgx.md). It is not a
+convenience alternative to feature-local generated queries.

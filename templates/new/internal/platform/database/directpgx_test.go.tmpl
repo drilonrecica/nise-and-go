@@ -1,0 +1,280 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package database
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+)
+
+// reviewedDirectPGXDB is the consumer-owned interface for one exceptional
+// adapter. Exec is covered by pgx.QueryTracer and CopyFrom by
+// pgx.CopyFromTracer. Deliberately omit Conn and PgConn: dropping to the wire
+// connection would bypass the normal observation and transaction boundary.
+type reviewedDirectPGXDB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	CopyFrom(context.Context, pgx.Identifier, []string, pgx.CopyFromSource) (int64, error)
+}
+
+var _ reviewedDirectPGXDB = (pgx.Tx)(nil)
+
+const reviewedArchiveWidgetsSQL = `
+	UPDATE widgets
+	SET archived_at = clock_timestamp()
+	WHERE id = ANY($1)`
+
+// reviewedDirectPGXAdapter is an example, not a shared repository base. A real
+// adapter belongs beside the feature that owns its SQL and receives the
+// narrowest interface its exceptional operation needs.
+type reviewedDirectPGXAdapter struct {
+	db reviewedDirectPGXDB
+}
+
+func newReviewedDirectPGXAdapter(db reviewedDirectPGXDB) *reviewedDirectPGXAdapter {
+	return &reviewedDirectPGXAdapter{db: db}
+}
+
+func (a *reviewedDirectPGXAdapter) archiveWidgets(ctx context.Context, ids []int64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tag, err := a.db.Exec(ctx, reviewedArchiveWidgetsSQL, ids)
+	if err != nil {
+		return 0, fmt.Errorf("archive widgets with reviewed direct pgx adapter: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+func (a *reviewedDirectPGXAdapter) copyWidgets(ctx context.Context, rows pgx.CopyFromSource) (int64, error) {
+	count, err := a.db.CopyFrom(ctx, pgx.Identifier{"widgets"}, []string{"id", "name"}, rows)
+	if err != nil {
+		return 0, fmt.Errorf("copy widgets with reviewed direct pgx adapter: %w", err)
+	}
+	return count, nil
+}
+
+// reviewedBulkImport shows transaction ownership: the use case opens the
+// boundary, then constructs the direct adapter with the callback's transaction.
+func reviewedBulkImport(ctx context.Context, transactor *Transactor, rows pgx.CopyFromSource) error {
+	return transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := newReviewedDirectPGXAdapter(tx).copyWidgets(ctx, rows)
+		return err
+	})
+}
+
+type recordingDirectPGXDB struct {
+	execContext context.Context
+	execSQL     string
+	execArgs    []any
+	copyContext context.Context
+	copyTable   pgx.Identifier
+	copyColumns []string
+	copySource  pgx.CopyFromSource
+	execErr     error
+	copyErr     error
+}
+
+func (db *recordingDirectPGXDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	db.execContext = ctx
+	db.execSQL = sql
+	db.execArgs = args
+	return pgconn.NewCommandTag("UPDATE 2"), db.execErr
+}
+
+func (db *recordingDirectPGXDB) CopyFrom(ctx context.Context, table pgx.Identifier, columns []string, source pgx.CopyFromSource) (int64, error) {
+	db.copyContext = ctx
+	db.copyTable = table
+	db.copyColumns = columns
+	db.copySource = source
+	return 2, db.copyErr
+}
+
+func TestReviewedDirectPGXAdapter(t *testing.T) {
+	t.Parallel()
+	contextKey := struct{}{}
+	ctx := context.WithValue(context.Background(), contextKey, "sentinel")
+	db := &recordingDirectPGXDB{}
+	adapter := newReviewedDirectPGXAdapter(db)
+
+	ids := []int64{11, 12}
+	count, err := adapter.archiveWidgets(ctx, ids)
+	if err != nil {
+		t.Fatalf("archiveWidgets: %v", err)
+	}
+	if count != 2 || db.execContext != ctx || db.execSQL != reviewedArchiveWidgetsSQL || !reflect.DeepEqual(db.execArgs, []any{ids}) {
+		t.Fatalf("archive call = count:%d context:%v SQL:%q args:%v", count, db.execContext == ctx, db.execSQL, db.execArgs)
+	}
+
+	sourceRows := make([][]any, 0, 2)
+	sourceRows = append(sourceRows, []any{int64(11), "one"}, []any{int64(12), "two"})
+	source := pgx.CopyFromRows(sourceRows)
+	count, err = adapter.copyWidgets(ctx, source)
+	if err != nil {
+		t.Fatalf("copyWidgets: %v", err)
+	}
+	if count != 2 || db.copyContext != ctx || !reflect.DeepEqual(db.copyTable, pgx.Identifier{"widgets"}) || !reflect.DeepEqual(db.copyColumns, []string{"id", "name"}) || db.copySource != source {
+		t.Fatalf("copy call = count:%d context:%v table:%v columns:%v", count, db.copyContext == ctx, db.copyTable, db.copyColumns)
+	}
+
+	db.execSQL = "not called"
+	if count, err := adapter.archiveWidgets(ctx, nil); err != nil || count != 0 || db.execSQL != "not called" {
+		t.Fatalf("empty archive call = count:%d error:%v SQL:%q", count, err, db.execSQL)
+	}
+
+	execCause := errors.New("exec cause")
+	db.execErr = execCause
+	if _, err := adapter.archiveWidgets(ctx, ids); !errors.Is(err, execCause) {
+		t.Fatalf("archive error = %v, want wrapped cause", err)
+	}
+	copyCause := errors.New("copy cause")
+	db.copyErr = copyCause
+	if _, err := adapter.copyWidgets(ctx, source); !errors.Is(err, copyCause) {
+		t.Fatalf("copy error = %v, want wrapped cause", err)
+	}
+}
+
+func TestReviewedDirectPGXAdapterUsesCallerTransaction(t *testing.T) {
+	testDatabase := dbtest.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	settings, err := NewSettings(2, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	poolConfig, err := ParseConfig(testDatabase.URL().Reveal(), testDatabase.Password().Reveal(), settings)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	tracer := &reviewedObservationTracer{}
+	poolConfig.ConnConfig.Tracer = tracer
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	if err != nil {
+		t.Fatalf("open traced pool: %v", err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("ping traced pool: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE TABLE widgets (id bigint PRIMARY KEY, name text NOT NULL, archived_at timestamptz)`); err != nil {
+		t.Fatalf("create widgets: %v", err)
+	}
+	transactor, err := NewTransactor(pool)
+	if err != nil {
+		t.Fatalf("NewTransactor: %v", err)
+	}
+
+	rollbackCause := errors.New("roll back reviewed operation")
+	err = transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		adapter := newReviewedDirectPGXAdapter(tx)
+		rollbackRows := append(make([][]any, 0, 1), []any{int64(1), "rolled back"})
+		if _, err := adapter.copyWidgets(ctx, pgx.CopyFromRows(rollbackRows)); err != nil {
+			return err
+		}
+		return rollbackCause
+	})
+	if !errors.Is(err, rollbackCause) {
+		t.Fatalf("rollback transaction error = %v", err)
+	}
+	assertWidgetCount(t, ctx, pool, 0)
+
+	rows := make([][]any, 0, 2)
+	rows = append(rows, []any{int64(2), "committed"}, []any{int64(3), "archived"})
+	if err := reviewedBulkImport(ctx, transactor, pgx.CopyFromRows(rows)); err != nil {
+		t.Fatalf("reviewedBulkImport: %v", err)
+	}
+	if err := transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		count, err := newReviewedDirectPGXAdapter(tx).archiveWidgets(ctx, []int64{3})
+		if err != nil {
+			return err
+		}
+		if count != 1 {
+			return fmt.Errorf("archived row count = %d, want 1", count)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("archive transaction: %v", err)
+	}
+	assertWidgetCount(t, ctx, pool, 2)
+	var archived bool
+	if err := pool.QueryRow(ctx, `SELECT archived_at IS NOT NULL FROM widgets WHERE id = 3`).Scan(&archived); err != nil {
+		t.Fatalf("read archived widget: %v", err)
+	}
+	if !archived {
+		t.Fatal("committed archive was not visible")
+	}
+	if !tracer.observedQuery(reviewedArchiveWidgetsSQL) {
+		t.Fatal("reviewed Exec was not visible to pgx.QueryTracer")
+	}
+	if !tracer.observedCopy(pgx.Identifier{"widgets"}) {
+		t.Fatal("reviewed CopyFrom was not visible to pgx.CopyFromTracer")
+	}
+}
+
+type reviewedObservationTracer struct {
+	queries    []string
+	copyTables []pgx.Identifier
+}
+
+var _ pgx.QueryTracer = (*reviewedObservationTracer)(nil)
+var _ pgx.CopyFromTracer = (*reviewedObservationTracer)(nil)
+
+func (t *reviewedObservationTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	t.queries = append(t.queries, data.SQL)
+	return ctx
+}
+
+func (*reviewedObservationTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {
+}
+
+func (t *reviewedObservationTracer) TraceCopyFromStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
+	t.copyTables = append(t.copyTables, data.TableName)
+	return ctx
+}
+
+func (*reviewedObservationTracer) TraceCopyFromEnd(context.Context, *pgx.Conn, pgx.TraceCopyFromEndData) {
+}
+
+func (t *reviewedObservationTracer) observedQuery(want string) bool {
+	for _, query := range t.queries {
+		if query == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *reviewedObservationTracer) observedCopy(want pgx.Identifier) bool {
+	for _, table := range t.copyTables {
+		if reflect.DeepEqual(table, want) {
+			return true
+		}
+	}
+	return false
+}
+
+type widgetCounter interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func assertWidgetCount(t *testing.T, ctx context.Context, db widgetCounter, want int) {
+	t.Helper()
+	var got int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM widgets`).Scan(&got); err != nil {
+		t.Fatalf("count widgets: %v", err)
+	}
+	if got != want {
+		t.Fatalf("widget count = %d, want %d", got, want)
+	}
+}

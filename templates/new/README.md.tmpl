@@ -138,6 +138,14 @@ rolls back and re-panics unchanged. Propagate the callback context: a nested
 `Within` call made with it fails instead of creating a hidden savepoint or
 independent inner commit.
 
+Direct pgx is reserved for reviewed PostgreSQL operations sqlc cannot model,
+such as `CopyFrom`. Keep the adapter beside its owning feature, accept only the
+tracer-covered methods it needs, use static SQL and identifiers with bound
+values, and construct it from the use case callback's `pgx.Tx`. The
+compile-checked `internal/platform/database/directpgx_test.go` demonstrates the
+shape and proves commit/rollback behavior against disposable PostgreSQL; it is
+an example, not a shared raw repository.
+
 ## Process modes
 
 The same binary runs every process this application has.

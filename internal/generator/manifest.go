@@ -106,6 +106,7 @@ var templateFiles = []templateFile{
 	{Template: "internal/platform/database/compatibility_test.go.tmpl", Output: "internal/platform/database/compatibility_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/database/dbtest/database.go.tmpl", Output: "internal/platform/database/dbtest/database.go", Owner: OwnerApp},
 	{Template: "internal/platform/database/dbtest/database_test.go.tmpl", Output: "internal/platform/database/dbtest/database_test.go", Owner: OwnerApp},
+	{Template: "internal/platform/database/directpgx_test.go.tmpl", Output: "internal/platform/database/directpgx_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/database/migrate.go.tmpl", Output: "internal/platform/database/migrate.go", Owner: OwnerApp},
 	{Template: "internal/platform/database/migrate_test.go.tmpl", Output: "internal/platform/database/migrate_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/database/migration_matrix_test.go.tmpl", Output: "internal/platform/database/migration_matrix_test.go", Owner: OwnerApp},

@@ -295,6 +295,7 @@ myapp/
         │   ├── dbtest/            [app]   isolated real-PostgreSQL test databases
         │   │   ├── database.go    [app]   create, bound, redact, force-drop
         │   │   └── database_test.go [app] isolation and cleanup contract
+        │   ├── directpgx_test.go [app] reviewed adapter and transaction example
         │   ├── migrate.go        [app]   instance-scoped, advisory-locked Goose provider
         │   ├── migrate_test.go   [app]   disposable PostgreSQL apply/rollback contract
         │   ├── migration_matrix_test.go [app] clean and supported-upgrade paths
@@ -314,7 +315,7 @@ myapp/
 
 ```
 
-58 files. Ownership markers are from
+59 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Every generated file declares the same thing in a header
@@ -356,6 +357,9 @@ files and omitted directories.
   `DELETE` and `UPDATE` plus every `TRUNCATE` fail, every config must keep
   generated Go inside its own `store/`, and the command is an explicit no-op
   before a feature exists.
+- **A reviewed direct-pgx escape hatch** for PostgreSQL operations sqlc cannot
+  model, with a narrow feature-adapter example and a real test proving caller-
+  owned commit and rollback behavior without exposing raw connections.
 - **Structured logging** in JSON or a readable text format, with a request
   ID and a correlation ID on every request and central redaction applied by
   the handler, not by call sites.
