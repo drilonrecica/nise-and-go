@@ -4,15 +4,12 @@ const invariantMigrations = "Database migrations are ordered, forward-only, and 
 
 // checkMigrations reports the migration invariants as skipped.
 //
-// This is not a placeholder that will be forgotten. There is no migration
-// subsystem in this slice at all: `nise db migrate`, the goose integration,
-// and the generated db/migrations tree arrive with milestone M3, and a
-// generated project today contains db/README.md and nothing else. A check
-// that inspected an empty directory and reported ok would be reporting that
-// an invariant holds when nothing was verified — the precise dishonesty this
-// package's Status doc comment rules out. Naming the milestone in the reason
-// is what makes the gap legible instead of invisible.
+// Generated projects now contain embedded Goose migrations, but this
+// framework check does not yet load the generated application's provider or
+// database history. M3-004 adds that explicit command/compatibility boundary;
+// reporting ok before then would claim deployed-history guarantees that were
+// never verified.
 func checkMigrations() Check {
 	return skip(CheckMigrations, invariantMigrations,
-		"this project has no migration subsystem yet: migrations, their ordering rules, and \"nise db migrate\" all arrive with milestone M3, so there is nothing to verify")
+		"readable embedded Goose migrations exist, but deployed-history and schema-compatibility validation arrives with M3-004; no database history was verified")
 }

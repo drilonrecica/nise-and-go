@@ -47,9 +47,9 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
 │       └── main.go                    [app]   flag parsing and mode selection; calls internal/app
 │
 ├── db/
-│   ├── embed.go                       [nise]  package db; embeds migrations/*.sql into the binary
+│   ├── embed.gen.go                   [nise]  package db; embeds migrations/*.sql into the binary
 │   └── migrations/
-│       └── 00001_init.sql             [app]   readable SQL, sequential prefix, applied by nise db migrate
+│       └── 00001_baseline.sql         [app]   readable schema-neutral Goose baseline
 │
 ├── deploy/
 │   ├── Dockerfile                     [app]   minimal non-root runtime image
@@ -167,7 +167,7 @@ One binary carries the migrations, the mail templates, and the built frontend. `
 
 | Embedded | Declared in | Pattern |
 |---|---|---|
-| Migrations | `db/embed.go` | `migrations/*.sql` |
+| Migrations | `db/embed.gen.go` | `migrations/*.sql` |
 | Mail templates | `internal/platform/mail/mail.go` | `templates` |
 | Built frontend | `internal/platform/webui/webui.go` | `all:embedded` |
 
@@ -217,11 +217,13 @@ configuration is deliberately feature-local and application-owned; see
 `frontend/` sits inside the Go module, so `go build ./...`, `go list ./...`, and `gofmt -l .` walk `frontend/node_modules/`, and an npm package that happens to ship a `.go` file is listed as a package of the application. Generated tooling names its Go targets explicitly instead:
 
 ```sh
-go build ./cmd/... ./internal/...
-gofmt -l cmd internal
+go build ./cmd/... ./db/... ./internal/...
+gofmt -l cmd db internal
 ```
 
-`db/` is reserved for `db/embed.go` and the SQL migrations it embeds. Until that file exists it holds no Go package, so naming `./db/...` produces `go: warning: "./db/..." matched no packages` on every run; the generated `Makefile`, `nise test`, and the generated `AGENTS.md` all omit it today and all gain it together when the database milestone lands.
+`db/` contains `db/embed.gen.go` and the source/embed parity test. The generated
+`Makefile`, `nise test`, and generated `AGENTS.md` all include it so their Go
+test sets remain identical.
 
 ## Naming rules
 

@@ -287,13 +287,11 @@ differences.
 **Invariant:** database migrations are ordered, forward-only, and every
 applied migration is still present.
 
-**Always `skipped` in this release, naming milestone M3.** There is no
-migration subsystem yet: `nise db migrate`, the goose integration, and the
-generated `db/migrations` tree all arrive with M3, and a generated project
-today contains `db/README.md` and nothing else. A check that inspected an
-empty directory and reported `ok` would be reporting that an invariant holds
-when nothing was verified. Naming the milestone is what keeps the gap
-legible instead of invisible.
+**Currently `skipped`, naming milestone M3-004.** Generated projects contain
+readable embedded Goose migrations and an instance-scoped runner, but this
+framework check does not yet inspect deployed history or the database's
+schema compatibility. Reporting `ok` before that command boundary exists
+would claim guarantees that were never verified.
 
 ### `config-invariants`
 

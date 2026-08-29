@@ -6,6 +6,12 @@ The PostgreSQL connection pool and the migration runner live here: pool
 construction and configuration, the readiness check that pings it, and the
 Goose runner that applies `db/migrations/`.
 
+`OpenMigrator` builds an instance-scoped Goose provider over the migrations
+filesystem supplied by `db.Migrations`. It uses a dedicated one-connection
+`database/sql` pool and a PostgreSQL session advisory lock. It does not use
+Goose's legacy package-global filesystem or migration registry, and opening
+it never applies schema changes.
+
 `pool.go` applies explicit conservative limits instead of inheriting
 pgx's CPU-dependent maximum. `internal/app/app.go` wires the pool into
 two seams:

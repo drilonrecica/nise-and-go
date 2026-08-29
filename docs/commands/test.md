@@ -50,14 +50,13 @@ that is not present is reported `skipped`, with the exact reason, not run
 and not treated as a failure:
 
 - **Go**: runs when the project root has a `go.mod`, as
-  `go test ./cmd/... ./internal/...` — exactly the generated `Makefile`'s
+  `go test ./cmd/... ./db/... ./internal/...` — exactly the generated `Makefile`'s
   `GO_PACKAGES`, and the target list
   [Generated application layout](../generated-application-layout.md)'s
   own "Go targets" section prescribes, since `frontend/` sits inside the
   same Go module and a bare `./...` would also walk
-  `frontend/node_modules/`. `./db/...` is not named until `db/embed.go`
-  exists; two commands that both claim to run the project's Go tests must
-  not run different sets.
+  `frontend/node_modules/`. The `db` package's source/embed parity test is
+  therefore part of every standard Go suite.
 - **Component**: runs when `frontend/package.json` exists and its
   `scripts` object declares one of `test:unit` or `test:component` (the
   first one found, in that order), as `pnpm --dir frontend run <script>`.
@@ -83,7 +82,7 @@ suite it actually runs in that invocation:
 $ nise test --go -- -run TestOrderTotals ./internal/features/invoice/...
 ```
 
-runs `go test ./cmd/... ./internal/... -run TestOrderTotals
+runs `go test ./cmd/... ./db/... ./internal/... -run TestOrderTotals
 ./internal/features/invoice/...`. If more than one suite is selected in
 the same invocation, the same trailing arguments are appended to each
 one's own command — a Go-specific flag like `-run` passed alongside
@@ -99,7 +98,7 @@ per selected suite:
 
 ```
 go test: ok  	fixture/internal/x	0.002s
-[PASSED] go (go test ./cmd/... ./internal/..., 0.31s)
+[PASSED] go (go test ./cmd/... ./db/... ./internal/..., 0.31s)
 [SKIPPED] component — no test:unit or test:component script found in frontend/package.json
 ```
 
@@ -109,7 +108,7 @@ printing — not itself valid JSON). It emits exactly one structured
 summary document instead:
 
 ```json
-{"suites":[{"name":"go","status":"passed","command":"go test ./cmd/... ./internal/...","durationSeconds":0.31,"exitCode":0},{"name":"component","status":"skipped","reason":"no test:unit or test:component script found in frontend/package.json"}]}
+{"suites":[{"name":"go","status":"passed","command":"go test ./cmd/... ./db/... ./internal/...","durationSeconds":0.31,"exitCode":0},{"name":"component","status":"skipped","reason":"no test:unit or test:component script found in frontend/package.json"}]}
 ```
 
 `status` is one of `passed`, `failed`, or `skipped`. `reason` is present

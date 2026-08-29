@@ -31,9 +31,10 @@ type Options struct {
 // the same sequence.
 //
 // Generator tools run only outside generated projects. Inside one they
-// report StatusSkipped: sqlc is pinned but may require a network-backed tool
-// build, while Goose and oapi-codegen are not pinned there yet. Explicit
-// generator commands are the user-authorized tool execution boundary.
+// report StatusSkipped: sqlc and Goose are pinned but may require a
+// network-backed tool/library build, while oapi-codegen is not pinned there
+// yet. Explicit build, test, and generator commands are the user-authorized
+// execution boundary.
 //
 // Run never returns an error itself: a tool being missing or too old is
 // reported as a failing Check, not a Go error, so the caller (internal/

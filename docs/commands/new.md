@@ -245,7 +245,12 @@ myapp/
 │
 ├── api/README.md                 [app]   reserved for the OpenAPI document (M4)
 ├── cmd/myapp/main.go             [app]   flag parsing, signal handling, mode selection
-├── db/README.md                  [app]   reserved for SQL migrations (M3)
+├── db/
+│   ├── README.md                 [app]   migration conventions and safety boundary
+│   ├── embed.gen.go              [nise]  embeds only readable migration SQL
+│   ├── embed_test.go             [app]   source/embed byte parity
+│   └── migrations/
+│       └── 00001_baseline.sql    [app]   schema-neutral Goose baseline
 │
 ├── deploy/
 │   ├── Dockerfile                [app]   three-stage, non-root, distroless
@@ -281,6 +286,8 @@ myapp/
         │   └── config_test.go    [app]   pool default and validation contracts
         ├── database/
         │   ├── README.md         [app]
+        │   ├── migrate.go        [app]   instance-scoped, advisory-locked Goose provider
+        │   ├── migrate_test.go   [app]   disposable PostgreSQL apply/rollback contract
         │   ├── pool.go           [app]   bounded pgxpool plus health/metric adapters
         │   └── pool_test.go      [app]
         ├── httpapi/router.go     [app]   the ordered middleware chain and the routes
@@ -290,7 +297,7 @@ myapp/
 
 ```
 
-40 files. Ownership markers are from
+45 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Every generated file declares the same thing in a header
@@ -314,6 +321,9 @@ files and omitted directories.
   bounds, startup connectivity proof, readiness integration, live pool
   metrics, and lifecycle closure. `nise dev` supplies its managed
   database URL automatically.
+- **Readable embedded Goose migrations** with a schema-neutral version-one
+  baseline, an instance-scoped provider, a dedicated connection, and a
+  PostgreSQL advisory lock. Opening the server never applies them.
 - **Structured logging** in JSON or a readable text format, with a request
   ID and a correlation ID on every request and central redaction applied by
   the handler, not by call sites.
@@ -353,7 +363,7 @@ scaffold code for subsystems that do not exist yet.
 
 | Absent | Arrives with |
 |---|---|
-| Migrations and `sqlc` output | Later M3 tasks — the pool is present; `db/` remains the readable migration seam |
+| Migration commands, compatibility gating, and `sqlc` output | Later M3 tasks — readable embedded migrations and their runner are present |
 | OpenAPI document, generated server bindings, typed frontend client | M4 — `api/` is the reserved seam, and `router.go` marks the `/api/v1` mount point |
 | Sessions, authentication, authorization, audit log | M5 — `internal/features/` is the reserved seam |
 | **The application shell**: sidebar, navigation, theme and language controls, authentication screens, tables, the component set, and the Vitest and Playwright suites | **M6** — `frontend/` is a minimal but real SvelteKit project today: it installs, builds, type-checks, and renders one page served by the Go binary. Nothing in the layout moves when M6 fills it in. |

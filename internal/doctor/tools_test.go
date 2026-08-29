@@ -187,6 +187,24 @@ func TestSQLCDoesNotRunImplicitlyInsideGeneratedProject(t *testing.T) {
 	}
 }
 
+func TestGooseDoesNotRunImplicitlyInsideGeneratedProject(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{}
+	got := checkGoose(context.Background(), r, time.Second, true)
+	if got.Status != StatusSkipped {
+		t.Fatalf("Status = %v, want %v (Found=%q)", got.Status, StatusSkipped, got.Found)
+	}
+	if slices.Contains(r.calls, "go tool goose --version") {
+		t.Fatalf("calls = %v, goose may download and must not run implicitly", r.calls)
+	}
+	if !strings.Contains(got.Found, "declared") {
+		t.Errorf("Found = %q, want it to say Goose is declared", got.Found)
+	}
+	if !strings.Contains(got.Required, "go test ./db/...") {
+		t.Errorf("Required = %q, want explicit migration verification command", got.Required)
+	}
+}
+
 // TestFutureGeneratorToolsSkipInsideGeneratedProject is fix round 2's
 // regression coverage: inside a generated project, tools not pinned there
 // yet must report StatusSkipped — never
@@ -205,7 +223,6 @@ func TestFutureGeneratorToolsSkipInsideGeneratedProject(t *testing.T) {
 		fn   func(*fakeRunner) Check
 		key  string
 	}{
-		{"goose", func(r *fakeRunner) Check { return checkGoose(context.Background(), r, time.Second, true) }, "go tool goose --version"},
 		{"oapi-codegen", func(r *fakeRunner) Check { return checkOapiCodegen(context.Background(), r, time.Second, true) }, "go tool oapi-codegen -version"},
 	}
 

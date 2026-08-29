@@ -1,0 +1,101 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package database
+
+import (
+	"context"
+	"io/fs"
+	"os"
+	"strings"
+	"testing"
+	"testing/fstest"
+	"time"
+
+	"{{.ModulePath}}/db"
+)
+
+func TestOpenMigratorRejectsInvalidInputBeforeConnecting(t *testing.T) {
+	ctx := context.Background()
+	if _, err := OpenMigrator(ctx, "not a URL", "", time.Second, nil); err == nil || !strings.Contains(err.Error(), "filesystem") {
+		t.Fatalf("nil migrations error = %v, want filesystem validation", err)
+	}
+
+	const password = "do-not-expose-this-password"
+	migrations := fstest.MapFS{
+		"00001_probe.sql": &fstest.MapFile{Data: []byte("-- +goose Up\nSELECT 1;\n")},
+	}
+	_, err := OpenMigrator(ctx, "postgres://app:"+password+"@%zz/app", "", time.Second, fs.FS(migrations))
+	if err == nil {
+		t.Fatal("OpenMigrator accepted a malformed DATABASE_URL")
+	}
+	if strings.Contains(err.Error(), password) {
+		t.Fatalf("OpenMigrator error exposed the database password: %q", err)
+	}
+}
+
+func TestEmbeddedMigrationsApplyAndRollback(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is not set; it must name a disposable PostgreSQL database")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	migrator, err := OpenMigrator(ctx, databaseURL, os.Getenv("TEST_DATABASE_PASSWORD"), 5*time.Second, db.Migrations())
+	if err != nil {
+		t.Fatalf("OpenMigrator: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := migrator.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+
+	current, target, err := migrator.Versions(ctx)
+	if err != nil {
+		t.Fatalf("Versions before Up: %v", err)
+	}
+	if current != 0 || target < 1 {
+		t.Fatalf("versions before Up = %d/%d, want 0/nonempty target (TEST_DATABASE_URL must name a fresh disposable database)", current, target)
+	}
+	results, err := migrator.Up(ctx)
+	if err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if int64(len(results)) != target {
+		t.Fatalf("Up result count = %d, want %d", len(results), target)
+	}
+	for i, result := range results {
+		if result.Source.Version != int64(i+1) || result.Direction != "up" {
+			t.Errorf("Up result %d = %#v, want version %d up", i, result, i+1)
+		}
+	}
+	status, err := migrator.Status(ctx)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if int64(len(status)) != target {
+		t.Fatalf("status count after Up = %d, want %d", len(status), target)
+	}
+	for i, item := range status {
+		if item.State != "applied" {
+			t.Errorf("status %d after Up = %#v, want applied", i, item)
+		}
+	}
+	for version := target; version >= 1; version-- {
+		result, err := migrator.Down(ctx)
+		if err != nil {
+			t.Fatalf("Down version %d: %v", version, err)
+		}
+		if result.Source.Version != version || result.Direction != "down" {
+			t.Fatalf("Down result = %#v, want down result for version %d", result, version)
+		}
+	}
+	current, target, err = migrator.Versions(ctx)
+	if err != nil {
+		t.Fatalf("Versions after Down: %v", err)
+	}
+	if current != 0 || target < 1 {
+		t.Fatalf("versions after Down = %d/%d, want 0/nonempty target", current, target)
+	}
+}

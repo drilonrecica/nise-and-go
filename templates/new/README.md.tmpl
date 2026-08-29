@@ -39,7 +39,7 @@ nise dev                         # start PostgreSQL, Go, and Vite
 Then open <http://127.0.0.1:8080>. To run the application binary directly,
 set `DATABASE_URL`; the application does not load `.env` files.
 
-`go build ./cmd/... ./internal/...` also works before the frontend has ever
+`go build ./cmd/... ./db/... ./internal/...` also works before the frontend has ever
 been built: a placeholder page is committed inside the embedding Go package
 for exactly that reason, and the server serves it in development. In
 production a missing frontend build is a startup failure, not a placeholder.
@@ -52,8 +52,8 @@ Commit `go.sum` and `frontend/pnpm-lock.yaml` after the first run.
 |---|---|
 | `make build` | Build the binary into `bin/{{.AppName}}` |
 | `make run` | Run the application from source |
-| `make test` | `go test -race` over `./cmd/...` and `./internal/...` |
-| `make fmt` | `gofmt -s -w` over `cmd` and `internal` |
+| `make test` | `go test -race` over `./cmd/...`, `./db/...`, and `./internal/...` |
+| `make fmt` | `gofmt -s -w` over `cmd`, `db`, and `internal` |
 | `make lint` | `go vet` over the Go packages |
 | `make sqlc-compile` | Compile-check every feature-local SQL contract |
 | `make sqlc-generate` | Regenerate every feature-local `store/` |
@@ -86,6 +86,18 @@ putting URL-reserved secret characters into `DATABASE_URL`.
 Any secret may be supplied as `<NAME>_FILE` naming a file whose contents are
 the value, for an orchestrator's mounted-file secret store. Setting both
 `<NAME>` and `<NAME>_FILE` is always an error.
+
+## Database migrations
+
+Migration SQL remains readable under `db/migrations/` and is embedded in the
+binary through `db.Migrations()`. The generated migrator is instance-scoped,
+uses a PostgreSQL advisory lock, and never runs merely because the server
+starts. `00001_baseline.sql` is intentionally schema-neutral: it establishes
+Goose version history without guessing at application tables.
+
+The database integration test runs only when `TEST_DATABASE_URL` names a
+fresh disposable PostgreSQL database. It applies and rolls back the complete
+embedded migration set; never point it at a database containing useful data.
 
 ## Process modes
 
@@ -134,7 +146,7 @@ deliberately withhold.
 ```text
 api/                      OpenAPI document (arrives with the API milestone)
 cmd/{{.AppName}}/         the binary: flag parsing and mode selection
-db/                       readable SQL migrations (added by the next database task)
+db/                       readable SQL migrations and their generated embed package
 deploy/                   Dockerfile and compose file
 frontend/                 the SvelteKit project — see frontend/README.md
 internal/app/             constructor wiring and process modes

@@ -129,7 +129,7 @@ func TestGoSuiteMatchesTheGeneratedMakefile(t *testing.T) {
 		t.Fatalf("planGoSuite not runnable with a go.mod present: %+v", plan)
 	}
 	got := strings.Join(plan.Argv, " ")
-	const want = "go test ./cmd/... ./internal/..."
+	const want = "go test ./cmd/... ./db/... ./internal/..."
 	if got != want {
 		t.Errorf("Argv = %q, want %q", got, want)
 	}
@@ -138,7 +138,7 @@ func TestGoSuiteMatchesTheGeneratedMakefile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the generated Makefile template: %v", err)
 	}
-	if !strings.Contains(string(makefile), "GO_PACKAGES := ./cmd/... ./internal/...") {
+	if !strings.Contains(string(makefile), "GO_PACKAGES := ./cmd/... ./db/... ./internal/...") {
 		t.Error("the generated Makefile's GO_PACKAGES no longer matches planGoSuite's package list; " +
 			"change both together or nise test and make test run different sets")
 	}
