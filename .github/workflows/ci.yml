@@ -105,6 +105,45 @@ jobs:
         env:
           NISE_REQUIRE_NETNS: ${{ matrix.os == 'ubuntu-latest' && '1' || '' }}
 
+  migration-test:
+    name: PostgreSQL migration matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          # Deliberately public throwaway credential for this job-scoped
+          # disposable service, not an application or repository secret.
+          POSTGRES_PASSWORD: nise-ci-postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Clean-install and supported-upgrade migration matrix
+        run: make migration-test
+        env:
+          TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable
+          TEST_DATABASE_PASSWORD: nise-ci-postgres
+
   generation-diff:
     name: Generation diff
     runs-on: ubuntu-latest

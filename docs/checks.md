@@ -1,9 +1,11 @@
 # Checks
 
 This page lists every automated check on this repository, what defect class
-it protects against, and how to run it locally. `.github/workflows/ci.yml`
-runs the same commands `make check` does — there is exactly one definition of
-"passing," in the `Makefile`, and CI does not diverge from it.
+it protects against, and how to run it locally. The hermetic checks in
+`.github/workflows/ci.yml` run the same commands `make check` does. CI also
+runs the explicitly service-backed `make migration-test` gate against
+PostgreSQL 17.6; it cannot be folded into a command that works without an
+external database.
 
 **A check is never weakened to make a change pass.** If a check is wrong,
 fix the check in its own change with its own justification. If the code is
@@ -17,8 +19,16 @@ make check
 ```
 
 Runs, in order: `fmt-check`, `vet`, `lint`, `test`, `test-race`,
-`generate-diff`, `docs-check` — exactly the jobs `ci.yml` runs. `make help`
-lists every target with a one-line description.
+`generate-diff`, `docs-check`. `make help` lists every target with a one-line
+description.
+
+To run the real PostgreSQL migration gate as well, point it at an
+administrative database on disposable test infrastructure:
+
+```sh
+TEST_DATABASE_URL='postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable' \
+  make migration-test
+```
 
 ## The checks
 
@@ -117,6 +127,19 @@ Both run over the same three package roots. Neither `test` nor `test-race`
 is a substitute for the other: `test` runs faster and is what a contributor
 runs on every save; `test-race` is slower and specifically targets
 concurrency bugs `test` cannot detect.
+
+### `make migration-test` — PostgreSQL migration paths
+
+Protects against: a generated application that builds but cannot migrate a
+clean database or one of its explicitly supported historical release schemas.
+
+The target generates a fresh application, applies a local `replace` for this
+checkout, and invokes that application's own race-enabled migration matrix.
+It requires `TEST_DATABASE_URL`; the configured role must have `CREATEDB` on
+disposable test infrastructure. CI supplies PostgreSQL 17.6 and calls this
+target in a dedicated Linux job. Ordinary unit-test jobs skip the outer probe
+unless `NISE_MIGRATION_MATRIX=1`, preventing three OS legs from each trying to
+provision an undeclared database while making the dedicated gate non-skippable.
 
 ### `make generate` / `make generate-diff` — the determinism gate
 

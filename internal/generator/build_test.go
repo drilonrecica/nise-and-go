@@ -49,7 +49,11 @@ func TestGeneratedGoCodeBuilds(t *testing.T) {
 		// VCS stamping is unrelated to generated-source correctness and makes
 		// this temp-module probe depend on permissions for the framework's
 		// surrounding checkout when it is reached through the local replace.
-		cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOFLAGS=-mod=mod -buildvcs=false")
+		// Database integration has its own non-skippable PostgreSQL CI job. This
+		// probe owns compilation and portability, so do not let GitHub's ambient
+		// CI=true turn its generated-project test subprocess into a second,
+		// undeclared database-service consumer.
+		cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOFLAGS=-mod=mod -buildvcs=false", "CI=false")
 		cmd.Env = append(cmd.Env, extraEnv...)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
