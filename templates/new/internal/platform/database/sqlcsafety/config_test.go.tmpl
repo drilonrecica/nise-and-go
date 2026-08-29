@@ -1,0 +1,84 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package sqlcsafety
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const validConfig = `version: "2"
+sql:
+  - name: widgets
+    engine: postgresql
+    schema: schema.sql
+    queries: queries
+    gen:
+      go:
+        package: store
+        out: store
+    rules:
+      - nise-no-unbounded-delete
+      - nise-no-unbounded-update
+      - nise-no-truncate
+` + requiredRuleDefinitions
+
+func TestValidateConfig(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		config  string
+		wantErr string
+	}{
+		{name: "canonical", config: validConfig},
+		{name: "escaped output", config: strings.Replace(validConfig, "out: store", "out: ../../outside", 1), wantErr: "output must be exactly store"},
+		{name: "missing output", config: strings.Replace(validConfig, "        out: store\n", "", 1), wantErr: "exactly one Go output"},
+		{name: "multiple outputs", config: strings.Replace(validConfig, "        out: store\n", "        out: store\n        out: store\n", 1), wantErr: "exactly one Go output"},
+		{name: "rule not enabled", config: strings.Replace(validConfig, "      - nise-no-unbounded-delete\n", "", 1), wantErr: "must enable safety rule"},
+		{name: "rule weakened", config: strings.Replace(validConfig, "WHERE clause", "LIMIT clause", 1), wantErr: "definitions unchanged"},
+		{name: "tab indentation", config: strings.Replace(validConfig, "        out: store", "\t\tout: store", 1), wantErr: "spaces, not tabs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateConfig([]byte(tc.config))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateConfig: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ValidateConfig error = %v, want text %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestProjectSQLCConfigsUseSafetyContract(t *testing.T) {
+	root := findProjectRoot(t)
+	if err := ValidateProject(root); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func findProjectRoot(t *testing.T) string {
+	t.Helper()
+	directory, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(directory, "nise.json")); err == nil {
+			return directory
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("inspect nise.json: %v", err)
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			t.Fatal("could not find generated project root")
+		}
+		directory = parent
+	}
+}

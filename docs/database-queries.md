@@ -40,6 +40,25 @@ sql:
         emit_empty_slices: true
         query_parameter_limit: 0
         omit_unused_structs: true
+    rules:
+      - nise-no-unbounded-delete
+      - nise-no-unbounded-update
+      - nise-no-truncate
+rules:
+  - name: nise-no-unbounded-delete
+    message: "DELETE statements must contain a WHERE clause"
+    rule: |
+      query.sql.matches("(?is).*\\bDELETE\\s+FROM\\b.*") &&
+      !query.sql.matches("(?is).*\\bDELETE\\s+FROM\\b.*\\bWHERE\\b.*")
+  - name: nise-no-unbounded-update
+    message: "UPDATE statements must contain a WHERE clause"
+    rule: |
+      query.sql.matches("(?is).*\\bUPDATE\\b.*\\bSET\\b.*") &&
+      !query.sql.matches("(?is).*\\bUPDATE\\b.*\\bSET\\b.*\\bWHERE\\b.*")
+  - name: nise-no-truncate
+    message: "TRUNCATE is forbidden in application queries; use an explicit migration"
+    rule: |
+      query.sql.matches("(?is).*\\bTRUNCATE\\b.*")
 ```
 
 Paths are relative to the feature-local config. The shared migrations remain
@@ -58,13 +77,37 @@ From the generated project root:
 
 ```sh
 make sqlc-compile
+make sqlc-vet
 make sqlc-generate
 ```
 
-Both commands discover `internal/features/*/sqlc.yaml` recursively in
-stable path order and pass `--no-remote`. They do no work—and return
-success with an explicit message—before the first query-owning feature
-exists.
+All three commands discover `internal/features/*/sqlc.yaml` recursively in
+stable path order and pass `--no-remote`. They do no work—and return success
+with an explicit message—before the first query-owning feature exists.
+`make all` includes `sqlc-vet`.
+
+`sqlc-vet` first runs the generated stdlib-only `sqlcsafety` validator. Every
+config must emit exactly once to `store` relative to its feature directory,
+must enable all three Nise rules, and must carry their canonical definitions
+unchanged. The pinned sqlc binary then parses the real YAML/SQL and evaluates
+the CEL rules. This split avoids pretending a home-grown YAML parser is
+authoritative while still making an escaped output directory or disabled rule
+a hard failure during ordinary Go tests.
+
+The mutation rules are deliberately narrow lexical guardrails: a `DELETE` or
+`UPDATE` must contain a `WHERE` after its mutation clause, while `TRUNCATE` is
+never an application query and belongs in an explicit migration. They catch
+catastrophic accidental forms while leaving business-specific selectivity to
+query review, tests, and PostgreSQL plans. Complex CTEs and subqueries can make
+lexical policy ambiguous; prefer a straightforward top-level mutation or use a
+rule-specific `@sqlc-vet-disable` annotation with an adjacent review comment
+explaining the safety boundary. Never use a blanket disable.
+
+A `SELECT *` CEL rule is intentionally absent. sqlc expands stars to resolved
+columns before exposing `query.sql` to CEL (confirmed against pinned v1.31.1),
+so such a rule would pass the exact source it claimed to forbid. Explicit
+columns remain the convention, but this task does not advertise an
+unenforceable vet guarantee.
 
 sqlc-generated repositories execute queries only. They accept a pgx pool or
 transaction implementing the generated DBTX interface; they do not open

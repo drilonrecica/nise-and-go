@@ -1,0 +1,104 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package sqlcsafety validates the non-SQL invariants of feature-local sqlc
+// configuration. sqlc itself remains authoritative for parsing YAML and SQL.
+package sqlcsafety
+
+import (
+	"bufio"
+	"bytes"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+const requiredRuleEnables = `    rules:
+      - nise-no-unbounded-delete
+      - nise-no-unbounded-update
+      - nise-no-truncate
+`
+
+const requiredRuleDefinitions = `rules:
+  - name: nise-no-unbounded-delete
+    message: "DELETE statements must contain a WHERE clause"
+    rule: |
+      query.sql.matches("(?is).*\\bDELETE\\s+FROM\\b.*") &&
+      !query.sql.matches("(?is).*\\bDELETE\\s+FROM\\b.*\\bWHERE\\b.*")
+  - name: nise-no-unbounded-update
+    message: "UPDATE statements must contain a WHERE clause"
+    rule: |
+      query.sql.matches("(?is).*\\bUPDATE\\b.*\\bSET\\b.*") &&
+      !query.sql.matches("(?is).*\\bUPDATE\\b.*\\bSET\\b.*\\bWHERE\\b.*")
+  - name: nise-no-truncate
+    message: "TRUNCATE is forbidden in application queries; use an explicit migration"
+    rule: |
+      query.sql.matches("(?is).*\\bTRUNCATE\\b.*")
+`
+
+// ValidateConfig enforces Nise's canonical safety block and output boundary.
+// It deliberately does not parse YAML: the pinned sqlc binary does that in the
+// immediately following vet step. Requiring this exact small block avoids
+// adding a second YAML implementation or a runtime dependency to the app.
+func ValidateConfig(content []byte) error {
+	if !bytes.Contains(content, []byte(requiredRuleDefinitions)) {
+		return errors.New("sqlc config must contain the canonical Nise safety-rule definitions unchanged")
+	}
+	if !bytes.Contains(content, []byte(requiredRuleEnables)) {
+		return errors.New("sqlc config must enable safety rules in the canonical package rule block")
+	}
+
+	outCount := 0
+	scanner := bufio.NewScanner(bytes.NewReader(content))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.ContainsRune(line, '\t') {
+			return errors.New("sqlc config must use spaces, not tabs")
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "out:") {
+			outCount++
+			if trimmed != "out: store" {
+				return errors.New("sqlc Go output must be exactly store relative to the feature config")
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read sqlc config: %w", err)
+	}
+	if outCount != 1 {
+		return fmt.Errorf("sqlc config must declare exactly one Go output, got %d", outCount)
+	}
+	return nil
+}
+
+// ValidateProject checks every feature-local sqlc.yaml below root. A project
+// without query-owning features is valid and remains an honest no-op.
+func ValidateProject(root string) error {
+	features := filepath.Join(root, "internal", "features")
+	return filepath.WalkDir(features, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || entry.Name() != "sqlc.yaml" {
+			return nil
+		}
+		content, err := os.ReadFile(path) // #nosec G304 -- path is discovered only beneath the application's fixed feature root.
+		if err != nil {
+			return err
+		}
+		if err := ValidateConfig(content); err != nil {
+			relative, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				relative = path
+			}
+			return fmt.Errorf("%s: %w", filepath.ToSlash(relative), err)
+		}
+		return nil
+	})
+}

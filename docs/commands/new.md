@@ -300,6 +300,9 @@ myapp/
         │   ├── migration_matrix_test.go [app] clean and supported-upgrade paths
         │   ├── pool.go           [app]   bounded pgxpool plus health/metric adapters
         │   ├── pool_test.go      [app]
+        │   ├── sqlcsafety/        [app]   config/rule and output-confinement gate
+        │   │   ├── config.go      [app]
+        │   │   └── config_test.go [app]
         │   ├── testdata/migration-upgrades/
         │   │   └── 00001_baseline.sql [app] immutable release-schema fixture
         │   ├── transaction.go    [app]   pgx adapter for use-case-owned transactions
@@ -311,7 +314,7 @@ myapp/
 
 ```
 
-56 files. Ownership markers are from
+58 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Every generated file declares the same thing in a header
@@ -349,6 +352,10 @@ files and omitted directories.
   material, local skip behavior, and CI-required configuration. The migration
   matrix proves clean installs and every committed supported release fixture;
   repository CI runs it against PostgreSQL 17.6.
+- **Feature-local SQL safety checks** through pinned `sqlc vet`: unbounded
+  `DELETE` and `UPDATE` plus every `TRUNCATE` fail, every config must keep
+  generated Go inside its own `store/`, and the command is an explicit no-op
+  before a feature exists.
 - **Structured logging** in JSON or a readable text format, with a request
   ID and a correlation ID on every request and central redaction applied by
   the handler, not by call sites.
@@ -388,7 +395,7 @@ scaffold code for subsystems that do not exist yet.
 
 | Absent | Arrives with |
 |---|---|
-| Generated feature `sqlc` output and database test/SQL safety instrumentation | Later M3 tasks — migration, compatibility, and transaction foundations are present |
+| Generated feature `sqlc` output | M7 — the feature generator will write configs carrying the M3 query-safety contract; the validator and `sqlc-vet` target are present now |
 | OpenAPI document, generated server bindings, typed frontend client | M4 — `api/` is the reserved seam, and `router.go` marks the `/api/v1` mount point |
 | Sessions, authentication, authorization, audit log | M5 — `internal/features/` is the reserved seam |
 | **The application shell**: sidebar, navigation, theme and language controls, authentication screens, tables, the component set, and the Vitest and Playwright suites | **M6** — `frontend/` is a minimal but real SvelteKit project today: it installs, builds, type-checks, and renders one page served by the Go binary. Nothing in the layout moves when M6 fills it in. |

@@ -46,3 +46,9 @@ release upgrade. Historical SQL snapshots live under
 edit a fixture after releasing it; add a new versioned snapshot and keep older
 fixtures for as long as that direct upgrade path is supported. Run the matrix
 with `make migration-test`.
+
+`sqlcsafety` is the stdlib-only companion to `sqlc vet`. Its project test
+walks feature-local configs, requires generated Go output to remain exactly in
+that feature's `store/`, and requires the canonical unbounded-DELETE,
+unbounded-UPDATE, and no-TRUNCATE CEL rules unchanged and enabled. sqlc itself
+remains the YAML and SQL parser; run both layers with `make sqlc-vet`.

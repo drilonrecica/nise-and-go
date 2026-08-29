@@ -111,6 +111,8 @@ var templateFiles = []templateFile{
 	{Template: "internal/platform/database/migration_matrix_test.go.tmpl", Output: "internal/platform/database/migration_matrix_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/database/pool.go.tmpl", Output: "internal/platform/database/pool.go", Owner: OwnerApp},
 	{Template: "internal/platform/database/pool_test.go.tmpl", Output: "internal/platform/database/pool_test.go", Owner: OwnerApp},
+	{Template: "internal/platform/database/sqlcsafety/config.go.tmpl", Output: "internal/platform/database/sqlcsafety/config.go", Owner: OwnerApp},
+	{Template: "internal/platform/database/sqlcsafety/config_test.go.tmpl", Output: "internal/platform/database/sqlcsafety/config_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/database/testdata/migration-upgrades/00001_baseline.sql.tmpl", Output: "internal/platform/database/testdata/migration-upgrades/00001_baseline.sql", Owner: OwnerApp},
 	{Template: "internal/platform/database/transaction.go.tmpl", Output: "internal/platform/database/transaction.go", Owner: OwnerApp},
 	{Template: "internal/platform/database/transaction_test.go.tmpl", Output: "internal/platform/database/transaction_test.go", Owner: OwnerApp},
