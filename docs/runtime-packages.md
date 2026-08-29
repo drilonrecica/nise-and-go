@@ -25,7 +25,7 @@ Compile-time modules live under `modules/`, are selected at generation time, and
 
 ## Boundary rules
 
-- `net/http` middleware lives in the package that owns the concern. There is no middleware aggregator package. The ordered chain is generated application code in `internal/platform/httpapi/router.go` ([ADR 0009](adr/0009-generated-application-layout.md)).
+- `net/http` middleware lives in the package that owns the concern. There is no middleware aggregator package. The ordered sibling API/document chains and their application extension slots are generated application code in `internal/platform/httpapi/router.go` ([API routing and middleware](api-routing.md), [ADR 0009](adr/0009-generated-application-layout.md)).
 - A `runtime/` package may import the standard library and, should one ever exist, `runtime/internal/…`.
 - A `runtime/` package may import another `runtime/` package only along an edge named in ADR 0011. Today that is exactly one: `runtime/lifecycle` may import `runtime/config`, `runtime/logging`, and `runtime/health`. In particular, `runtime/logging` must not import `runtime/config`.
 - No `runtime/` package imports `internal/`, `cmd/`, `templates/`, `test/`, or `examples/`.

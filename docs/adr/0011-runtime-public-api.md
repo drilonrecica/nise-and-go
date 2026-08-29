@@ -30,7 +30,7 @@ Six milestone-2 tasks create packages here at roughly the same time. They need t
 
 No other package may be added to `runtime/` without an ADR.
 
-`net/http` middleware lives in the package that owns the concern it implements. There is no middleware aggregator package and no `runtime/middleware`. The ordered middleware chain is generated application code in `internal/platform/httpapi/router.go`, which is where an application can read the order and insert its own handlers ([ADR 0009](0009-generated-application-layout.md)).
+`net/http` middleware lives in the package that owns the concern it implements. There is no middleware aggregator package and no `runtime/middleware`. The ordered middleware chains are generated application code in `internal/platform/httpapi/router.go`, where an application can read the fixed core and add middleware through the separate API and document slots inside it ([API routing and middleware](../api-routing.md), [ADR 0009](0009-generated-application-layout.md)).
 
 ### Names considered and rejected
 

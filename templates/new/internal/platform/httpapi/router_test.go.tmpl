@@ -1,0 +1,258 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpapi
+
+import (
+	"bytes"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+
+	rtconfig "github.com/drilonrecica/nise-and-go/runtime/config"
+	"github.com/drilonrecica/nise-and-go/runtime/health"
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/observability"
+	"github.com/drilonrecica/nise-and-go/runtime/secure"
+
+	"{{.ModulePath}}/internal/platform/config"
+	"{{.ModulePath}}/internal/platform/webui"
+)
+
+func TestRouterUsesIndependentAPIAndDocumentPolicies(t *testing.T) {
+	deps, _, _ := routerTestDeps(t)
+	deps.RegisterAPI = func(r chi.Router) {
+		r.Get("/probe", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set(secure.HeaderCSP, "default-src *")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"surface":"api"}`)
+		})
+	}
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	apiResponse := serveRouter(handler, "/api/v1/probe")
+	if apiResponse.Code != http.StatusOK {
+		t.Fatalf("API status = %d, want 200", apiResponse.Code)
+	}
+	apiPolicy, err := secure.NewAPIPolicy(secure.Development)
+	if err != nil {
+		t.Fatalf("NewAPIPolicy: %v", err)
+	}
+	if got := apiResponse.Header().Get(secure.HeaderCSP); got != apiPolicy.ContentSecurityPolicy() {
+		t.Fatalf("API CSP = %q, want independent API policy %q", got, apiPolicy.ContentSecurityPolicy())
+	}
+	if strings.Contains(apiResponse.Header().Get(secure.HeaderCSP), "default-src *") {
+		t.Fatal("API handler weakened the security policy")
+	}
+	methodResponse := serveRouterMethod(handler, http.MethodPost, "/api/v1/probe")
+	if methodResponse.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("known API path with wrong method status = %d, want 405", methodResponse.Code)
+	}
+	if got := methodResponse.Header().Get("Allow"); got != http.MethodGet {
+		t.Fatalf("known API path Allow = %q, want GET", got)
+	}
+	if got := methodResponse.Header().Get(secure.HeaderCSP); got != apiPolicy.ContentSecurityPolicy() {
+		t.Fatalf("API method rejection CSP = %q, want API policy", got)
+	}
+
+	documentResponse := serveRouter(handler, "/healthz/live")
+	if documentResponse.Code != http.StatusOK {
+		t.Fatalf("document status = %d, want 200", documentResponse.Code)
+	}
+	documentPolicy, err := secure.NewDocumentPolicy(
+		secure.Development,
+		secure.WithScriptHashes(deps.UI.ScriptHashes()...),
+		secure.WithStyleHashes(deps.UI.StyleHashes()...),
+	)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+	if got := documentResponse.Header().Get(secure.HeaderCSP); got != documentPolicy.ContentSecurityPolicy() {
+		t.Fatalf("document CSP = %q, want %q", got, documentPolicy.ContentSecurityPolicy())
+	}
+	if documentResponse.Header().Get(secure.HeaderCSP) == apiResponse.Header().Get(secure.HeaderCSP) {
+		t.Fatal("API and document responses used the same CSP")
+	}
+}
+
+func TestRouterCoreWrapsApplicationMiddleware(t *testing.T) {
+	deps, registry, logs := routerTestDeps(t)
+	events := make([]string, 0, 5)
+	deps.Middleware.API = []Middleware{
+		recordRouterEvents(&events, "first"),
+		recordRouterEvents(&events, "second"),
+	}
+	deps.RegisterAPI = func(r chi.Router) {
+		r.Get("/probe", func(w http.ResponseWriter, r *http.Request) {
+			if _, ok := logging.RequestID(r.Context()); !ok {
+				t.Error("application handler has no core request ID")
+			}
+			if _, ok := logging.CorrelationID(r.Context()); !ok {
+				t.Error("application handler has no core correlation ID")
+			}
+			events = append(events, "handler")
+			w.Header().Set(secure.HeaderCSP, "default-src *")
+			w.WriteHeader(http.StatusNoContent)
+		})
+		r.Get("/panic", func(http.ResponseWriter, *http.Request) {
+			panic("router-test-panic")
+		})
+	}
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	response := serveRouter(handler, "/api/v1/probe")
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", response.Code)
+	}
+	wantEvents := []string{"first:before", "second:before", "handler", "second:after", "first:after"}
+	if !reflect.DeepEqual(events, wantEvents) {
+		t.Fatalf("application middleware events = %v, want %v", events, wantEvents)
+	}
+	apiPolicy, err := secure.NewAPIPolicy(secure.Development)
+	if err != nil {
+		t.Fatalf("NewAPIPolicy: %v", err)
+	}
+	if got := response.Header().Get(secure.HeaderCSP); got != apiPolicy.ContentSecurityPolicy() {
+		t.Fatalf("core security did not wrap application middleware: CSP = %q", got)
+	}
+
+	panicResponse := serveRouter(handler, "/api/v1/panic")
+	if panicResponse.Code != http.StatusInternalServerError {
+		t.Fatalf("panic status = %d, want 500", panicResponse.Code)
+	}
+	if got := panicResponse.Header().Get(secure.HeaderCSP); got != apiPolicy.ContentSecurityPolicy() {
+		t.Fatalf("recovered panic lacks API CSP: %q", got)
+	}
+	if !strings.Contains(logs.String(), "panic serving request") ||
+		!strings.Contains(logs.String(), "router-test-panic") ||
+		!strings.Contains(logs.String(), `"request_id"`) ||
+		!strings.Contains(logs.String(), `"correlation_id"`) {
+		t.Fatalf("core recovery did not log panic: %s", logs.String())
+	}
+	var metrics bytes.Buffer
+	if err := observability.WriteText(&metrics, registry); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	for _, fragment := range []string{
+		"http_requests_total",
+		`route="/api/v1/probe"`,
+		`status_class="2xx"`,
+		`status_class="panic"`,
+	} {
+		if !strings.Contains(metrics.String(), fragment) {
+			t.Errorf("core metrics lack %q:\n%s", fragment, metrics.String())
+		}
+	}
+}
+
+func TestRouterKeepsUnmatchedAPIPathsOutOfTheUI(t *testing.T) {
+	deps, _, _ := routerTestDeps(t)
+	apiCalls := 0
+	documentCalls := 0
+	deps.Middleware.API = []Middleware{countRouterCalls(&apiCalls)}
+	deps.Middleware.Document = []Middleware{countRouterCalls(&documentCalls)}
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	apiPolicy, err := secure.NewAPIPolicy(secure.Development)
+	if err != nil {
+		t.Fatalf("NewAPIPolicy: %v", err)
+	}
+
+	for _, requestPath := range []string{"/api/v1", "/api/v1/", "/api/v1/missing"} {
+		response := serveRouter(handler, requestPath)
+		if response.Code != http.StatusNotFound {
+			t.Errorf("%s status = %d, want API 404", requestPath, response.Code)
+		}
+		if got := response.Header().Get(secure.HeaderCSP); got != apiPolicy.ContentSecurityPolicy() {
+			t.Errorf("%s CSP = %q, want API policy", requestPath, got)
+		}
+	}
+	if apiCalls != 3 || documentCalls != 0 {
+		t.Fatalf("unmatched API calls = api:%d document:%d, want 3/0", apiCalls, documentCalls)
+	}
+
+	documentResponse := serveRouter(handler, "/api/v10/missing")
+	if documentResponse.Code != http.StatusOK {
+		t.Fatalf("non-API lookalike status = %d, want UI 200", documentResponse.Code)
+	}
+	if documentCalls != 1 || apiCalls != 3 {
+		t.Fatalf("lookalike calls = api:%d document:%d, want 3/1", apiCalls, documentCalls)
+	}
+	if documentResponse.Header().Get(secure.HeaderCSP) == apiPolicy.ContentSecurityPolicy() {
+		t.Fatal("non-API lookalike received the API policy")
+	}
+}
+
+func TestRouterRejectsNilApplicationMiddleware(t *testing.T) {
+	deps, _, _ := routerTestDeps(t)
+	deps.Middleware.API = []Middleware{nil}
+	if _, err := New(deps); err == nil || !strings.Contains(err.Error(), "api middleware slot 0") {
+		t.Fatalf("New error = %v, want nil API slot rejection", err)
+	}
+}
+
+func routerTestDeps(t *testing.T) (Deps, *observability.Registry, *bytes.Buffer) {
+	t.Helper()
+	ui, err := webui.New(false)
+	if err != nil {
+		t.Fatalf("webui.New: %v", err)
+	}
+	registry := observability.NewRegistry()
+	metrics, err := observability.NewHTTPMetrics(registry)
+	if err != nil {
+		t.Fatalf("NewHTTPMetrics: %v", err)
+	}
+	logs := &bytes.Buffer{}
+	logger := slog.New(logging.NewJSONHandler(logs, logging.HandlerOptions{}))
+	return Deps{
+		Config:   config.Config{Env: rtconfig.Test},
+		Logger:   logger,
+		Gate:     health.NewGate(true),
+		Prober:   health.NewProber(nil),
+		Registry: registry,
+		Metrics:  metrics,
+		UI:       ui,
+	}, registry, logs
+}
+
+func serveRouter(handler http.Handler, requestPath string) *httptest.ResponseRecorder {
+	return serveRouterMethod(handler, http.MethodGet, requestPath)
+}
+
+func serveRouterMethod(handler http.Handler, method, requestPath string) *httptest.ResponseRecorder {
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(method, requestPath, nil))
+	return response
+}
+
+func recordRouterEvents(events *[]string, name string) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*events = append(*events, name+":before")
+			defer func() { *events = append(*events, name+":after") }()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func countRouterCalls(calls *int) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			(*calls)++
+			next.ServeHTTP(w, r)
+		})
+	}
+}
