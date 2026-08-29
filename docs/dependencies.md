@@ -81,10 +81,11 @@ version; those entries name the package only.
 |---|---|
 | `github.com/go-chi/chi/v5` | The HTTP router. The V1 profile is Go + chi + PostgreSQL + SvelteKit; chi is a `net/http`-compatible router, so generated handlers stay ordinary `http.Handler`s and the middleware chain stays readable in application code. |
 | `github.com/jackc/pgx/v5` (`v5.10.0`) | The PostgreSQL driver and pool underlying sqlc-generated code. It is also the documented escape hatch: exceptional bulk operations, PostgreSQL-specific behavior, and carefully optimized paths may use pgx directly, keeping the application's own transaction boundaries. The generated pool pins explicit limits rather than accepting pgx's CPU-dependent maximum. |
+| `github.com/pressly/goose/v3` (`v3.27.3`, runtime plus generated-project `tool` directive) | Loads readable embedded SQL migrations through an instance-scoped provider. The generated migrator disables Goose's package-global registry, owns a dedicated pgx `database/sql` connection, and serializes explicit migration runs with PostgreSQL advisory locking. |
 | `github.com/sqlc-dev/sqlc/cmd/sqlc` (`v1.31.1`, generated-project `tool` directive) | Generates each feature's typed `store/` package from its handwritten SQL and feature-local config. Generated commands pass `--no-remote`; no hosted sqlc service is required. |
 | `github.com/riverqueue/river` | The background-job runner, used transactionally through pgx. Jobs are PostgreSQL-backed so a job can be enqueued in the same transaction as the business change that requires it — which is why there is no separate message broker in the denylist below. |
 | sqlc-generated query code | Output of `sqlc generate`; tool-owned complete `store/` directories, checked in and never hand-edited. |
-| goose migration files and runtime support | Handwritten SQL migrations run by goose, embedded in the binary and applied as an explicit deployment step. |
+| goose migration files and runtime support | Handwritten SQL migrations run by Goose v3.27.3, embedded in the binary and applied as an explicit deployment step. |
 | oapi-codegen-generated server/client code | Output of `oapi-codegen` from the authoritative OpenAPI document; application-owned, checked in. |
 
 Version numbers remain omitted only for dependencies whose implementing task

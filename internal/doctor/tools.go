@@ -76,10 +76,11 @@ func checkPnpm(ctx context.Context, r Runner, timeout time.Duration) Check {
 // there is no minimum version to compare against here, only "does it
 // resolve and run".
 //
-// sqlc is pinned in generated projects from M3-002 onward, but doctor still
-// does not invoke it there: Go may download and build a missing tool, which
-// would violate doctor's no-implicit-network contract. The explicit
-// sqlc-compile/generate commands are the user-authorized execution boundary.
+// sqlc and Goose are pinned in generated projects from M3-002 and M3-003
+// onward, but doctor still does not invoke them there: Go may download and
+// build a missing tool, which would violate doctor's no-implicit-network
+// contract. Explicit build/test/generator commands are the user-authorized
+// execution boundary.
 func checkSqlc(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool) Check {
 	spec := minVersionSpec{
 		name:    "sqlc",
@@ -100,13 +101,22 @@ func checkSqlc(ctx context.Context, r Runner, timeout time.Duration, insideGener
 }
 
 func checkGoose(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool) Check {
-	return checkGeneratorTool(ctx, r, timeout, insideGeneratedProject, minVersionSpec{
+	spec := minVersionSpec{
 		name:    "goose",
 		command: "go",
 		args:    []string{"tool", "goose", "--version"},
 		min:     nil,
 		install: "Run `go get -tool github.com/pressly/goose/v3/cmd/goose` from the repository root.",
-	})
+	}
+	if insideGeneratedProject {
+		return Check{
+			Name:     spec.name,
+			Status:   StatusSkipped,
+			Found:    "declared by this project's go.mod but not executed implicitly",
+			Required: "run `go test ./db/... ./internal/platform/database/...` explicitly to resolve and verify the embedded Goose integration",
+		}
+	}
+	return checkMinVersion(ctx, r, timeout, spec)
 }
 
 func checkOapiCodegen(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool) Check {
@@ -120,7 +130,7 @@ func checkOapiCodegen(ctx context.Context, r Runner, timeout time.Duration, insi
 }
 
 // checkGeneratorTool routes a future go.mod-`tool`-pinned generator check
-// (currently goose/oapi-codegen) based on whether doctor is running inside a
+// (currently oapi-codegen) based on whether doctor is running inside a
 // generated project. Inside a generated project it never even invokes
 // spec.command: there is nothing to run yet, by design, so a StatusFail
 // (and its "add a tool directive" remedy, which is actively wrong advice

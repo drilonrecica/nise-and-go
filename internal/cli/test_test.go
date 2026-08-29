@@ -424,14 +424,11 @@ func TestTestCommandHasNoReservedFlagCollisions(t *testing.T) {
 }
 
 // writeGoFixtureModule writes a minimal Go module at dir with a package
-// under each of cmd/ and internal/ — planGoSuite's own two targets
-// (./cmd/... ./internal/...) — so `go test` against both finds real
+// under each of cmd/, db/, and internal/ — planGoSuite's own three targets
+// (./cmd/... ./db/... ./internal/...) — so `go test` against them finds real
 // packages instead of failing at setup with "no such directory" for
-// whichever a narrower fixture omitted. It also writes db/embed.go, which
-// planGoSuite deliberately does not name today (see its doc comment): the
-// fixture keeps it so the assertion that db/ is *not* tested stays
-// meaningful. internal/x's own test either passes or fails depending on
-// failing.
+// whichever a narrower fixture omitted. internal/x's own test either passes
+// or fails depending on failing.
 func writeGoFixtureModule(t *testing.T, dir string, failing bool) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module fixture\n\ngo 1.26\n"), 0o644); err != nil {
@@ -446,7 +443,7 @@ func writeGoFixtureModule(t *testing.T, dir string, failing bool) {
 	if err := os.MkdirAll(filepath.Join(dir, "db"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "db", "embed.go"), []byte("package db\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "db", "embed.gen.go"), []byte("package db\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "internal", "x"), 0o750); err != nil {

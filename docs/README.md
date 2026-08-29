@@ -12,6 +12,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Runtime packages](runtime-packages.md)
 - [Configuration](configuration.md)
 - [Database queries and sqlc](database-queries.md)
+- [Database migrations](database-migrations.md)
 - [Observability](observability.md)
 - [Metrics and tracing](metrics.md)
 - [Operations: runtime HTTP lifecycle](operations-runtime.md)

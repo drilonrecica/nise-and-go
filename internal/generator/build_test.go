@@ -64,13 +64,13 @@ func TestGeneratedGoCodeBuilds(t *testing.T) {
 		t.Skipf("skipping: go mod tidy could not resolve the generated project's dependencies, most likely because the module proxy is unreachable: %v\n%s", err, out)
 	}
 
-	if out, err := run("build", "./cmd/...", "./internal/..."); err != nil {
+	if out, err := run("build", "./cmd/...", "./db/...", "./internal/..."); err != nil {
 		t.Fatalf("go build of the generated project failed: %v\n%s", err, out)
 	}
-	if out, err := run("vet", "./cmd/...", "./internal/..."); err != nil {
+	if out, err := run("vet", "./cmd/...", "./db/...", "./internal/..."); err != nil {
 		t.Fatalf("go vet of the generated project failed: %v\n%s", err, out)
 	}
-	if out, err := run("test", "./cmd/...", "./internal/..."); err != nil {
+	if out, err := run("test", "./cmd/...", "./db/...", "./internal/..."); err != nil {
 		t.Fatalf("go test of the generated project failed: %v\n%s", err, out)
 	}
 
@@ -83,7 +83,7 @@ func TestGeneratedGoCodeBuilds(t *testing.T) {
 	// time. Cross-compiling here is what turns that from a thing someone
 	// has to remember into a thing the suite checks.
 	for _, target := range []string{"windows", "darwin"} {
-		if out, err := runEnv([]string{"GOOS=" + target}, "build", "./cmd/...", "./internal/..."); err != nil {
+		if out, err := runEnv([]string{"GOOS=" + target}, "build", "./cmd/...", "./db/...", "./internal/..."); err != nil {
 			t.Errorf("the generated project does not build for GOOS=%s: %v\n%s", target, err, out)
 		}
 	}
@@ -116,7 +116,7 @@ func TestGeneratedGoCodeIsGofmtClean(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	cmd := exec.Command(gofmtBin, "-s", "-l", "cmd", "internal") // #nosec G204 -- args are literals from this test.
+	cmd := exec.Command(gofmtBin, "-s", "-l", "cmd", "db", "internal") // #nosec G204 -- args are literals from this test.
 	cmd.Dir = root
 	out, err := cmd.CombinedOutput()
 	if err != nil {

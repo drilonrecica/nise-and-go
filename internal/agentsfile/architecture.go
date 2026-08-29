@@ -112,7 +112,7 @@ func layoutDirectories() []ArchitectureDirectory {
 		{Path: "cmd/<app>/", Ownership: OwnershipApp,
 			Description: "Application entry point: flag parsing and process-mode selection, calling internal/app."},
 		{Path: "db/", Ownership: OwnershipNise,
-			Description: "db/embed.go embeds db/migrations/*.sql into the binary."},
+			Description: "db/embed.gen.go embeds db/migrations/*.sql into the binary."},
 		{Path: "db/migrations/", Ownership: OwnershipApp,
 			Description: "Sequential, hand-written SQL migrations, NNNNN_snake_case.sql."},
 		{Path: "deploy/", Ownership: OwnershipApp,

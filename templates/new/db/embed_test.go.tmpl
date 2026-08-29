@@ -1,0 +1,65 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package db
+
+import (
+	"io/fs"
+	"os"
+	"regexp"
+	"strconv"
+	"testing"
+)
+
+func TestEmbeddedMigrationsMatchReadableSQL(t *testing.T) {
+	embeddedEntries, err := fs.ReadDir(Migrations(), ".")
+	if err != nil {
+		t.Fatalf("ReadDir embedded migrations: %v", err)
+	}
+	readableEntries, err := os.ReadDir("migrations")
+	if err != nil {
+		t.Fatalf("ReadDir readable migrations: %v", err)
+	}
+
+	var readableSQL []string
+	for _, entry := range readableEntries {
+		if !entry.IsDir() && len(entry.Name()) > 4 && entry.Name()[len(entry.Name())-4:] == ".sql" {
+			readableSQL = append(readableSQL, entry.Name())
+		}
+	}
+	if len(readableSQL) == 0 {
+		t.Fatal("readable migration history is empty")
+	}
+	if len(embeddedEntries) != len(readableSQL) {
+		t.Fatalf("embedded migration count = %d, readable SQL count = %d", len(embeddedEntries), len(readableSQL))
+	}
+
+	namePattern := regexp.MustCompile(`^[0-9]{5}_[a-z][a-z0-9_]*\.sql$`)
+	for i, name := range readableSQL {
+		if embeddedEntries[i].Name() != name {
+			t.Errorf("embedded migration %d = %q, readable migration = %q", i, embeddedEntries[i].Name(), name)
+			continue
+		}
+		if !namePattern.MatchString(name) {
+			t.Errorf("migration %q does not match NNNNN_snake_case.sql", name)
+			continue
+		}
+		version, err := strconv.Atoi(name[:5])
+		if err != nil || version != i+1 {
+			t.Errorf("migration %q version = %d, want contiguous version %05d", name, version, i+1)
+		}
+
+		embedded, err := fs.ReadFile(Migrations(), name)
+		if err != nil {
+			t.Errorf("ReadFile embedded %s: %v", name, err)
+			continue
+		}
+		readable, err := os.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Errorf("ReadFile readable %s: %v", name, err)
+			continue
+		}
+		if string(embedded) != string(readable) {
+			t.Errorf("embedded migration %s differs from readable SQL source", name)
+		}
+	}
+}

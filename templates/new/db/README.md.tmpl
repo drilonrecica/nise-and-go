@@ -2,11 +2,18 @@
 
 # db/
 
-Readable SQL migrations live here, as `migrations/NNNNN_snake_case.sql` with
-a zero-padded sequential prefix, alongside `embed.go`, which embeds them
-into the binary. Sequential prefixes rather than timestamps: generation must
-produce byte-identical output on every machine.
+Readable, application-owned Goose SQL migrations live under
+`migrations/NNNNN_snake_case.sql` with a zero-padded sequential prefix.
+`embed.gen.go` embeds only `*.sql` files in the application binary and
+exposes a filesystem rooted at that directory. Sequential prefixes rather
+than timestamps keep generation byte-identical on every machine.
 
-The connection pool is implemented in `internal/platform/database/`.
-Migration source and the embedded migration runner arrive in the next
-database task; server startup never applies migrations implicitly.
+`00001_baseline.sql` is intentionally schema-neutral. Goose's provider
+requires at least one source, and the baseline establishes version history
+without inventing domain tables or extensions. Add application schema in
+later migrations.
+
+The migrator lives in `internal/platform/database/`; server startup never
+applies migrations implicitly. Treat applied files as immutable and normally
+recover with a new forward migration. Down sections remain useful for
+disposable-database tests and deliberate operator recovery.

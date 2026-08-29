@@ -82,7 +82,7 @@ func TestRunOneMissingToolFailsTheWholeReport(t *testing.T) {
 // test: a freshly generated project — the first context a user runs
 // `nise doctor` in — must report a fully healthy Report (Failed() ==
 // false, the same condition internal/cli/doctor.go maps to exit 0), even
-// though its go.mod declares only sqlc, not goose or oapi-codegen. Before
+// though its go.mod declares sqlc and Goose, but not oapi-codegen. Before
 // the context fix, all three reported StatusFail (via a real "exit status 2" from
 // `go tool <name>` outside any module that pins them), which flipped the
 // exit code to 3 on a project with nothing wrong.

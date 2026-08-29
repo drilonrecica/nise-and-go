@@ -1,7 +1,8 @@
 // Generated once by nise; owned by this application. Nise will not overwrite it.
 
 // Package database constructs and observes this application's PostgreSQL
-// connection pool. It does not own transaction boundaries or migrations.
+// connection pool and migration connections. It does not own business
+// transaction boundaries.
 package database
 
 import (
@@ -11,6 +12,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/drilonrecica/nise-and-go/runtime/health"
@@ -96,19 +98,38 @@ func ParseConfig(databaseURL, password string, settings Settings) (*pgxpool.Conf
 	if err := settings.Validate(); err != nil {
 		return nil, err
 	}
+	connConfig, err := ParseConnectionConfig(databaseURL, password, settings.ConnectTimeout)
+	if err != nil {
+		return nil, err
+	}
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, errors.New("parse DATABASE_URL: invalid PostgreSQL connection string")
 	}
-	if password != "" {
-		cfg.ConnConfig.Password = password
-	}
+	cfg.ConnConfig = connConfig
 	cfg.MaxConns = settings.MaxConns
 	cfg.MinConns = settings.MinConns
 	cfg.MaxConnLifetime = settings.MaxConnLifetime
 	cfg.MaxConnIdleTime = settings.MaxConnIdleTime
 	cfg.HealthCheckPeriod = settings.HealthCheckPeriod
-	cfg.ConnConfig.ConnectTimeout = settings.ConnectTimeout
+	return cfg, nil
+}
+
+// ParseConnectionConfig constructs one PostgreSQL connection configuration
+// without exposing credentials in parse errors. Pools and migration commands
+// share this path so separate password handling cannot drift between them.
+func ParseConnectionConfig(databaseURL, password string, connectTimeout time.Duration) (*pgx.ConnConfig, error) {
+	if connectTimeout <= 0 {
+		return nil, errors.New("DB_CONNECT_TIMEOUT: must be greater than zero")
+	}
+	cfg, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, errors.New("parse DATABASE_URL: invalid PostgreSQL connection string")
+	}
+	if password != "" {
+		cfg.Password = password
+	}
+	cfg.ConnectTimeout = connectTimeout
 	return cfg, nil
 }
 

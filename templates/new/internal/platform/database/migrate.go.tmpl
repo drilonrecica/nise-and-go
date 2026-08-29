@@ -1,0 +1,100 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package database
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"time"
+
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
+)
+
+// Migrator owns the dedicated database/sql connection pool Goose uses.
+// Migration methods are serialized by Goose and protected across processes
+// by a PostgreSQL session advisory lock.
+type Migrator struct {
+	provider *goose.Provider
+}
+
+// OpenMigrator validates the embedded sources, opens a dedicated PostgreSQL
+// connection, and proves connectivity. It never mutates schema; callers must
+// invoke an explicit migration method.
+func OpenMigrator(ctx context.Context, databaseURL, password string, connectTimeout time.Duration, migrations fs.FS) (*Migrator, error) {
+	if migrations == nil {
+		return nil, errors.New("open migrator: migrations filesystem must not be nil")
+	}
+	connConfig, err := ParseConnectionConfig(databaseURL, password, connectTimeout)
+	if err != nil {
+		return nil, err
+	}
+	db := stdlib.OpenDB(*connConfig)
+	// Goose holds one session for its advisory lock and migration work. A
+	// second connection adds no throughput and can make lock ownership subtle.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
+	locker, err := lock.NewPostgresSessionLocker()
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("construct PostgreSQL migration lock: %w", err)
+	}
+	provider, err := goose.NewProvider(
+		goose.DialectPostgres,
+		db,
+		migrations,
+		goose.WithDisableGlobalRegistry(true),
+		goose.WithSessionLocker(locker),
+	)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("load embedded migrations: %w", err)
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
+	if err := provider.Ping(pingCtx); err != nil {
+		_ = provider.Close()
+		return nil, fmt.Errorf("connect migration runner to PostgreSQL: %w", err)
+	}
+	return &Migrator{provider: provider}, nil
+}
+
+// Close releases the migrator's dedicated database connections.
+func (m *Migrator) Close() error {
+	if m == nil || m.provider == nil {
+		return nil
+	}
+	return m.provider.Close()
+}
+
+// Up applies every pending migration in order.
+func (m *Migrator) Up(ctx context.Context) ([]*goose.MigrationResult, error) {
+	return m.provider.Up(ctx)
+}
+
+// Down rolls back exactly the latest applied migration. Production recovery
+// should normally use a forward fix; this primitive primarily supports tests
+// and deliberate operator workflows.
+func (m *Migrator) Down(ctx context.Context) (*goose.MigrationResult, error) {
+	return m.provider.Down(ctx)
+}
+
+// Status returns every embedded migration and whether it is applied.
+func (m *Migrator) Status(ctx context.Context) ([]*goose.MigrationStatus, error) {
+	return m.provider.Status(ctx)
+}
+
+// Versions returns the database's current version and the embedded target.
+func (m *Migrator) Versions(ctx context.Context) (current, target int64, err error) {
+	return m.provider.GetVersions(ctx)
+}
+
+// HasPending reports whether the database is behind the embedded migration
+// set. A database ahead of the binary is reported as an error by Goose.
+func (m *Migrator) HasPending(ctx context.Context) (bool, error) {
+	return m.provider.HasPending(ctx)
+}

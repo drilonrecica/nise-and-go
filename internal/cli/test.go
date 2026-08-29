@@ -70,7 +70,7 @@ type suitePlan struct {
 }
 
 // describe renders p's command for human and JSON reporting, e.g.
-// "go test ./cmd/... ./internal/...".
+// "go test ./cmd/... ./db/... ./internal/...".
 func (p suitePlan) describe(extraArgs []string) string {
 	return strings.Join(append(append([]string{}, p.Argv...), extraArgs...), " ")
 }
@@ -84,11 +84,9 @@ func (p suitePlan) describe(extraArgs []string) string {
 //
 // The package list is exactly the generated Makefile's GO_PACKAGES, and
 // deliberately so: two commands claiming to run "the project's Go tests"
-// must not run different sets. It omits ./db/..., which the Makefile also
-// omits — a fresh project's db/ holds SQL migrations and no Go package, so
-// naming it only produces `go: warning: "./db/..." matched no packages` on
-// every single run. When db/ gains generated Go, it is reached through
-// ./internal/... or added to both lists at once.
+// must not run different sets. The generated db package owns the migration
+// source/embed parity test, so omitting ./db/... would let deployed migration
+// bytes drift from their reviewed SQL without the standard suite noticing.
 func planGoSuite(root string) suitePlan {
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
 		return suitePlan{Name: suiteGo, SkipReason: "no go.mod found at the project root"}
@@ -96,7 +94,7 @@ func planGoSuite(root string) suitePlan {
 	return suitePlan{
 		Name:     suiteGo,
 		Runnable: true,
-		Argv:     []string{"go", "test", "./cmd/...", "./internal/..."},
+		Argv:     []string{"go", "test", "./cmd/...", "./db/...", "./internal/..."},
 		Dir:      root,
 	}
 }

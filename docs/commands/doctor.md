@@ -89,10 +89,10 @@ doctor invoked) is what gets reported in `found`, e.g. `podman 5.8.4
 ### `sqlc`, `goose`, `oapi-codegen`
 
 All three run in the Nise framework repository. Inside a generated project,
-they are skipped without execution: sqlc is pinned there, but Go may download
-and build it on first use; Goose and oapi-codegen are not pinned there yet.
-The explicit generator commands are the user-authorized boundary for any
-tool resolution that may need the module proxy.
+they are skipped without execution: sqlc and Goose are pinned there, but Go
+may download and build them on first use; oapi-codegen is not pinned there
+yet. Explicit build, test, and generator commands are the user-authorized
+boundary for any resolution that may need the module proxy.
 
 **Outside a generated project — i.e. inside the Nise framework repository
 itself:**
@@ -118,12 +118,16 @@ doctor re-deriving it.
 - **sqlc:** `skipped`, explaining that it is declared but not executed
   implicitly. Run `make sqlc-compile` to resolve and verify it
   explicitly.
-- **goose and oapi-codegen:** `skipped` because they are not yet
-  declared by a generated project's `go.mod`.
+- **Goose:** `skipped`, explaining that it is declared but not executed
+  implicitly. Run `go test ./db/... ./internal/platform/database/...` to
+  resolve it and verify source/embed parity plus the generated runner.
+- **oapi-codegen:** `skipped` because it is not yet declared by a generated
+  project's `go.mod`.
 
 This preserves `doctor`'s no-implicit-network contract. In a clean
-module cache, `go tool sqlc version` downloads the pinned module before
-it can print a version; a diagnostic command must not initiate that traffic.
+module cache, `go tool sqlc version` or `go tool goose --version` downloads
+the pinned module before it can print a version; a diagnostic command must
+not initiate that traffic.
 
 ### `recipe`
 

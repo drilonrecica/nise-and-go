@@ -4,8 +4,8 @@
 # inside this Go module, so ./... and `gofmt -l .` would both walk
 # frontend/node_modules/, and an npm package that happens to ship a .go file
 # would show up as a package of this application.
-GO_PACKAGES := ./cmd/... ./internal/...
-GO_FMT_DIRS := cmd internal
+GO_PACKAGES := ./cmd/... ./db/... ./internal/...
+GO_FMT_DIRS := cmd db internal
 BINARY := bin/{{.AppName}}
 SQLC_CONFIGS := $(shell find internal/features -type f -name sqlc.yaml -print | LC_ALL=C sort)
 
