@@ -14,6 +14,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Database queries and sqlc](database-queries.md)
 - [Database migrations](database-migrations.md)
 - [Database transactions](database-transactions.md)
+- [PostgreSQL integration testing](database-testing.md)
 - [Observability](observability.md)
 - [Metrics and tracing](metrics.md)
 - [Operations: runtime HTTP lifecycle](operations-runtime.md)

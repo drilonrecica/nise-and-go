@@ -292,6 +292,9 @@ myapp/
         │   ├── README.md         [app]
         │   ├── compatibility.go  [app]   read-only history and startup gate
         │   ├── compatibility_test.go [app] full history-state matrix
+        │   ├── dbtest/            [app]   isolated real-PostgreSQL test databases
+        │   │   ├── database.go    [app]   create, bound, redact, force-drop
+        │   │   └── database_test.go [app] isolation and cleanup contract
         │   ├── migrate.go        [app]   instance-scoped, advisory-locked Goose provider
         │   ├── migrate_test.go   [app]   disposable PostgreSQL apply/rollback contract
         │   ├── pool.go           [app]   bounded pgxpool plus health/metric adapters
@@ -305,7 +308,7 @@ myapp/
 
 ```
 
-52 files. Ownership markers are from
+54 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Every generated file declares the same thing in a header
@@ -338,6 +341,9 @@ files and omitted directories.
   bounded rollback after cancellation or panic, explicit pgx adaptation, and
   compile-checked propagation into sqlc's `DBTX` shape. Nested runners fail
   instead of hiding a savepoint or independent commit.
+- **Disposable PostgreSQL integration tests** with one random database per
+  test, an eight-connection server limit, forced cleanup, protected connection
+  material, local skip behavior, and CI-required configuration.
 - **Structured logging** in JSON or a readable text format, with a request
   ID and a correlation ID on every request and central redaction applied by
   the handler, not by call sites.

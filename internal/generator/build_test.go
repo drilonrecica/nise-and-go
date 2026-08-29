@@ -46,7 +46,10 @@ func TestGeneratedGoCodeBuilds(t *testing.T) {
 	runEnv := func(extraEnv []string, args ...string) (string, error) {
 		cmd := exec.Command(goBin, args...) // #nosec G204 -- args are literals from this test.
 		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOFLAGS=-mod=mod")
+		// VCS stamping is unrelated to generated-source correctness and makes
+		// this temp-module probe depend on permissions for the framework's
+		// surrounding checkout when it is reached through the local replace.
+		cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOFLAGS=-mod=mod -buildvcs=false")
 		cmd.Env = append(cmd.Env, extraEnv...)
 		out, err := cmd.CombinedOutput()
 		return string(out), err

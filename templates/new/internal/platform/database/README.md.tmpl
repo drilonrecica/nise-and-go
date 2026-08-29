@@ -33,3 +33,9 @@ Repositories receive this pool, or a transaction implementing the same
 sqlc-generated DBTX interface. They do not construct pools and do not begin
 transactions. Nested `Within` calls made with the callback context fail
 instead of creating a hidden savepoint or independent inner commit.
+
+`dbtest.New(t)` creates a unique real database per integration test from the
+administrative `TEST_DATABASE_URL`, enforces an eight-connection server limit,
+and force-drops it during cleanup. Missing configuration skips locally and
+fails under `CI=true` or `CI=1`; the test role must have `CREATEDB` only on a
+disposable test server.
