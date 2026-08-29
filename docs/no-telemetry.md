@@ -151,7 +151,14 @@ go test ./test/... -race -count=1
   yourself; it is a meaningfully different claim from "nise silently
   reached the network," and this page states that distinction precisely
   rather than blur it into one guarantee.
-- **There is currently no explicit, user-invoked network command at all**
+- **`nise db status` and `nise db migrate` explicitly build and run the
+  generated application.** Nise does not open a network connection itself,
+  but the `go build` subprocess may resolve modules missing from the local
+  cache through the developer's configured Go proxy. The resulting
+  application then connects to the operator-configured `DATABASE_URL` because
+  that is the command's requested purpose. `docs/commands/db.md` documents the
+  process and credential boundaries.
+- **There is currently no Nise-owned network utility at all**
   — no `nise upgrade`, no update checker, nothing. `docs/cli-and-distribution.md`
   describes one as planned for a later milestone: an explicit check that
   reports install-channel-appropriate instructions, never run implicitly.

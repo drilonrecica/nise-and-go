@@ -44,7 +44,8 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
 │
 ├── cmd/
 │   └── <app>/
-│       └── main.go                    [app]   flag parsing and mode selection; calls internal/app
+│       ├── main.go                    [app]   process and explicit database command dispatch
+│       └── main_test.go               [app]   strict database command parsing
 │
 ├── db/
 │   ├── embed.gen.go                   [nise]  package db; embeds migrations/*.sql into the binary
@@ -80,6 +81,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
 └── internal/
     ├── app/
     │   ├── app.go                     [app]   explicit constructor wiring; no container, no registry
+    │   ├── database.go                [app]   explicit status/migrate application surface
     │   ├── modes.go                   [app]   all, web, and worker process modes
     │   └── modules.gen.go             [nise]  wiring for the selected compile-time modules
     │
@@ -100,7 +102,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │
     └── platform/
         ├── config/                    [app]   typed configuration over runtime/config
-        ├── database/                  [app]   pgxpool setup and the Goose migration runner
+        ├── database/                  [app]   pgxpool, read-only compatibility, and Goose runner
         ├── httpapi/
         │   ├── router.go              [app]   middleware order and the /api/v1 mount
         │   └── openapigen/            [nise]  oapi-codegen strict chi server types and bindings

@@ -1,0 +1,205 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package database
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"strconv"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// SchemaState is a compatible database's position relative to this binary.
+type SchemaState string
+
+const (
+	SchemaUninitialized SchemaState = "uninitialized"
+	SchemaBehind        SchemaState = "behind"
+	SchemaCurrent       SchemaState = "current"
+)
+
+// SchemaProblem identifies a database state in which this binary must not
+// start or attempt an automatic repair.
+type SchemaProblem string
+
+const (
+	SchemaAhead          SchemaProblem = "ahead"
+	SchemaDirty          SchemaProblem = "dirty"
+	SchemaHistoryMissing SchemaProblem = "history_missing"
+)
+
+// Compatibility is the read-only schema check result.
+type Compatibility struct {
+	State   SchemaState `json:"state"`
+	Current int64       `json:"current"`
+	Target  int64       `json:"target"`
+	Pending int64       `json:"pending"`
+}
+
+// CompatibilityError is safe to return to an operator: it contains version
+// metadata only, never SQL, connection strings, or credentials.
+type CompatibilityError struct {
+	Problem SchemaProblem
+	Current int64
+	Target  int64
+	Detail  string
+}
+
+func (e *CompatibilityError) Error() string {
+	return fmt.Sprintf("database schema is %s (current=%d target=%d): %s", e.Problem, e.Current, e.Target, e.Detail)
+}
+
+type compatibilityQuerier interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+type historyRow struct {
+	version int64
+	applied bool
+}
+
+// CheckCompatibility inspects Goose history without creating or changing any
+// object. An empty schema is compatible and uninitialized; a behind history is
+// compatible so deployment may migrate explicitly. Ahead, malformed, or
+// missing history fails closed.
+func CheckCompatibility(ctx context.Context, db compatibilityQuerier, migrations fs.FS) (Compatibility, error) {
+	target, err := embeddedMigrationHead(migrations)
+	if err != nil {
+		return Compatibility{}, fmt.Errorf("inspect embedded migration history: %w", err)
+	}
+
+	var schemaExists, historyExists bool
+	if err := db.QueryRow(ctx, `
+		SELECT current_schema() IS NOT NULL, EXISTS (
+			SELECT 1
+			FROM pg_catalog.pg_class AS c
+			JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+			WHERE n.nspname = current_schema()
+			  AND c.relname = 'goose_db_version'
+			  AND c.relkind IN ('r', 'p')
+		)`).Scan(&schemaExists, &historyExists); err != nil {
+		return Compatibility{}, fmt.Errorf("inspect Goose history table: %w", err)
+	}
+	if !schemaExists {
+		return Compatibility{}, errors.New("inspect Goose history table: PostgreSQL search_path has no current schema")
+	}
+	if !historyExists {
+		var objectCount int64
+		if err := db.QueryRow(ctx, `
+			SELECT count(*)
+			FROM pg_catalog.pg_class AS c
+			JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+			WHERE n.nspname = current_schema()
+			  AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')`).Scan(&objectCount); err != nil {
+			return Compatibility{}, fmt.Errorf("inspect current schema: %w", err)
+		}
+		return evaluateHistory(target, false, objectCount, nil)
+	}
+
+	rows, err := db.Query(ctx, `SELECT version_id, is_applied FROM goose_db_version ORDER BY version_id, id`)
+	if err != nil {
+		return Compatibility{}, &CompatibilityError{Problem: SchemaDirty, Target: target, Detail: "Goose history table cannot be read"}
+	}
+	defer rows.Close()
+	var history []historyRow
+	for rows.Next() {
+		var row historyRow
+		if err := rows.Scan(&row.version, &row.applied); err != nil {
+			return Compatibility{}, &CompatibilityError{Problem: SchemaDirty, Target: target, Detail: "Goose history row has an invalid shape"}
+		}
+		history = append(history, row)
+	}
+	if err := rows.Err(); err != nil {
+		return Compatibility{}, fmt.Errorf("read Goose history rows: %w", err)
+	}
+	return evaluateHistory(target, true, 0, history)
+}
+
+func embeddedMigrationHead(migrations fs.FS) (int64, error) {
+	if migrations == nil {
+		return 0, errors.New("migrations filesystem must not be nil")
+	}
+	entries, err := fs.ReadDir(migrations, ".")
+	if err != nil {
+		return 0, err
+	}
+	var version int64
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".sql") {
+			continue
+		}
+		if len(name) < 7 || name[5] != '_' {
+			return 0, fmt.Errorf("migration %q does not use NNNNN_name.sql", name)
+		}
+		parsed, err := strconv.ParseInt(name[:5], 10, 64)
+		if err != nil || parsed != version+1 {
+			return 0, fmt.Errorf("migration %q is not contiguous after version %05d", name, version)
+		}
+		version = parsed
+	}
+	if version == 0 {
+		return 0, errors.New("migration history is empty")
+	}
+	return version, nil
+}
+
+func evaluateHistory(target int64, historyExists bool, schemaObjects int64, rows []historyRow) (Compatibility, error) {
+	base := Compatibility{Target: target, Pending: target}
+	if !historyExists {
+		if schemaObjects > 0 {
+			return Compatibility{}, &CompatibilityError{
+				Problem: SchemaHistoryMissing,
+				Target:  target,
+				Detail:  "current schema contains objects but has no goose_db_version table",
+			}
+		}
+		base.State = SchemaUninitialized
+		return base, nil
+	}
+
+	seen := make(map[int64]struct{}, len(rows))
+	var current int64
+	for _, row := range rows {
+		if _, duplicate := seen[row.version]; row.version < 0 || duplicate {
+			return Compatibility{}, &CompatibilityError{Problem: SchemaDirty, Current: current, Target: target, Detail: "Goose history contains a negative or duplicate version"}
+		}
+		seen[row.version] = struct{}{}
+		if row.version == 0 {
+			if !row.applied {
+				return Compatibility{}, &CompatibilityError{Problem: SchemaDirty, Target: target, Detail: "Goose zero version must be present and applied"}
+			}
+			continue
+		}
+		if !row.applied {
+			return Compatibility{}, &CompatibilityError{Problem: SchemaDirty, Current: current, Target: target, Detail: "Goose history contains an unapplied nonzero version"}
+		}
+		if row.version > current {
+			current = row.version
+		}
+	}
+	if _, ok := seen[0]; !ok {
+		return Compatibility{}, &CompatibilityError{Problem: SchemaDirty, Current: current, Target: target, Detail: "Goose zero-version sentinel is missing"}
+	}
+	for version := int64(1); version <= current; version++ {
+		if _, ok := seen[version]; !ok {
+			return Compatibility{}, &CompatibilityError{Problem: SchemaHistoryMissing, Current: current, Target: target, Detail: fmt.Sprintf("applied history is missing version %05d", version)}
+		}
+	}
+	if current > target {
+		return Compatibility{}, &CompatibilityError{Problem: SchemaAhead, Current: current, Target: target, Detail: "database was migrated by a newer binary"}
+	}
+	base.Current = current
+	base.Pending = target - current
+	if current == target {
+		base.State = SchemaCurrent
+	} else {
+		base.State = SchemaBehind
+	}
+	return base, nil
+}

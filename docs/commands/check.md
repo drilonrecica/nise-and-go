@@ -287,11 +287,12 @@ differences.
 **Invariant:** database migrations are ordered, forward-only, and every
 applied migration is still present.
 
-**Currently `skipped`, naming milestone M3-004.** Generated projects contain
-readable embedded Goose migrations and an instance-scoped runner, but this
-framework check does not yet inspect deployed history or the database's
-schema compatibility. Reporting `ok` before that command boundary exists
-would claim guarantees that were never verified.
+**`skipped` by this offline command.** Generated projects contain readable
+embedded Goose migrations, an instance-scoped runner, and a read-only
+compatibility check, but `nise check` has no selected database endpoint.
+Run [`nise db status`](db.md) against the intended database. Reporting `ok`
+without doing that would claim deployed-history guarantees that were never
+verified.
 
 ### `config-invariants`
 

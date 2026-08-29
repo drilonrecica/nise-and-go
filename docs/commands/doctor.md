@@ -119,8 +119,9 @@ doctor re-deriving it.
   implicitly. Run `make sqlc-compile` to resolve and verify it
   explicitly.
 - **Goose:** `skipped`, explaining that it is declared but not executed
-  implicitly. Run `go test ./db/... ./internal/platform/database/...` to
-  resolve it and verify source/embed parity plus the generated runner.
+  implicitly. Run `nise db status` against the intended database, or
+  `go test ./db/... ./internal/platform/database/...` to resolve it and
+  verify source/embed parity plus the generated runner.
 - **oapi-codegen:** `skipped` because it is not yet declared by a generated
   project's `go.mod`.
 

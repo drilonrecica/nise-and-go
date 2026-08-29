@@ -55,11 +55,11 @@ func TestInvariantCheckResultHumanRendering(t *testing.T) {
 			c: check.Check{
 				Name: "migrations", Status: check.StatusSkipped,
 				Invariant: "Migrations are ordered and forward-only.",
-				Detail:    "schema compatibility is not verified yet (milestone M3-004)",
+				Detail:    "database history is not inspected offline; run nise db status",
 			},
 			want: "[SKIPPED] migrations\n" +
 				"    invariant: Migrations are ordered and forward-only.\n" +
-				"    detail:    schema compatibility is not verified yet (milestone M3-004)",
+				"    detail:    database history is not inspected offline; run nise db status",
 		},
 	}
 

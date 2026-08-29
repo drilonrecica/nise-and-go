@@ -12,6 +12,12 @@ filesystem supplied by `db.Migrations`. It uses a dedicated one-connection
 Goose's legacy package-global filesystem or migration registry, and opening
 it never applies schema changes.
 
+`CheckCompatibility` is a separate read-only path used by startup and
+`db status`. It accepts empty or valid-but-behind history, and fails closed
+for ahead versions, malformed/partial history, or a nonempty current schema
+without Goose history. It never creates `goose_db_version`; only an explicit
+`db migrate` action mutates schema.
+
 `pool.go` applies explicit conservative limits instead of inheriting
 pgx's CPU-dependent maximum. `internal/app/app.go` wires the pool into
 two seams:

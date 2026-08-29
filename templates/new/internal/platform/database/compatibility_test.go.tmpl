@@ -1,0 +1,70 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package database
+
+import (
+	"errors"
+	"testing"
+)
+
+func TestEvaluateHistoryCompatibilityMatrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		target        int64
+		historyExists bool
+		schemaObjects int64
+		rows          []historyRow
+		want          Compatibility
+		wantProblem   SchemaProblem
+	}{
+		{name: "empty database", target: 2, want: Compatibility{State: SchemaUninitialized, Target: 2, Pending: 2}},
+		{name: "nonempty database without history", target: 2, schemaObjects: 1, wantProblem: SchemaHistoryMissing},
+		{name: "behind", target: 2, historyExists: true, rows: makeHistory(true, true, []int64{1}, nil), want: Compatibility{State: SchemaBehind, Current: 1, Target: 2, Pending: 1}},
+		{name: "current", target: 2, historyExists: true, rows: makeHistory(true, true, []int64{1, 2}, nil), want: Compatibility{State: SchemaCurrent, Current: 2, Target: 2}},
+		{name: "ahead", target: 1, historyExists: true, rows: makeHistory(true, true, []int64{1, 2}, nil), wantProblem: SchemaAhead},
+		{name: "missing version", target: 3, historyExists: true, rows: makeHistory(true, true, []int64{1, 3}, nil), wantProblem: SchemaHistoryMissing},
+		{name: "duplicate version", target: 2, historyExists: true, rows: makeHistory(true, true, []int64{1, 1}, nil), wantProblem: SchemaDirty},
+		{name: "missing zero sentinel", target: 1, historyExists: true, rows: makeHistory(false, false, []int64{1}, nil), wantProblem: SchemaDirty},
+		{name: "unapplied zero sentinel", target: 1, historyExists: true, rows: makeHistory(true, false, []int64{1}, nil), wantProblem: SchemaDirty},
+		{name: "unapplied version", target: 1, historyExists: true, rows: makeHistory(true, true, nil, []int64{1}), wantProblem: SchemaDirty},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := evaluateHistory(tc.target, tc.historyExists, tc.schemaObjects, tc.rows)
+			if tc.wantProblem == "" {
+				if err != nil {
+					t.Fatalf("evaluateHistory: %v", err)
+				}
+				if got != tc.want {
+					t.Errorf("result = %+v, want %+v", got, tc.want)
+				}
+				return
+			}
+			var compatibilityErr *CompatibilityError
+			if !errors.As(err, &compatibilityErr) {
+				t.Fatalf("error = %v, want *CompatibilityError", err)
+			}
+			if compatibilityErr.Problem != tc.wantProblem {
+				t.Errorf("problem = %q, want %q", compatibilityErr.Problem, tc.wantProblem)
+			}
+		})
+	}
+}
+
+func makeHistory(includeZero, zeroApplied bool, applied, unapplied []int64) []historyRow {
+	rows := make([]historyRow, 0, len(applied)+len(unapplied)+1)
+	if includeZero {
+		rows = append(rows, historyRow{version: 0, applied: zeroApplied})
+	}
+	for _, version := range applied {
+		rows = append(rows, historyRow{version: version, applied: true})
+	}
+	for _, version := range unapplied {
+		rows = append(rows, historyRow{version: version, applied: false})
+	}
+	return rows
+}

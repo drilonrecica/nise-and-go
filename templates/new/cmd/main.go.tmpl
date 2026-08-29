@@ -7,8 +7,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,17 +19,66 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "", `process mode: "all", "web", or "worker" (default: $APP_MODE, or "all")`)
-	flag.Parse()
-
 	// The signal handler lives here, not in runtime/lifecycle: deciding
 	// when to shut down is the application's job, and a runtime package
 	// that installed its own would be hidden lifecycle behavior.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := app.Run(ctx, *mode); err != nil {
+	if err := run(ctx, os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "{{.AppName}}: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func run(ctx context.Context, args []string, stdout io.Writer) error {
+	if len(args) > 0 && args[0] == "db" {
+		action, jsonOutput, err := parseDatabaseArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		result, err := app.RunDatabase(ctx, action)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			if err := json.NewEncoder(stdout).Encode(result); err != nil {
+				return fmt.Errorf("encoding database result: %w", err)
+			}
+			return nil
+		}
+		_, err = fmt.Fprintln(stdout, result.String())
+		return err
+	}
+
+	fs := flag.NewFlagSet("{{.AppName}}", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	mode := fs.String("mode", "", `process mode: "all", "web", or "worker" (default: $APP_MODE, or "all")`)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse process flags: %w", err)
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected argument %q; use db migrate or db status for database commands", fs.Arg(0))
+	}
+	return app.Run(ctx, *mode)
+}
+
+func parseDatabaseArgs(args []string) (action string, jsonOutput bool, err error) {
+	if len(args) == 0 {
+		return "", false, fmt.Errorf("database action is required; use db migrate or db status")
+	}
+	action = args[0]
+	if action != "migrate" && action != "status" {
+		return "", false, fmt.Errorf("unknown database action %q; use db migrate or db status", action)
+	}
+	fs := flag.NewFlagSet("db "+action, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.BoolVar(&jsonOutput, "json", false, "write one JSON result")
+	if err := fs.Parse(args[1:]); err != nil {
+		return "", false, fmt.Errorf("parse db %s flags: %w", action, err)
+	}
+	if fs.NArg() != 0 {
+		return "", false, fmt.Errorf("db %s takes no positional arguments, found %q", action, fs.Arg(0))
+	}
+	return action, jsonOutput, nil
 }
