@@ -90,6 +90,17 @@ Even with `TrustInbound: true`, an inbound value is only accepted if it passes `
 
 `Middleware` applies this same validation uniformly to both the request ID header and the correlation ID header — there is no header for which trust or validation is weaker.
 
+## Database slow-query records
+
+The generated application's pgx tracer emits `slow database query` at warning
+level when an operation reaches `DB_SLOW_QUERY_THRESHOLD` (default `250ms`).
+It carries only a closed statement class, `success`/`error`, duration,
+threshold, and validated request/correlation IDs. It never passes SQL,
+arguments, copied rows, results, or a database error to the logger. Central
+redaction remains enabled as defense in depth. The exact count, metric, batch,
+and test-budget semantics are in
+[Database query instrumentation](database-query-instrumentation.md).
+
 ## Redaction
 
 ### The guarantee

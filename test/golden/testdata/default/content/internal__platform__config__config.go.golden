@@ -9,6 +9,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -59,6 +60,9 @@ type Config struct {
 	DatabasePassword rtconfig.Secret
 	// Database holds the validated connection-pool limits.
 	Database database.Settings
+	// DatabaseSlowQueryThreshold controls when a sanitized query observation
+	// is logged at warning level.
+	DatabaseSlowQueryThreshold time.Duration
 }
 
 // Addr is the host:port the HTTP server listens on.
@@ -95,18 +99,20 @@ func Load() (Config, []string, error) {
 	maxConnIdleTime := l.Duration("DB_MAX_CONN_IDLE_TIME", rtconfig.Default("5m"))
 	healthCheckPeriod := l.Duration("DB_HEALTH_CHECK_PERIOD", rtconfig.Default("30s"))
 	connectTimeout := l.Duration("DB_CONNECT_TIMEOUT", rtconfig.Default("5s"))
+	slowQueryThreshold := l.Duration("DB_SLOW_QUERY_THRESHOLD", rtconfig.Default("250ms"))
 
 	cfg := Config{
-		Env:               env,
-		BindAddr:          l.String("BIND_ADDR", rtconfig.Default("127.0.0.1")),
-		Port:              l.String("PORT", rtconfig.Default("8080")),
-		Debug:             l.Bool("DEBUG", rtconfig.Default("false")),
-		LogFormat:         l.String("LOG_FORMAT", rtconfig.Default("json")),
-		TrustProxyHeaders: l.Bool("TRUST_PROXY_HEADERS", rtconfig.Default("false")),
-		AllowPublicBind:   l.Bool("ALLOW_PUBLIC_BIND", rtconfig.Default("false")),
-		OperatorToken:     l.Secret("OPERATOR_TOKEN", rtconfig.Default("")),
-		DatabaseURL:       l.Secret("DATABASE_URL"),
-		DatabasePassword:  l.Secret("DATABASE_PASSWORD", rtconfig.Default("")),
+		Env:                        env,
+		BindAddr:                   l.String("BIND_ADDR", rtconfig.Default("127.0.0.1")),
+		Port:                       l.String("PORT", rtconfig.Default("8080")),
+		Debug:                      l.Bool("DEBUG", rtconfig.Default("false")),
+		LogFormat:                  l.String("LOG_FORMAT", rtconfig.Default("json")),
+		TrustProxyHeaders:          l.Bool("TRUST_PROXY_HEADERS", rtconfig.Default("false")),
+		AllowPublicBind:            l.Bool("ALLOW_PUBLIC_BIND", rtconfig.Default("false")),
+		OperatorToken:              l.Secret("OPERATOR_TOKEN", rtconfig.Default("")),
+		DatabaseURL:                l.Secret("DATABASE_URL"),
+		DatabasePassword:           l.Secret("DATABASE_PASSWORD", rtconfig.Default("")),
+		DatabaseSlowQueryThreshold: time.Duration(slowQueryThreshold),
 	}
 	if err := l.Err(); err != nil {
 		return Config{}, nil, err
@@ -137,6 +143,9 @@ func Load() (Config, []string, error) {
 		return Config{}, warnings, err
 	}
 	cfg.Database = databaseSettings
+	if cfg.DatabaseSlowQueryThreshold <= 0 {
+		return Config{}, warnings, errors.New("DB_SLOW_QUERY_THRESHOLD: must be greater than zero")
+	}
 
 	if cfg.LogFormat != "json" && cfg.LogFormat != "text" {
 		return Config{}, warnings, fmt.Errorf(`LOG_FORMAT: must be "json" or "text", found %q`, cfg.LogFormat)

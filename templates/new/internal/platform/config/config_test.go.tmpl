@@ -35,6 +35,9 @@ func TestLoadAppliesConservativeDatabasePoolDefaults(t *testing.T) {
 	if got, want := cfg.Database.ConnectTimeout, 5*time.Second; got != want {
 		t.Errorf("Database.ConnectTimeout = %s, want %s", got, want)
 	}
+	if got, want := cfg.DatabaseSlowQueryThreshold, 250*time.Millisecond; got != want {
+		t.Errorf("DatabaseSlowQueryThreshold = %s, want %s", got, want)
+	}
 }
 
 func TestLoadRejectsInvalidDatabasePoolRelationships(t *testing.T) {
@@ -55,27 +58,37 @@ func TestLoadRejectsInvalidDatabasePoolRelationships(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidSlowQueryThreshold(t *testing.T) {
+	setTestEnvironment(t)
+	t.Setenv("DB_SLOW_QUERY_THRESHOLD", "0s")
+	_, _, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "DB_SLOW_QUERY_THRESHOLD") {
+		t.Fatalf("Load error = %v, want DB_SLOW_QUERY_THRESHOLD validation", err)
+	}
+}
+
 func setTestEnvironment(t *testing.T) {
 	t.Helper()
 	values := map[string]string{
-		"APP_ENV":                "test",
-		"APP_MODE":               "all",
-		"BIND_ADDR":              "127.0.0.1",
-		"PORT":                   "8080",
-		"DEBUG":                  "false",
-		"LOG_LEVEL":              "info",
-		"LOG_FORMAT":             "text",
-		"TRUST_PROXY_HEADERS":    "false",
-		"ALLOW_PUBLIC_BIND":      "false",
-		"OPERATOR_TOKEN":         "",
-		"DATABASE_URL":           "postgres://app:secret@127.0.0.1:5432/app?sslmode=disable",
-		"DATABASE_PASSWORD":      "",
-		"DB_MAX_CONNS":           "10",
-		"DB_MIN_CONNS":           "0",
-		"DB_MAX_CONN_LIFETIME":   "30m",
-		"DB_MAX_CONN_IDLE_TIME":  "5m",
-		"DB_HEALTH_CHECK_PERIOD": "30s",
-		"DB_CONNECT_TIMEOUT":     "5s",
+		"APP_ENV":                 "test",
+		"APP_MODE":                "all",
+		"BIND_ADDR":               "127.0.0.1",
+		"PORT":                    "8080",
+		"DEBUG":                   "false",
+		"LOG_LEVEL":               "info",
+		"LOG_FORMAT":              "text",
+		"TRUST_PROXY_HEADERS":     "false",
+		"ALLOW_PUBLIC_BIND":       "false",
+		"OPERATOR_TOKEN":          "",
+		"DATABASE_URL":            "postgres://app:secret@127.0.0.1:5432/app?sslmode=disable",
+		"DATABASE_PASSWORD":       "",
+		"DB_MAX_CONNS":            "10",
+		"DB_MIN_CONNS":            "0",
+		"DB_MAX_CONN_LIFETIME":    "30m",
+		"DB_MAX_CONN_IDLE_TIME":   "5m",
+		"DB_HEALTH_CHECK_PERIOD":  "30s",
+		"DB_CONNECT_TIMEOUT":      "5s",
+		"DB_SLOW_QUERY_THRESHOLD": "250ms",
 	}
 	for name, value := range values {
 		t.Setenv(name, value)

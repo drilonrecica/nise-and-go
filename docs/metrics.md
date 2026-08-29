@@ -1,6 +1,6 @@
 # Metrics and the optional tracing interface
 
-`runtime/observability` ([ADR 0011](adr/0011-runtime-public-api.md)) is how a generated application collects the essential HTTP, database-pool, and job metrics — the deliberately short list this project treats as the operational minimum — exposes them without a mandatory collector, and optionally wires in distributed tracing behind a narrow interface. This page documents the current, implemented behavior — it is not a design proposal.
+`runtime/observability` ([ADR 0011](adr/0011-runtime-public-api.md)) is how a generated application collects the essential HTTP, database-query, database-pool, and job metrics — the deliberately short list this project treats as the operational minimum — exposes them without a mandatory collector, and optionally wires in distributed tracing behind a narrow interface. This page documents the current, implemented behavior — it is not a design proposal.
 
 `runtime/observability` imports only the standard library. Adding it introduces no new dependency to this repository's `go.mod` — see [dependencies.md](dependencies.md).
 
@@ -48,6 +48,20 @@ wiring calls `PoolMetrics.Register("primary", statsFunc)` once at
 startup; `statsFunc` is invoked live on every scrape rather than pushed
 on a schedule.
 
+### Database queries (generated application pgx tracer)
+
+| Metric | Type | Labels | Notes |
+|---|---|---|---|
+| `db_queries_total` | counter | `statement`, `outcome` | Completed pgx round trips. |
+| `db_query_duration_seconds` | histogram | `statement`, `outcome` | Round-trip duration; 1ms–5s buckets. |
+
+`internal/platform/database.QueryTracer` is application-owned because it
+adapts pgx. `QueryMetrics` bridges it into this package's public registry.
+Statement and outcome labels are closed enums, every invalid label collapses
+to a fixed value, and both vectors enforce a 32-series cap. Neither metric
+contains raw SQL or query values. Batch counting and test-budget semantics are
+defined in [Database query instrumentation](database-query-instrumentation.md).
+
 ### Background jobs (`observability.NewJobMetrics`) — a seam, not an implementation
 
 | Metric | Type | Labels | Notes |
@@ -65,7 +79,7 @@ A metrics endpoint an unauthenticated client can influence the shape of is a mem
 
 2. **Every labeled metric enforces a hard cap, with an explicit overflow bucket.** `VecOpts.MaxSeries` (default `DefaultMaxSeries` = 200) bounds the number of distinct label-value combinations a `CounterVec`, `GaugeVec`, or `HistogramVec` tracks individually. Once that cap is reached, **every further combination collapses into one additional shared series**, whose label values are all replaced by the fixed string `"overflow"` — so a Vec never holds more than `MaxSeries + 1` series in total, no matter what a caller passes as label values. This is the safety net behind rule 1: even a `RouteTemplateFunc` that is buggy or deliberately mislabels a metric with something unbounded cannot grow a metric's cardinality past that fixed ceiling. `TestCounterVecCardinalityCapHolds` and the second subtest of `TestHTTPMetricsRawUUIDPathDoesNotCreateNewSeries` (both in `cardinality_test.go`) prove this holds even when a `RouteTemplateFunc` echoes the raw, attacker-influenced path back.
 
-This is why `db_pool_*` and `jobs_*`/`job_*` metrics are labeled by `pool`, `queue`, and `kind` — fixed, startup-time identifiers an application chooses when it constructs a pool or registers a job type — and never by anything request- or job-argument-controlled. `JobMetrics.Observe`'s doc comment states the same rule for `queue`/`kind` explicitly, and `TestJobMetricsSeamCardinalityCapHolds` proves the cap holds there too if that rule is broken.
+This is why `db_pool_*` and `jobs_*`/`job_*` metrics are labeled by `pool`, `queue`, and `kind` — fixed, startup-time identifiers an application chooses when it constructs a pool or registers a job type — and never by anything request- or job-argument-controlled. Generated `db_query_*` metrics go further: statement and outcome are closed enums and invalid values collapse before they reach the registry. `JobMetrics.Observe`'s doc comment states the same rule for `queue`/`kind` explicitly, and `TestJobMetricsSeamCardinalityCapHolds` proves the cap holds there too if that rule is broken.
 
 ## The metrics endpoint is not public by default
 

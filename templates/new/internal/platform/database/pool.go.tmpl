@@ -133,14 +133,25 @@ func ParseConnectionConfig(databaseURL, password string, connectTimeout time.Dur
 	return cfg, nil
 }
 
+// OpenOptions holds application-owned connection behavior that is not loaded
+// directly from environment configuration.
+type OpenOptions struct {
+	// Tracer observes logical pgx queries. pgx also invokes its batch and copy
+	// hooks when the dynamic value implements pgx.BatchTracer and
+	// pgx.CopyFromTracer. Nil disables query observation for short-lived
+	// operator and migration commands.
+	Tracer pgx.QueryTracer
+}
+
 // Open constructs the pool and proves one connection before returning. A
 // server never advertises startup readiness with a lazily configured but
 // unreachable database.
-func Open(ctx context.Context, databaseURL, password string, settings Settings) (*pgxpool.Pool, error) {
+func Open(ctx context.Context, databaseURL, password string, settings Settings, options OpenOptions) (*pgxpool.Pool, error) {
 	cfg, err := ParseConfig(databaseURL, password, settings)
 	if err != nil {
 		return nil, err
 	}
+	cfg.ConnConfig.Tracer = options.Tracer
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create PostgreSQL pool: %w", err)

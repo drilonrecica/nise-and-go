@@ -170,6 +170,7 @@ contain URL-reserved characters.
 | `DB_MAX_CONN_IDLE_TIME` | `5m` | greater than zero and no longer than the maximum lifetime |
 | `DB_HEALTH_CHECK_PERIOD` | `30s` | greater than zero |
 | `DB_CONNECT_TIMEOUT` | `5s` | greater than zero |
+| `DB_SLOW_QUERY_THRESHOLD` | `250ms` | greater than zero |
 
 The maximum is explicit instead of pgxpool's CPU-derived default: adding CPU
 to an application replica must not silently consume more PostgreSQL
@@ -177,3 +178,9 @@ connections. `DB_MIN_CONNS=0` also avoids holding open idle connections
 for small deployments. The application proves one connection during startup,
 registers the pool ping with readiness, reports bounded pool metrics, and
 closes the pool during shutdown.
+
+The slow-query threshold applies to pgx query, batch, and copy round trips.
+Crossing it emits a bounded operation label, outcome, duration, threshold, and
+available validated correlation IDs; SQL, arguments, copied rows, results, and
+database errors are never logged. See
+[Database query instrumentation](database-query-instrumentation.md).

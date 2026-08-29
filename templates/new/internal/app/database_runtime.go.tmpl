@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -20,8 +21,16 @@ type databaseRuntime struct {
 	Transactions *database.Transactor
 }
 
-func openDatabaseRuntime(ctx context.Context, cfg config.Config) (databaseRuntime, error) {
-	pool, err := database.Open(ctx, cfg.DatabaseURL.Reveal(), cfg.DatabasePassword.Reveal(), cfg.Database)
+func openDatabaseRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger, metrics *database.QueryMetrics) (databaseRuntime, error) {
+	tracer, err := database.NewQueryTracer(database.QueryTraceOptions{
+		SlowThreshold: cfg.DatabaseSlowQueryThreshold,
+		Logger:        logger,
+		Metrics:       metrics,
+	})
+	if err != nil {
+		return databaseRuntime{}, fmt.Errorf("construct query tracer: %w", err)
+	}
+	pool, err := database.Open(ctx, cfg.DatabaseURL.Reveal(), cfg.DatabasePassword.Reveal(), cfg.Database, database.OpenOptions{Tracer: tracer})
 	if err != nil {
 		return databaseRuntime{}, err
 	}

@@ -146,6 +146,22 @@ compile-checked `internal/platform/database/directpgx_test.go` demonstrates the
 shape and proves commit/rollback behavior against disposable PostgreSQL; it is
 an example, not a shared raw repository.
 
+## Database query instrumentation
+
+The server pool installs an application-owned pgx tracer. It counts and times
+ordinary queries, copies, and batches under closed low-cardinality labels and
+exports `db_queries_total` plus `db_query_duration_seconds` through the
+operator metrics endpoint. `DB_SLOW_QUERY_THRESHOLD` defaults to `250ms` and
+must be positive. Slow warnings contain only the bounded statement class,
+outcome, duration, threshold, and available validated correlation IDs—never
+SQL, arguments, copied rows, results, or database errors.
+
+Reference-flow tests can derive a context with `database.WithQueryBudget`,
+assert its exact `Count`, and call `Verify` for the maximum. A query count is a
+pgx round trip: a query/exec, a copy, or an entire batch each counts once.
+Batch users separately bound queued statements because one round trip can
+still ask PostgreSQL to do substantial work.
+
 ## Process modes
 
 The same binary runs every process this application has.

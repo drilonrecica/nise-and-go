@@ -50,7 +50,12 @@ func Run(ctx context.Context, modeOverride string) error {
 		return err
 	}
 
-	databaseRuntime, err := openDatabaseRuntime(ctx, cfg)
+	registry := observability.NewRegistry()
+	queryMetrics, err := database.NewQueryMetrics(registry)
+	if err != nil {
+		return fmt.Errorf("registering database query metrics: %w", err)
+	}
+	databaseRuntime, err := openDatabaseRuntime(ctx, cfg, logger, queryMetrics)
 	if err != nil {
 		return fmt.Errorf("starting database: %w", err)
 	}
@@ -80,7 +85,6 @@ func Run(ctx context.Context, modeOverride string) error {
 			slog.String("fix", "pnpm --dir frontend install && pnpm --dir frontend build"))
 	}
 
-	registry := observability.NewRegistry()
 	poolMetrics, err := observability.NewPoolMetrics(registry)
 	if err != nil {
 		return fmt.Errorf("registering database pool metrics: %w", err)

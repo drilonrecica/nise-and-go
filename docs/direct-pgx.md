@@ -49,8 +49,9 @@ Stay on pgx public operations covered by its tracing contracts:
 but arguments, copied rows, credentials, and result bodies must not be logged.
 Dropping to `PgConn` or raw protocol methods requires a dedicated platform
 adapter, custom bounded instrumentation, and a separate design review because
-the normal query tracer no longer proves coverage. See [Observability](observability.md)
-for the surrounding logging and metrics policy.
+the normal query tracer no longer proves coverage. See
+[Database query instrumentation](database-query-instrumentation.md) for the
+count, metric, and sanitized slow-query policy.
 
 Errors should add operation context and preserve the wrapped cause, without
 including SQL, identifiers derived from input, or argument values.

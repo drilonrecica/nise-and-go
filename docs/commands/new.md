@@ -301,6 +301,8 @@ myapp/
         │   ├── migration_matrix_test.go [app] clean and supported-upgrade paths
         │   ├── pool.go           [app]   bounded pgxpool plus health/metric adapters
         │   ├── pool_test.go      [app]
+        │   ├── querytrace.go     [app]   bounded metrics, slow logs, test budgets
+        │   ├── querytrace_test.go [app] real counts and sanitized observations
         │   ├── sqlcsafety/        [app]   config/rule and output-confinement gate
         │   │   ├── config.go      [app]
         │   │   └── config_test.go [app]
@@ -315,7 +317,7 @@ myapp/
 
 ```
 
-59 files. Ownership markers are from
+61 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Every generated file declares the same thing in a header
@@ -360,6 +362,10 @@ files and omitted directories.
 - **A reviewed direct-pgx escape hatch** for PostgreSQL operations sqlc cannot
   model, with a narrow feature-adapter example and a real test proving caller-
   owned commit and rollback behavior without exposing raw connections.
+- **Database query instrumentation** through pgx query, batch, and copy
+  tracers: exact per-context round-trip budgets, closed statement/outcome
+  metric labels, count/duration metrics, and configurable slow warnings that
+  never include SQL, arguments, copied rows, results, or database errors.
 - **Structured logging** in JSON or a readable text format, with a request
   ID and a correlation ID on every request and central redaction applied by
   the handler, not by call sites.
