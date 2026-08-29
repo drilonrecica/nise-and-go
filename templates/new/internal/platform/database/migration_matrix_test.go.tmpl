@@ -1,0 +1,167 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package database
+
+import (
+	"context"
+	"embed"
+	"io/fs"
+	"path"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+)
+
+const migrationMatrixTimeout = 30 * time.Second
+
+// Historical fixtures are SQL snapshots of supported release schemas. They
+// live outside db/migrations, so production binaries never embed or execute
+// them. Never edit a released fixture; add the next release snapshot instead.
+//
+//go:embed testdata/migration-upgrades/*.sql
+var migrationUpgradeFixtures embed.FS
+
+func TestMigrationMatrixCleanInstall(t *testing.T) {
+	testDatabase := dbtest.New(t)
+	ctx, pool, migrator := openMigrationMatrixResources(t, testDatabase)
+
+	compatibility, err := CheckCompatibility(ctx, pool, db.Migrations())
+	if err != nil {
+		t.Fatalf("CheckCompatibility before clean install: %v", err)
+	}
+	if compatibility.State != SchemaUninitialized || compatibility.Current != 0 {
+		t.Fatalf("clean database compatibility = %+v, want uninitialized at version 0", compatibility)
+	}
+	migrateMatrixToHead(t, ctx, pool, migrator, 0)
+}
+
+func TestMigrationMatrixSupportedUpgrades(t *testing.T) {
+	entries, err := fs.ReadDir(migrationUpgradeFixtures, "testdata/migration-upgrades")
+	if err != nil {
+		t.Fatalf("read supported migration fixtures: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("supported migration fixture set is empty")
+	}
+	for _, entry := range entries {
+		t.Run(strings.TrimSuffix(entry.Name(), ".sql"), func(t *testing.T) {
+			if entry.IsDir() {
+				t.Fatal("migration upgrade fixture must be a SQL file")
+			}
+			fromVersion := migrationFixtureVersion(t, entry.Name())
+			fixturePath := path.Join("testdata/migration-upgrades", entry.Name())
+			fixture, err := migrationUpgradeFixtures.ReadFile(fixturePath)
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+
+			testDatabase := dbtest.New(t)
+			ctx, pool, migrator := openMigrationMatrixResources(t, testDatabase)
+			if _, err := pool.Exec(ctx, string(fixture)); err != nil {
+				t.Fatalf("restore release-schema fixture: %v", err)
+			}
+			compatibility, err := CheckCompatibility(ctx, pool, db.Migrations())
+			if err != nil {
+				t.Fatalf("fixture is not a supported schema state: %v", err)
+			}
+			if compatibility.Current != fromVersion {
+				t.Fatalf("fixture history version = %d, filename declares %d", compatibility.Current, fromVersion)
+			}
+			if fromVersion > compatibility.Target {
+				t.Fatalf("fixture version %d is ahead of embedded target %d", fromVersion, compatibility.Target)
+			}
+			wantState := SchemaBehind
+			if fromVersion == compatibility.Target {
+				wantState = SchemaCurrent
+			}
+			if compatibility.State != wantState || compatibility.Pending != compatibility.Target-fromVersion {
+				t.Fatalf("fixture compatibility = %+v, want %s from version %d", compatibility, wantState, fromVersion)
+			}
+			migrateMatrixToHead(t, ctx, pool, migrator, fromVersion)
+		})
+	}
+}
+
+func openMigrationMatrixResources(t *testing.T, testDatabase dbtest.Database) (context.Context, *pgxpool.Pool, *Migrator) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), migrationMatrixTimeout)
+	t.Cleanup(cancel)
+	settings, err := NewSettings(2, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	pool, err := Open(ctx, testDatabase.URL().Reveal(), testDatabase.Password().Reveal(), settings)
+	if err != nil {
+		t.Fatal("open isolated migration-matrix database")
+	}
+	t.Cleanup(pool.Close)
+	migrator, err := OpenMigrator(ctx, testDatabase.URL().Reveal(), testDatabase.Password().Reveal(), 5*time.Second, db.Migrations())
+	if err != nil {
+		t.Fatal("open migration-matrix migrator")
+	}
+	t.Cleanup(func() {
+		if err := migrator.Close(); err != nil {
+			t.Error("close migration-matrix migrator")
+		}
+	})
+	return ctx, pool, migrator
+}
+
+func migrateMatrixToHead(t *testing.T, ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, fromVersion int64) {
+	t.Helper()
+	current, target, err := migrator.Versions(ctx)
+	if err != nil {
+		t.Fatalf("read migration versions: %v", err)
+	}
+	if current != fromVersion {
+		t.Fatalf("migration runner sees version %d, fixture declares %d", current, fromVersion)
+	}
+	if fromVersion > target {
+		t.Fatalf("fixture version %d is ahead of embedded target %d", fromVersion, target)
+	}
+	results, err := migrator.Up(ctx)
+	if err != nil {
+		t.Fatalf("migrate version %d to %d: %v", fromVersion, target, err)
+	}
+	if want := target - fromVersion; int64(len(results)) != want {
+		t.Fatalf("applied migration count = %d, want %d", len(results), want)
+	}
+	for i, result := range results {
+		wantVersion := fromVersion + int64(i) + 1
+		if result.Source.Version != wantVersion || result.Direction != "up" {
+			t.Fatalf("migration result %d = %#v, want version %d up", i, result, wantVersion)
+		}
+	}
+	compatibility, err := CheckCompatibility(ctx, pool, db.Migrations())
+	if err != nil {
+		t.Fatalf("CheckCompatibility after migration: %v", err)
+	}
+	if compatibility.State != SchemaCurrent || compatibility.Current != target || compatibility.Pending != 0 {
+		t.Fatalf("compatibility after migration = %+v, want current at %d", compatibility, target)
+	}
+	pending, err := migrator.HasPending(ctx)
+	if err != nil {
+		t.Fatalf("HasPending after migration: %v", err)
+	}
+	if pending {
+		t.Fatal("migration runner reports pending work after migrating to head")
+	}
+}
+
+func migrationFixtureVersion(t *testing.T, name string) int64 {
+	t.Helper()
+	if len(name) < len("00000_a.sql") || name[5] != '_' || !strings.HasSuffix(name, ".sql") {
+		t.Fatalf("fixture %q must use NNNNN_name.sql", name)
+	}
+	version, err := strconv.ParseInt(name[:5], 10, 64)
+	if err != nil || version < 1 {
+		t.Fatalf("fixture %q must declare a positive migration version", name)
+	}
+	return version
+}

@@ -67,10 +67,12 @@ release build targets one of those three and it breaks, CI as it stands would
 not have caught it; that gap is closed by M10 (the release workflow), not by
 this task, which is explicitly out of scope here (see checks.md).
 
-The `lint`, `generation-diff`, and `docs-check` jobs run on `ubuntu-latest`
-only: they are static-analysis and file-content checks whose result does not
-depend on OS or architecture, so running them three times would not exercise
-anything the single Linux run doesn't already cover.
+The `lint`, `generation-diff`, `docs-check`, and PostgreSQL migration-matrix
+jobs run on `ubuntu-latest` only. The first three are static-analysis and
+file-content checks whose result does not depend on OS or architecture. The
+migration job is a service integration check: it provisions PostgreSQL 17.6
+and proves the generated clean-install and supported-upgrade paths, not host-OS
+portability.
 
 ## Verification
 

@@ -66,3 +66,17 @@ with the readable source. Its PostgreSQL integration test uses
 the administrative `TEST_DATABASE_URL`, then applies and rolls back the
 complete embedded history. See [PostgreSQL integration testing](database-testing.md)
 for the local-skip, CI-required, connection-limit, and cleanup contracts.
+
+The generated `migration_matrix_test.go` separately proves a clean install and
+every schema snapshot under
+`internal/platform/database/testdata/migration-upgrades/`. A snapshot is an
+immutable SQL dump named `NNNNN_name.sql`, where the prefix is the Goose
+version recorded inside it. Version `00001_baseline.sql` represents the first
+generated release schema. Never edit a fixture after that release is supported;
+add the next release snapshot. Fixtures live outside `db/migrations`, are not
+embedded in production binaries, and exist only to prove forward migration to
+the current embedded head.
+
+Run the matrix locally with `make migration-test`. Repository CI runs the same
+target against PostgreSQL 17.6, so a green build cannot silently skip both the
+clean-install and supported-upgrade paths.

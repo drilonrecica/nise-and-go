@@ -297,8 +297,11 @@ myapp/
         │   │   └── database_test.go [app] isolation and cleanup contract
         │   ├── migrate.go        [app]   instance-scoped, advisory-locked Goose provider
         │   ├── migrate_test.go   [app]   disposable PostgreSQL apply/rollback contract
+        │   ├── migration_matrix_test.go [app] clean and supported-upgrade paths
         │   ├── pool.go           [app]   bounded pgxpool plus health/metric adapters
         │   ├── pool_test.go      [app]
+        │   ├── testdata/migration-upgrades/
+        │   │   └── 00001_baseline.sql [app] immutable release-schema fixture
         │   ├── transaction.go    [app]   pgx adapter for use-case-owned transactions
         │   └── transaction_test.go [app] sqlc DBTX propagation and option mapping
         ├── httpapi/router.go     [app]   the ordered middleware chain and the routes
@@ -308,7 +311,7 @@ myapp/
 
 ```
 
-54 files. Ownership markers are from
+56 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Every generated file declares the same thing in a header
@@ -343,7 +346,9 @@ files and omitted directories.
   instead of hiding a savepoint or independent commit.
 - **Disposable PostgreSQL integration tests** with one random database per
   test, an eight-connection server limit, forced cleanup, protected connection
-  material, local skip behavior, and CI-required configuration.
+  material, local skip behavior, and CI-required configuration. The migration
+  matrix proves clean installs and every committed supported release fixture;
+  repository CI runs it against PostgreSQL 17.6.
 - **Structured logging** in JSON or a readable text format, with a request
   ID and a correlation ID on every request and central redaction applied by
   the handler, not by call sites.

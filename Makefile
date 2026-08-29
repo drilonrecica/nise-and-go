@@ -1,10 +1,11 @@
 # Nise & Go — local check entry point.
 #
-# This file is the single source of truth for the checks CI runs. Every
+# This file is the single source of truth for the commands CI runs. Every
 # target here is safe to run on Linux and macOS with a POSIX /bin/sh: no
 # bash-only builtins, no bashisms, no tool that docs/toolchain.md does not
-# already pin. `make check` runs exactly what `.github/workflows/ci.yml`
-# runs; see docs/checks.md for what each check protects and why.
+# already pin. `make check` runs the hermetic suite; `make migration-test`
+# is the explicit PostgreSQL-backed gate. See docs/checks.md for what each
+# check protects and why.
 #
 # A check is never weakened to make a change pass — fix the change instead.
 SHELL := /bin/sh
@@ -51,7 +52,7 @@ GOLANGCI_LINT_VERSION := 2.11.3
 # a raw character in this file. See docs/checks.md for the full write-up.
 HASH := $(shell printf '\043')
 
-.PHONY: fmt fmt-check vet lint test test-race generate generate-diff docs-check check help
+.PHONY: fmt fmt-check vet lint test test-race migration-test generate generate-diff docs-check check help
 
 fmt: ## Format Go source in place (gofmt -s -w) over cmd, internal, runtime.
 	gofmt -s -w $(GO_FMT_DIRS)
@@ -84,6 +85,9 @@ test: ## Run go test over ./cmd/... ./internal/... ./runtime/....
 
 test-race: ## Run go test -race over ./cmd/... ./internal/... ./runtime/....
 	go test -race $(GO_PACKAGES)
+
+migration-test: ## Generate an app and run its migration matrix against TEST_DATABASE_URL.
+	NISE_MIGRATION_MATRIX=1 go test ./internal/generator -run '^TestGeneratedMigrationMatrixAgainstPostgres$$' -count=1 -v
 
 generate: ## Run every //go:generate directive under ./cmd/... ./internal/... ./runtime/....
 	go generate $(GO_PACKAGES)
@@ -119,7 +123,7 @@ docs-check: ## Fail if any relative Markdown link in docs/** or a root *.md file
 	done; \
 	exit $$status
 
-check: fmt-check vet lint test test-race generate-diff docs-check ## Run everything CI runs.
+check: fmt-check vet lint test test-race generate-diff docs-check ## Run every hermetic CI check.
 
 help: ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'

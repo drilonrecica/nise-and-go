@@ -15,6 +15,10 @@ TEST_DATABASE_URL='postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable' 
   go test ./internal/platform/database/...
 ```
 
+Use `make migration-test` to run only the race-enabled clean-install and
+supported-release upgrade matrix. The target requires the same environment and
+is the command the generated application's CI should gate.
+
 Use the harness from an integration test:
 
 ```go

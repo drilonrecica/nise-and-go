@@ -101,6 +101,9 @@ test, caps it at eight connections, and force-drops it during cleanup. Local
 absence skips; `CI=true` or `CI=1` makes absence fail. The configured role needs
 `CREATEDB`; never point it at a production cluster. The migration test applies
 and rolls back the complete embedded migration set inside its isolated database.
+`make migration-test` additionally proves a clean install and forward migration
+from every immutable release-schema SQL fixture under
+`internal/platform/database/testdata/migration-upgrades/`.
 
 Inspect and migrate the configured database explicitly:
 
