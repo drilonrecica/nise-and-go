@@ -20,12 +20,16 @@ without Goose history. It never creates `goose_db_version`; only an explicit
 
 `pool.go` applies explicit conservative limits instead of inheriting
 pgx's CPU-dependent maximum. `internal/app/app.go` wires the pool into
-two seams:
+three seams:
 
 - `health.Prober` runs the pool ping for readiness.
 - `runtime/observability`'s `PoolMetrics` accepts a `PoolStatsFunc`. The
   pool reports live counters through it.
+- `NewTransactor` adapts `pgxpool.BeginTx` to the bounded
+  `runtime/transaction` lifecycle. Use-case callbacks receive the concrete
+  `pgx.Tx` and pass it to their feature-local sqlc `New` constructor.
 
 Repositories receive this pool, or a transaction implementing the same
 sqlc-generated DBTX interface. They do not construct pools and do not begin
-transactions.
+transactions. Nested `Within` calls made with the callback context fail
+instead of creating a hidden savepoint or independent inner commit.

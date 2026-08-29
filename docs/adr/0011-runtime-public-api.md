@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-27
+- **Amended by:** [ADR 0015](0015-use-case-owned-transactions.md)
 
 ## Context
 
@@ -25,6 +26,7 @@ Six milestone-2 tasks create packages here at roughly the same time. They need t
 | `runtime/lifecycle` | Process modes `all`, `web`, and `worker`; HTTP server construction; graceful shutdown and bounded draining |
 | `runtime/observability` | HTTP, database-pool, and job metrics, and the optional tracing interface |
 | `runtime/secure` | Security headers and Content Security Policy (ADR 0013, pending) |
+| `runtime/transaction` | Driver-independent use-case transaction lifecycle and closed transaction options (ADR 0015) |
 
 No other package may be added to `runtime/` without an ADR.
 
@@ -65,4 +67,4 @@ Adding, removing, or retyping an exported identifier in `runtime/` is a contract
 - The forbidden edges mean some wiring lands in the application rather than in Nise — a logger is constructed from configuration values by the generated `internal/app` code. That is the intended direction: explicit constructors over hidden coupling.
 - `runtime/lifecycle` is the largest package in the list and is the one most likely to need splitting. It is the package to watch.
 - The empty `package runtime` looks odd in a package listing and exists purely to carry documentation. Keeping it empty forever also keeps the standard-library name collision theoretical.
-- Six public packages is a real commitment for a project with no production users yet. Revisit the list — as one ADR, not six — after the reference application is built, which is the first evidence that a package is missing or unused.
+- Seven public packages is a real commitment for a project with no production users yet. Revisit the list — as one ADR, not seven — after the reference application is built, which is the first evidence that a package is missing or unused.

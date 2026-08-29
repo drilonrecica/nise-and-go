@@ -12,7 +12,9 @@ Two rules hold across every feature:
 
 - **The use case owns the transaction boundary.** Handlers do transport
   work; the `store` package runs queries and never begins a business
-  transaction of its own.
+  transaction of its own. The use case calls
+  `database.Transactor.Within`, propagates its callback context, and passes
+  the callback's `pgx.Tx` to `store.New(tx)`. Nested runners are rejected.
 - **A feature depends on another feature only through an interface the
   consumer declares**, satisfied by the other feature's use case. A feature
   never imports another feature's `store` package.

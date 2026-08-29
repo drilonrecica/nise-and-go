@@ -50,11 +50,12 @@ func Run(ctx context.Context, modeOverride string) error {
 		return err
 	}
 
-	pool, err := database.Open(ctx, cfg.DatabaseURL.Reveal(), cfg.DatabasePassword.Reveal(), cfg.Database)
+	databaseRuntime, err := openDatabaseRuntime(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("starting database: %w", err)
 	}
-	defer pool.Close()
+	defer databaseRuntime.Close()
+	pool := databaseRuntime.Pool
 	compatibility, err := database.CheckCompatibility(ctx, pool, migrationdb.Migrations())
 	if err != nil {
 		return fmt.Errorf("checking database schema compatibility: %w", err)

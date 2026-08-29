@@ -280,6 +280,7 @@ myapp/
     ├── app/
     │   ├── app.go                [app]   the whole object graph, in one function
     │   ├── database.go           [app]   explicit status/migrate application surface
+    │   ├── database_runtime.go   [app]   pool and transaction-runner construction
     │   ├── modes.go              [app]   mode resolution and the worker component
     │   └── modules.gen.go        [nise]  the compile-time module selection
     ├── features/README.md        [app]   reserved for vertical slices (M5, M7)
@@ -294,7 +295,9 @@ myapp/
         │   ├── migrate.go        [app]   instance-scoped, advisory-locked Goose provider
         │   ├── migrate_test.go   [app]   disposable PostgreSQL apply/rollback contract
         │   ├── pool.go           [app]   bounded pgxpool plus health/metric adapters
-        │   └── pool_test.go      [app]
+        │   ├── pool_test.go      [app]
+        │   ├── transaction.go    [app]   pgx adapter for use-case-owned transactions
+        │   └── transaction_test.go [app] sqlc DBTX propagation and option mapping
         ├── httpapi/router.go     [app]   the ordered middleware chain and the routes
         └── webui/
             ├── webui.go          [nise]  embeds the built frontend and serves the SPA
@@ -302,7 +305,7 @@ myapp/
 
 ```
 
-49 files. Ownership markers are from
+52 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Every generated file declares the same thing in a header
@@ -331,6 +334,10 @@ files and omitted directories.
   PostgreSQL advisory lock. `nise db status` inspects without mutation,
   `nise db migrate` applies explicitly, and startup blocks ahead, malformed,
   partial, or missing history without ever migrating.
+- **Use-case-owned transactions** with closed isolation/access options,
+  bounded rollback after cancellation or panic, explicit pgx adaptation, and
+  compile-checked propagation into sqlc's `DBTX` shape. Nested runners fail
+  instead of hiding a savepoint or independent commit.
 - **Structured logging** in JSON or a readable text format, with a request
   ID and a correlation ID on every request and central redaction applied by
   the handler, not by call sites.
@@ -370,7 +377,7 @@ scaffold code for subsystems that do not exist yet.
 
 | Absent | Arrives with |
 |---|---|
-| Generated feature `sqlc` output and database test/SQL safety instrumentation | Later M3 tasks — migration commands and compatibility gating are present |
+| Generated feature `sqlc` output and database test/SQL safety instrumentation | Later M3 tasks — migration, compatibility, and transaction foundations are present |
 | OpenAPI document, generated server bindings, typed frontend client | M4 — `api/` is the reserved seam, and `router.go` marks the `/api/v1` mount point |
 | Sessions, authentication, authorization, audit log | M5 — `internal/features/` is the reserved seam |
 | **The application shell**: sidebar, navigation, theme and language controls, authentication screens, tables, the component set, and the Vitest and Playwright suites | **M6** — `frontend/` is a minimal but real SvelteKit project today: it installs, builds, type-checks, and renders one page served by the Go binary. Nothing in the layout moves when M6 fills it in. |

@@ -1,0 +1,62 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package database
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+)
+
+// Transactor is the application-specific pgx adapter for the framework's
+// transaction lifecycle. A use case owns a Transactor and passes the pgx.Tx it
+// receives directly to its sqlc-generated query constructor.
+type Transactor struct {
+	runner *transaction.Runner[pgx.Tx]
+}
+
+// NewTransactor constructs one transaction runner over the primary pool.
+func NewTransactor(pool *pgxpool.Pool) (*Transactor, error) {
+	if pool == nil {
+		return nil, errors.New("transaction pool must not be nil")
+	}
+	runner, err := transaction.New(func(ctx context.Context, options transaction.Options) (pgx.Tx, error) {
+		return pool.BeginTx(ctx, pgxTransactionOptions(options))
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Transactor{runner: runner}, nil
+}
+
+// Within runs one use-case-owned transaction. The callback context carries the
+// nested-use marker and must be propagated to every called use case.
+func (t *Transactor) Within(ctx context.Context, options transaction.Options, work func(context.Context, pgx.Tx) error) error {
+	if t == nil || t.runner == nil {
+		return errors.New("transactor must not be nil")
+	}
+	return t.runner.Within(ctx, options, work)
+}
+
+func pgxTransactionOptions(options transaction.Options) pgx.TxOptions {
+	var result pgx.TxOptions
+	switch options.Isolation {
+	case transaction.ReadCommitted:
+		result.IsoLevel = pgx.ReadCommitted
+	case transaction.RepeatableRead:
+		result.IsoLevel = pgx.RepeatableRead
+	case transaction.Serializable:
+		result.IsoLevel = pgx.Serializable
+	}
+	switch options.Access {
+	case transaction.ReadWrite:
+		result.AccessMode = pgx.ReadWrite
+	case transaction.ReadOnly:
+		result.AccessMode = pgx.ReadOnly
+	}
+	return result
+}

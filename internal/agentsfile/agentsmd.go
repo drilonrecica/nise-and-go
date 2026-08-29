@@ -154,7 +154,7 @@ func writeConventionsSection(b *strings.Builder) {
 	b.WriteString("## Non-negotiable conventions\n\n")
 	conventions := []string{
 		"Svelte components use Svelte 5 runes (`$state`, `$derived`, `$effect`) only — no Svelte 4 reactive statements (`$:`) and no store-as-primary-state.",
-		"A use case owns its transaction boundary. Handlers do transport work only; the `store` package runs queries and never begins a business transaction on its own.",
+		"A use case owns its transaction boundary through the explicit transactor and passes the callback's `pgx.Tx` to `store.New(tx)`. Propagate the callback context; nested runners are rejected. Handlers and repositories never begin business transactions.",
 		"Authorization defaults to deny. A missing or unevaluated permission check is a bug, not an implicit allow.",
 		"Input decoding is strict: an unknown field or a type mismatch is rejected, not ignored.",
 		"No new dependency is added to `go.mod` or `frontend/package.json` without a documented, concrete reason.",
