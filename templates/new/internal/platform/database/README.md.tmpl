@@ -60,3 +60,11 @@ the use case's callback `pgx.Tx`. Do not grow a shared raw repository or expose
 `Conn`/`PgConn`. The example's disposable-PostgreSQL test proves it commits and
 rolls back with the caller-owned transaction. The complete review checklist is
 in Nise's `docs/direct-pgx.md`.
+
+`querytrace.go` implements pgx's query, batch, and copy tracer contracts for
+the server pool. It publishes count/duration metrics under closed labels,
+provides per-context test budgets, and emits slow warnings without SQL,
+arguments, copied rows, results, or database errors. One ordinary call, copy,
+or entire batch is one round trip; tests using a batch separately bound its
+queued statement count. `db status` and `db migrate` use short-lived untraced
+pools because they have no server metrics endpoint or request context.

@@ -103,7 +103,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │
     └── platform/
         ├── config/                    [app]   typed configuration over runtime/config
-        ├── database/                  [app]   pgxpool, transactions, Goose, dbtest, SQL safety, direct-pgx example
+        ├── database/                  [app]   pgxpool, transactions, query tracing, Goose, dbtest, SQL safety
         ├── httpapi/
         │   ├── router.go              [app]   middleware order and the /api/v1 mount
         │   └── openapigen/            [nise]  oapi-codegen strict chi server types and bindings
@@ -135,6 +135,13 @@ in a narrow feature-owned adapter, receives the use case's callback `pgx.Tx`,
 and stays on tracer-covered pgx methods. The generated database package
 contains a compile-checked example and real transaction test, not a shared raw
 repository. See [Direct pgx escape hatch](direct-pgx.md).
+
+**Query instrumentation is pool-wide and bounded.** The server pool installs
+an application-owned pgx query/batch/copy tracer before opening connections.
+It counts round trips through derived contexts, exposes count and duration
+metrics under closed labels, and emits sanitized slow warnings. SQL and query
+data never become metric labels or log attributes. See
+[Database query instrumentation](database-query-instrumentation.md).
 
 ## Core services and optional modules
 

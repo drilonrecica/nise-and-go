@@ -96,7 +96,7 @@ func openMigrationMatrixResources(t *testing.T, testDatabase dbtest.Database) (c
 	if err != nil {
 		t.Fatalf("NewSettings: %v", err)
 	}
-	pool, err := Open(ctx, testDatabase.URL().Reveal(), testDatabase.Password().Reveal(), settings)
+	pool, err := Open(ctx, testDatabase.URL().Reveal(), testDatabase.Password().Reveal(), settings, OpenOptions{})
 	if err != nil {
 		t.Fatal("open isolated migration-matrix database")
 	}

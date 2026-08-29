@@ -42,7 +42,7 @@ func RunDatabase(ctx context.Context, action string) (DatabaseResult, error) {
 	if err != nil {
 		return DatabaseResult{}, fmt.Errorf("loading configuration: %w", err)
 	}
-	pool, err := database.Open(ctx, cfg.DatabaseURL.Reveal(), cfg.DatabasePassword.Reveal(), cfg.Database)
+	pool, err := database.Open(ctx, cfg.DatabaseURL.Reveal(), cfg.DatabasePassword.Reveal(), cfg.Database, database.OpenOptions{})
 	if err != nil {
 		return DatabaseResult{}, fmt.Errorf("opening database for %s: %w", action, err)
 	}

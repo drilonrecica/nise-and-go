@@ -37,6 +37,12 @@ All three commands are honest no-ops while this directory has no feature-local
 canonical `nise-no-unbounded-delete`, `nise-no-unbounded-update`, and
 `nise-no-truncate` CEL rules documented in the project README.
 
+Named reference-flow tests attach `database.WithQueryBudget` to the use-case
+context and assert the exact count plus the maximum. A query count means one
+pgx round trip: one ordinary query/exec, one copy, or one whole batch. Changing
+an established count needs an explanation; batch tests also bound the queued
+statement count because batching hides statements, not PostgreSQL work.
+
 This directory is empty today. The core features — sessions and
 authentication, authorization, and the audit log — arrive with the
 authentication milestone, and custom features are written by

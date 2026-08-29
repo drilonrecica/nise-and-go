@@ -45,7 +45,7 @@ func TestEmbeddedMigrationsApplyAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSettings: %v", err)
 	}
-	pool, err := Open(ctx, databaseURL, databasePassword, settings)
+	pool, err := Open(ctx, databaseURL, databasePassword, settings, OpenOptions{})
 	if err != nil {
 		t.Fatalf("Open pool: %v", err)
 	}

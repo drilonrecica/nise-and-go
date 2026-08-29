@@ -1,0 +1,280 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package database
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/observability"
+
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+)
+
+func TestQueryMetricsBoundsStatementLabels(t *testing.T) {
+	registry := observability.NewRegistry()
+	metrics, err := NewQueryMetrics(registry)
+	if err != nil {
+		t.Fatalf("NewQueryMetrics: %v", err)
+	}
+	for index := 0; index < 100; index++ {
+		metrics.ObserveQuery(StatementLabel(fmt.Sprintf("user-controlled-%d", index)), QueryOutcome("unknown"), time.Millisecond)
+	}
+	var output bytes.Buffer
+	if err := observability.WriteText(&output, registry); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	text := output.String()
+	if strings.Contains(text, "user-controlled") {
+		t.Fatalf("metrics exposed an unbounded statement label:\n%s", text)
+	}
+	if !strings.Contains(text, `db_queries_total{statement="other",outcome="error"} 100`) {
+		t.Fatalf("metrics did not collapse invalid labels:\n%s", text)
+	}
+}
+
+type queryObservation struct {
+	statement StatementLabel
+	outcome   QueryOutcome
+	duration  time.Duration
+}
+
+type recordingQueryObserver struct {
+	observations []queryObservation
+}
+
+func (o *recordingQueryObserver) ObserveQuery(statement StatementLabel, outcome QueryOutcome, duration time.Duration) {
+	o.observations = append(o.observations, queryObservation{statement: statement, outcome: outcome, duration: duration})
+}
+
+func TestQueryTracerCountsAndSanitizesSlowRecords(t *testing.T) {
+	start := time.Date(2026, time.August, 30, 12, 0, 0, 0, time.UTC)
+	times := []time.Time{start, start.Add(300 * time.Millisecond), start.Add(time.Second)}
+	now := func() time.Time {
+		result := times[0]
+		times = times[1:]
+		return result
+	}
+	var logs bytes.Buffer
+	logger := slogLogger(&logs)
+	observer := &recordingQueryObserver{}
+	tracer, err := NewQueryTracer(QueryTraceOptions{
+		SlowThreshold: 250 * time.Millisecond,
+		Logger:        logger,
+		Metrics:       observer,
+		Now:           now,
+	})
+	if err != nil {
+		t.Fatalf("NewQueryTracer: %v", err)
+	}
+	ctx := logging.WithRequestID(context.Background(), "req-safe")
+	ctx = logging.WithCorrelationID(ctx, "corr-safe")
+	ctx, budget, err := WithQueryBudget(ctx, 1)
+	if err != nil {
+		t.Fatalf("WithQueryBudget: %v", err)
+	}
+	traceCtx := tracer.TraceQueryStart(ctx, nil, pgx.TraceQueryStartData{
+		SQL:  "-- name: SecretLookup :one\nSELECT $1::text /* secret-query-text */",
+		Args: []any{"secret-query-argument"},
+	})
+	tracer.TraceQueryEnd(traceCtx, nil, pgx.TraceQueryEndData{})
+
+	if got := budget.Count(); got != 1 {
+		t.Fatalf("query count = %d, want 1", got)
+	}
+	if err := budget.Verify(); err != nil {
+		t.Fatalf("query budget: %v", err)
+	}
+	if len(observer.observations) != 1 || observer.observations[0].statement != StatementSelect || observer.observations[0].duration != 300*time.Millisecond {
+		t.Fatalf("observations = %+v", observer.observations)
+	}
+	logged := logs.String()
+	for _, secret := range []string{"secret-query-text", "secret-query-argument", "SELECT $1"} {
+		if strings.Contains(logged, secret) {
+			t.Fatalf("slow-query log exposed %q: %s", secret, logged)
+		}
+	}
+	for _, safe := range []string{"slow database query", `"statement":"select"`, `"request_id":"req-safe"`, `"correlation_id":"corr-safe"`} {
+		if !strings.Contains(logged, safe) {
+			t.Errorf("slow-query log lacks %q: %s", safe, logged)
+		}
+	}
+
+	_ = tracer.TraceBatchStart(ctx, nil, pgx.TraceBatchStartData{})
+	if err := budget.Verify(); err == nil || !strings.Contains(err.Error(), "observed 2 round trips, maximum 1") {
+		t.Fatalf("exceeded budget error = %v", err)
+	}
+}
+
+func TestNewQueryTracerRejectsIncompleteOptions(t *testing.T) {
+	_, err := NewQueryTracer(QueryTraceOptions{})
+	if err == nil {
+		t.Fatal("NewQueryTracer accepted zero options")
+	}
+	for _, fragment := range []string{"threshold", "logger", "metrics"} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Errorf("error %q lacks %q", err, fragment)
+		}
+	}
+	if _, _, err := WithQueryBudget(context.Background(), -1); err == nil {
+		t.Fatal("WithQueryBudget accepted a negative maximum")
+	}
+}
+
+func TestQueryTracerDoesNotLogDatabaseErrorsOrInvalidIDs(t *testing.T) {
+	start := time.Date(2026, time.August, 30, 12, 0, 0, 0, time.UTC)
+	times := []time.Time{start, start.Add(time.Second)}
+	var logs bytes.Buffer
+	observer := &recordingQueryObserver{}
+	tracer, err := NewQueryTracer(QueryTraceOptions{
+		SlowThreshold: time.Millisecond,
+		Logger:        slogLogger(&logs),
+		Metrics:       observer,
+		Now: func() time.Time {
+			result := times[0]
+			times = times[1:]
+			return result
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewQueryTracer: %v", err)
+	}
+	invalidID := strings.Repeat("x", logging.MaxIDLength+1)
+	ctx := logging.WithRequestID(context.Background(), invalidID)
+	traceCtx := tracer.TraceQueryStart(ctx, nil, pgx.TraceQueryStartData{SQL: "SELECT secret_error_query"})
+	tracer.TraceQueryEnd(traceCtx, nil, pgx.TraceQueryEndData{Err: errors.New("secret-database-error")})
+
+	logged := logs.String()
+	for _, forbidden := range []string{"secret_error_query", "secret-database-error", invalidID} {
+		if strings.Contains(logged, forbidden) {
+			t.Fatalf("slow-query error log exposed %q: %s", forbidden, logged)
+		}
+	}
+	if len(observer.observations) != 1 || observer.observations[0].outcome != QueryFailed {
+		t.Fatalf("error observations = %+v", observer.observations)
+	}
+}
+
+func TestClassifyStatementUsesClosedLabels(t *testing.T) {
+	tests := map[string]StatementLabel{
+		"-- name: Read :one\n SELECT 1":            StatementSelect,
+		"/* generated */ INSERT INTO x VALUES (1)": StatementInsert,
+		"WITH x AS (SELECT 1) SELECT * FROM x":     StatementWith,
+		"TRUNCATE x":                               StatementDDL,
+		"totally unknown":                          StatementOther,
+		"-- comment only":                          StatementOther,
+	}
+	for sql, want := range tests {
+		if got := classifyStatement(sql); got != want {
+			t.Errorf("classifyStatement(%q) = %q, want %q", sql, got, want)
+		}
+	}
+}
+
+func TestQueryTracerRealPostgreSQLFlow(t *testing.T) {
+	// dbtest reads TEST_DATABASE_URL and fails in CI when it is absent.
+	testDatabase := dbtest.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	registry := observability.NewRegistry()
+	metrics, err := NewQueryMetrics(registry)
+	if err != nil {
+		t.Fatalf("NewQueryMetrics: %v", err)
+	}
+	var logs bytes.Buffer
+	tracer, err := NewQueryTracer(QueryTraceOptions{
+		SlowThreshold: time.Nanosecond,
+		Logger:        slogLogger(&logs),
+		Metrics:       metrics,
+	})
+	if err != nil {
+		t.Fatalf("NewQueryTracer: %v", err)
+	}
+	settings, err := NewSettings(2, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	pool, err := Open(ctx, testDatabase.URL().Reveal(), testDatabase.Password().Reveal(), settings, OpenOptions{Tracer: tracer})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, `CREATE TABLE query_trace_items (id bigint PRIMARY KEY, value text NOT NULL)`); err != nil {
+		t.Fatalf("create query_trace_items: %v", err)
+	}
+
+	flowCtx, budget, err := WithQueryBudget(ctx, 4)
+	if err != nil {
+		t.Fatalf("WithQueryBudget: %v", err)
+	}
+	const secret = "secret-query-argument"
+	if _, err := pool.Exec(flowCtx, `INSERT INTO query_trace_items (id, value) VALUES ($1, $2) /* secret-query-text */`, int64(1), secret); err != nil {
+		t.Fatalf("insert query trace item: %v", err)
+	}
+	var value string
+	if err := pool.QueryRow(flowCtx, `SELECT value FROM query_trace_items WHERE id = $1`, int64(1)).Scan(&value); err != nil {
+		t.Fatalf("select query trace item: %v", err)
+	}
+	if value != secret {
+		t.Fatalf("selected value = %q", value)
+	}
+	copyRows := append(make([][]any, 0, 1), []any{int64(2), "copied-secret"})
+	if count, err := pool.CopyFrom(flowCtx, pgx.Identifier{"query_trace_items"}, []string{"id", "value"}, pgx.CopyFromRows(copyRows)); err != nil || count != 1 {
+		t.Fatalf("CopyFrom = count:%d error:%v", count, err)
+	}
+	batch := &pgx.Batch{}
+	batch.Queue(`SELECT count(*) FROM query_trace_items`)
+	batch.Queue(`SELECT value FROM query_trace_items WHERE id = $1`, int64(2))
+	results := pool.SendBatch(flowCtx, batch)
+	var count int
+	if err := results.QueryRow().Scan(&count); err != nil {
+		t.Fatalf("read batch count: %v", err)
+	}
+	if err := results.QueryRow().Scan(&value); err != nil {
+		t.Fatalf("read batch value: %v", err)
+	}
+	if err := results.Close(); err != nil {
+		t.Fatalf("close batch results: %v", err)
+	}
+	if count != 2 || value != "copied-secret" {
+		t.Fatalf("batch results = count:%d value:%q", count, value)
+	}
+	if got := budget.Count(); got != 4 {
+		t.Fatalf("real flow query count = %d, want 4 round trips", got)
+	}
+	if err := budget.Verify(); err != nil {
+		t.Fatalf("real flow query budget: %v", err)
+	}
+
+	logged := logs.String()
+	for _, secretText := range []string{secret, "secret-query-text", "copied-secret"} {
+		if strings.Contains(logged, secretText) {
+			t.Fatalf("real slow-query log exposed %q: %s", secretText, logged)
+		}
+	}
+	for _, label := range []string{`"statement":"insert"`, `"statement":"select"`, `"statement":"copy"`, `"statement":"batch"`} {
+		if !strings.Contains(logged, label) {
+			t.Errorf("real slow-query logs lack %q: %s", label, logged)
+		}
+	}
+	var exposition bytes.Buffer
+	if err := observability.WriteText(&exposition, registry); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	if !strings.Contains(exposition.String(), "db_queries_total") || !strings.Contains(exposition.String(), "db_query_duration_seconds") {
+		t.Fatalf("query metrics missing:\n%s", exposition.String())
+	}
+}
+
+func slogLogger(output *bytes.Buffer) *slog.Logger {
+	return slog.New(logging.NewJSONHandler(output, logging.HandlerOptions{}))
+}

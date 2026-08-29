@@ -1,0 +1,339 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package database
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/observability"
+)
+
+const queryMetricMaxSeries = 32
+
+// StatementLabel is a closed, low-cardinality database-operation class.
+// Metrics and logs never use raw SQL as a label or attribute.
+type StatementLabel string
+
+const (
+	StatementSelect      StatementLabel = "select"
+	StatementInsert      StatementLabel = "insert"
+	StatementUpdate      StatementLabel = "update"
+	StatementDelete      StatementLabel = "delete"
+	StatementMerge       StatementLabel = "merge"
+	StatementWith        StatementLabel = "with"
+	StatementCall        StatementLabel = "call"
+	StatementDDL         StatementLabel = "ddl"
+	StatementTransaction StatementLabel = "transaction"
+	StatementCopy        StatementLabel = "copy"
+	StatementBatch       StatementLabel = "batch"
+	StatementOther       StatementLabel = "other"
+)
+
+// QueryOutcome is the bounded completion state used by database metrics and
+// slow-query records.
+type QueryOutcome string
+
+const (
+	QuerySucceeded QueryOutcome = "success"
+	QueryFailed    QueryOutcome = "error"
+)
+
+// QueryMetrics bridges pgx query observations into the application's bounded
+// metrics registry.
+type QueryMetrics struct {
+	total    *observability.CounterVec
+	duration *observability.HistogramVec
+}
+
+// NewQueryMetrics registers query count and duration metrics. Statement and
+// outcome labels are normalized to closed sets before reaching the registry;
+// the registry cap is a second line of defense against cardinality mistakes.
+func NewQueryMetrics(registry *observability.Registry) (*QueryMetrics, error) {
+	if registry == nil {
+		return nil, errors.New("query metrics registry must not be nil")
+	}
+	total, err := registry.NewCounterVec(observability.VecOpts{
+		Name:      "db_queries_total",
+		Help:      "Completed database round trips.",
+		Labels:    []string{"statement", "outcome"},
+		MaxSeries: queryMetricMaxSeries,
+	})
+	if err != nil {
+		return nil, err
+	}
+	duration, err := registry.NewHistogramVec(observability.HistogramVecOpts{
+		VecOpts: observability.VecOpts{
+			Name:      "db_query_duration_seconds",
+			Help:      "Database round-trip duration in seconds.",
+			Labels:    []string{"statement", "outcome"},
+			MaxSeries: queryMetricMaxSeries,
+		},
+		Buckets: []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &QueryMetrics{total: total, duration: duration}, nil
+}
+
+// ObserveQuery records one completed database round trip.
+func (m *QueryMetrics) ObserveQuery(statement StatementLabel, outcome QueryOutcome, duration time.Duration) {
+	statement = normalizeStatementLabel(statement)
+	outcome = normalizeQueryOutcome(outcome)
+	if duration < 0 {
+		duration = 0
+	}
+	m.total.WithLabelValues(string(statement), string(outcome)).Inc()
+	m.duration.WithLabelValues(string(statement), string(outcome)).Observe(duration.Seconds())
+}
+
+// QueryObserver is the narrow metrics sink consumed by QueryTracer.
+type QueryObserver interface {
+	ObserveQuery(StatementLabel, QueryOutcome, time.Duration)
+}
+
+// QueryTraceOptions configures the pgx tracer. Now is a deterministic test
+// seam; production wiring leaves it nil and uses time.Now.
+type QueryTraceOptions struct {
+	SlowThreshold time.Duration
+	Logger        *slog.Logger
+	Metrics       QueryObserver
+	Now           func() time.Time
+}
+
+// QueryTracer observes logical pgx round trips. One Query/QueryRow/Exec call,
+// one SendBatch call, or one CopyFrom call counts as one operation.
+type QueryTracer struct {
+	slowThreshold time.Duration
+	logger        *slog.Logger
+	metrics       QueryObserver
+	now           func() time.Time
+}
+
+var _ pgx.QueryTracer = (*QueryTracer)(nil)
+var _ pgx.BatchTracer = (*QueryTracer)(nil)
+var _ pgx.CopyFromTracer = (*QueryTracer)(nil)
+
+// NewQueryTracer validates and constructs the tracer installed on every pool
+// connection before the pool is opened.
+func NewQueryTracer(options QueryTraceOptions) (*QueryTracer, error) {
+	var errs []error
+	if options.SlowThreshold <= 0 {
+		errs = append(errs, errors.New("slow query threshold must be greater than zero"))
+	}
+	if options.Logger == nil {
+		errs = append(errs, errors.New("query tracer logger must not be nil"))
+	}
+	if options.Metrics == nil {
+		errs = append(errs, errors.New("query tracer metrics must not be nil"))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+	now := options.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &QueryTracer{
+		slowThreshold: options.SlowThreshold,
+		logger:        options.Logger,
+		metrics:       options.Metrics,
+		now:           now,
+	}, nil
+}
+
+type queryTraceState struct {
+	started   time.Time
+	statement StatementLabel
+}
+
+type queryTraceContextKey struct{}
+type queryBudgetContextKey struct{}
+
+// QueryBudget counts database round trips derived from one context and checks
+// an explicit upper bound. It is safe when a use case launches concurrent
+// work, although concurrent database calls should remain an intentional choice.
+type QueryBudget struct {
+	maximum int64
+	count   atomic.Int64
+}
+
+// WithQueryBudget returns a derived context carrying a new query counter.
+// maximum may be zero; a negative budget is invalid.
+func WithQueryBudget(ctx context.Context, maximum int64) (context.Context, *QueryBudget, error) {
+	if maximum < 0 {
+		return ctx, nil, errors.New("query budget maximum must not be negative")
+	}
+	budget := &QueryBudget{maximum: maximum}
+	return context.WithValue(ctx, queryBudgetContextKey{}, budget), budget, nil
+}
+
+// Count returns the exact number of observed round trips.
+func (b *QueryBudget) Count() int64 {
+	if b == nil {
+		return 0
+	}
+	return b.count.Load()
+}
+
+// Verify fails when Count exceeds the configured maximum.
+func (b *QueryBudget) Verify() error {
+	if b == nil {
+		return errors.New("query budget must not be nil")
+	}
+	if count := b.count.Load(); count > b.maximum {
+		return fmt.Errorf("query budget exceeded: observed %d round trips, maximum %d", count, b.maximum)
+	}
+	return nil
+}
+
+func (t *QueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return t.start(ctx, classifyStatement(data.SQL))
+}
+
+func (t *QueryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	t.finish(ctx, data.Err)
+}
+
+func (t *QueryTracer) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return t.start(ctx, StatementBatch)
+}
+
+// TraceBatchQuery intentionally does not count individual queued statements:
+// this tracer's budget unit is the enclosing SendBatch round trip.
+func (*QueryTracer) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {}
+
+func (t *QueryTracer) TraceBatchEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchEndData) {
+	t.finish(ctx, data.Err)
+}
+
+func (t *QueryTracer) TraceCopyFromStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceCopyFromStartData) context.Context {
+	return t.start(ctx, StatementCopy)
+}
+
+func (t *QueryTracer) TraceCopyFromEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceCopyFromEndData) {
+	t.finish(ctx, data.Err)
+}
+
+func (t *QueryTracer) start(ctx context.Context, statement StatementLabel) context.Context {
+	if budget, ok := ctx.Value(queryBudgetContextKey{}).(*QueryBudget); ok && budget != nil {
+		budget.count.Add(1)
+	}
+	return context.WithValue(ctx, queryTraceContextKey{}, queryTraceState{
+		started:   t.now(),
+		statement: normalizeStatementLabel(statement),
+	})
+}
+
+func (t *QueryTracer) finish(ctx context.Context, queryErr error) {
+	finished := t.now()
+	state, ok := ctx.Value(queryTraceContextKey{}).(queryTraceState)
+	if !ok {
+		state = queryTraceState{started: finished, statement: StatementOther}
+	}
+	duration := finished.Sub(state.started)
+	if duration < 0 {
+		duration = 0
+	}
+	outcome := QuerySucceeded
+	if queryErr != nil {
+		outcome = QueryFailed
+	}
+	t.metrics.ObserveQuery(state.statement, outcome, duration)
+	if duration < t.slowThreshold {
+		return
+	}
+	attributes := []any{
+		slog.String("statement", string(state.statement)),
+		slog.String("outcome", string(outcome)),
+		slog.Duration("duration", duration),
+		slog.Duration("threshold", t.slowThreshold),
+	}
+	if requestID, ok := logging.RequestID(ctx); ok && logging.ValidID(requestID) {
+		attributes = append(attributes, slog.String("request_id", requestID))
+	}
+	if correlationID, ok := logging.CorrelationID(ctx); ok && logging.ValidID(correlationID) {
+		attributes = append(attributes, slog.String("correlation_id", correlationID))
+	}
+	t.logger.WarnContext(ctx, "slow database query", attributes...)
+}
+
+func classifyStatement(sql string) StatementLabel {
+	remaining := strings.TrimSpace(sql)
+	for {
+		switch {
+		case strings.HasPrefix(remaining, "--"):
+			newline := strings.IndexByte(remaining, '\n')
+			if newline < 0 {
+				return StatementOther
+			}
+			remaining = strings.TrimSpace(remaining[newline+1:])
+		case strings.HasPrefix(remaining, "/*"):
+			end := strings.Index(remaining[2:], "*/")
+			if end < 0 {
+				return StatementOther
+			}
+			remaining = strings.TrimSpace(remaining[end+4:])
+		default:
+			fields := strings.Fields(remaining)
+			if len(fields) == 0 {
+				return StatementOther
+			}
+			return statementLabelForKeyword(strings.ToUpper(fields[0]))
+		}
+	}
+}
+
+func statementLabelForKeyword(keyword string) StatementLabel {
+	switch keyword {
+	case "SELECT", "VALUES", "TABLE", "SHOW":
+		return StatementSelect
+	case "INSERT":
+		return StatementInsert
+	case "UPDATE":
+		return StatementUpdate
+	case "DELETE":
+		return StatementDelete
+	case "MERGE":
+		return StatementMerge
+	case "WITH":
+		return StatementWith
+	case "CALL", "DO":
+		return StatementCall
+	case "CREATE", "ALTER", "DROP", "TRUNCATE", "COMMENT", "GRANT", "REVOKE":
+		return StatementDDL
+	case "BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE", "SET":
+		return StatementTransaction
+	case "COPY":
+		return StatementCopy
+	default:
+		return StatementOther
+	}
+}
+
+func normalizeStatementLabel(label StatementLabel) StatementLabel {
+	switch label {
+	case StatementSelect, StatementInsert, StatementUpdate, StatementDelete,
+		StatementMerge, StatementWith, StatementCall, StatementDDL,
+		StatementTransaction, StatementCopy, StatementBatch, StatementOther:
+		return label
+	default:
+		return StatementOther
+	}
+}
+
+func normalizeQueryOutcome(outcome QueryOutcome) QueryOutcome {
+	if outcome == QuerySucceeded || outcome == QueryFailed {
+		return outcome
+	}
+	return QueryFailed
+}
