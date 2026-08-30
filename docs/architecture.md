@@ -43,6 +43,7 @@ Optional multitenancy uses `org_id` plus PostgreSQL row-level security as defens
 - `/api/v1` version prefix.
 - OpenAPI is authoritative for transport types.
 - Strict oapi-codegen chi bindings.
+- Bounded single-value JSON decoding with unknown and duplicate fields refused.
 - openapi-typescript frontend models and a lightweight fetch client.
 - RFC 9457 Problem Details errors.
 - Cursor pagination by default; offset pagination for appropriate reports.

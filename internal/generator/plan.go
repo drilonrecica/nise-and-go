@@ -220,9 +220,14 @@ func Plan(opts Options) ([]File, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading template %s: %w", tf.Template, err)
 		}
-		content, err := render(tf.Template, string(source), data)
-		if err != nil {
-			return nil, err
+		var content []byte
+		if tf.Raw {
+			content = normalizeContent(source)
+		} else {
+			content, err = render(tf.Template, string(source), data)
+			if err != nil {
+				return nil, err
+			}
 		}
 		outPath, err := renderString(tf.Template+" (output path)", tf.Output, data)
 		if err != nil {

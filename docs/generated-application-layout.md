@@ -112,6 +112,9 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
         ├── httpapi/
         │   ├── api.go                 [app]   strict interface adapter and explicit route registration
         │   ├── api_test.go            [app]   real generated-binding route contract
+        │   ├── httpjson/
+        │   │   ├── json.go            [app]   bounded strict JSON decoder and response writer
+        │   │   └── json_test.go       [app]   hostile-input and response-bound contracts
         │   ├── router.go              [app]   middleware order and the /api/v1 mount
         │   ├── router_test.go         [app]   surface boundary and middleware-order contract
         │   └── openapigen/
@@ -163,7 +166,10 @@ paths remain API `404` responses and never become SPA pages. See
 source document and generation config, the pinned tool replaces
 `openapigen/openapi.gen.go`, and an application-owned adapter implements the
 generated strict interface. The checked-in binding has a non-mutating byte
-diff gate. See [OpenAPI server bindings](openapi.md).
+diff gate. Its vendored strict templates delegate JSON to an
+application-owned decoder/writer that rejects oversized, ambiguous, unknown,
+and wrongly typed input before application code runs. See
+[OpenAPI server bindings](openapi.md).
 
 ## Core services and optional modules
 

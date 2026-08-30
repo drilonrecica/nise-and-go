@@ -1,0 +1,82 @@
+openapi: 3.0.3
+info:
+  title: Strict JSON transport probe
+  version: 1.0.0
+paths:
+  /strict:
+    post:
+      operationId: createStrictFixture
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StrictFixture'
+      responses:
+        '200':
+          description: Strict fixture
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StrictFixture'
+  /optional:
+    post:
+      operationId: createOptionalStrictFixture
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StrictFixture'
+      responses:
+        '204':
+          description: Optional body accepted
+  /multi:
+    post:
+      operationId: createMultiStrictFixture
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StrictFixture'
+          text/plain:
+            schema:
+              type: string
+      responses:
+        '204':
+          description: Declared content type accepted
+  /optional-non-json:
+    post:
+      operationId: createOptionalNonJSONFixture
+      requestBody:
+        content:
+          text/plain:
+            schema:
+              type: string
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '204':
+          description: Empty optional body accepted
+components:
+  schemas:
+    StrictFixture:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - nested
+      properties:
+        name:
+          type: string
+        nested:
+          type: object
+          additionalProperties: false
+          required:
+            - value
+          properties:
+            value:
+              type: integer
+              format: int32

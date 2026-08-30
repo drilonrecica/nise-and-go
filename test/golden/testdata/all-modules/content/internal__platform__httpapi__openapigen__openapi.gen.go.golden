@@ -5,6 +5,7 @@ package openapigen
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -175,13 +176,13 @@ type GetAPIIndexRequestObject struct {
 }
 
 type GetAPIIndexResponseObject interface {
-	VisitGetAPIIndexResponse(w http.ResponseWriter) error
+	VisitGetAPIIndexResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error
 }
 
 type GetAPIIndex204Response struct {
 }
 
-func (response GetAPIIndex204Response) VisitGetAPIIndexResponse(w http.ResponseWriter) error {
+func (response GetAPIIndex204Response) VisitGetAPIIndexResponse(w http.ResponseWriter, _ func(size int) error) error {
 	w.WriteHeader(204)
 	return nil
 }
@@ -197,9 +198,15 @@ type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.
 type StrictMiddlewareFunc func(f StrictHandlerFunc, operationID string) StrictHandlerFunc
 
 type StrictHTTPServerOptions struct {
-	RequestErrorHandlerFunc  func(w http.ResponseWriter, r *http.Request, err error)
-	ResponseErrorHandlerFunc func(w http.ResponseWriter, r *http.Request, err error)
+	RequestErrorHandlerFunc   func(w http.ResponseWriter, r *http.Request, err error)
+	ResponseErrorHandlerFunc  func(w http.ResponseWriter, r *http.Request, err error)
+	JSONBodyDecoder           func(w http.ResponseWriter, r *http.Request, expectedMediaType string, dst any) error
+	JSONResponseSizeChecker   func(size int) error
+	RequestContentTypeMatcher func(actual string, expected string) bool
+	RequestBodyAbsentChecker  func(w http.ResponseWriter, r *http.Request) (bool, error)
 }
+
+var ErrUnsupportedRequestContentType = errors.New("request Content-Type is not declared for this operation")
 
 func NewStrictHandler(ssi StrictServerInterface, middlewares []StrictMiddlewareFunc) ServerInterface {
 	return &strictHandler{ssi: ssi, middlewares: middlewares, options: StrictHTTPServerOptions{
@@ -208,6 +215,18 @@ func NewStrictHandler(ssi StrictServerInterface, middlewares []StrictMiddlewareF
 		},
 		ResponseErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+		},
+		JSONBodyDecoder: func(http.ResponseWriter, *http.Request, string, any) error {
+			return errors.New("strict JSON body decoder is not configured")
+		},
+		JSONResponseSizeChecker: func(int) error {
+			return errors.New("strict JSON response size checker is not configured")
+		},
+		RequestContentTypeMatcher: func(string, string) bool {
+			return false
+		},
+		RequestBodyAbsentChecker: func(http.ResponseWriter, *http.Request) (bool, error) {
+			return false, errors.New("request body absence checker is not configured")
 		},
 	}}
 }
@@ -221,6 +240,26 @@ func NewStrictHandlerWithOptions(ssi StrictServerInterface, middlewares []Strict
 	if options.ResponseErrorHandlerFunc == nil {
 		options.ResponseErrorHandlerFunc = func(w http.ResponseWriter, r *http.Request, err error) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}
+	if options.JSONBodyDecoder == nil {
+		options.JSONBodyDecoder = func(http.ResponseWriter, *http.Request, string, any) error {
+			return errors.New("strict JSON body decoder is not configured")
+		}
+	}
+	if options.JSONResponseSizeChecker == nil {
+		options.JSONResponseSizeChecker = func(int) error {
+			return errors.New("strict JSON response size checker is not configured")
+		}
+	}
+	if options.RequestContentTypeMatcher == nil {
+		options.RequestContentTypeMatcher = func(string, string) bool {
+			return false
+		}
+	}
+	if options.RequestBodyAbsentChecker == nil {
+		options.RequestBodyAbsentChecker = func(http.ResponseWriter, *http.Request) (bool, error) {
+			return false, errors.New("request body absence checker is not configured")
 		}
 	}
 	return &strictHandler{ssi: ssi, middlewares: middlewares, options: options}
@@ -248,7 +287,7 @@ func (sh *strictHandler) GetAPIIndex(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetAPIIndexResponseObject); ok {
-		if err := validResponse.VisitGetAPIIndexResponse(w); err != nil {
+		if err := validResponse.VisitGetAPIIndexResponse(w, sh.options.JSONResponseSizeChecker); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

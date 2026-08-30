@@ -321,6 +321,9 @@ myapp/
         ├── httpapi/
         │   ├── api.go           [app]   strict interface adapter and registration
         │   ├── api_test.go      [app]   generated-binding route contract
+        │   ├── httpjson/
+        │   │   ├── json.go      [app]   bounded strict JSON transport primitives
+        │   │   └── json_test.go [app]   hostile-input and response-bound contracts
         │   ├── openapigen/
         │   │   └── openapi.gen.go [nise] complete strict chi bindings
         │   ├── router.go        [app]   sibling API/document chains and extension slots
@@ -331,7 +334,7 @@ myapp/
 
 ```
 
-71 files. Ownership markers are from
+73 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Files rendered directly by Nise declare the same thing in a
