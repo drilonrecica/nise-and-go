@@ -37,7 +37,7 @@ func TestGeneratedProjectDefinesTypedFrontendClient(t *testing.T) {
 			"export class APITransportError extends Error",
 		},
 		"frontend/src/lib/api/client.test.ts": {
-			"sends same-origin credentials and the cancellation signal",
+			"returns the direct resource without an envelope",
 			"maps HTTP failures without exposing their body in the message",
 			"preserves cancellation errors",
 		},

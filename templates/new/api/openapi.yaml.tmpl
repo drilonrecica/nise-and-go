@@ -11,12 +11,50 @@ paths:
   /:
     get:
       operationId: getAPIIndex
-      summary: Confirm that the versioned API boundary is available
+      summary: Describe the versioned API boundary
       responses:
-        "204":
-          description: The API boundary is available.
+        "200":
+          description: The API boundary resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIRoot'
 components:
   schemas:
+    APIRoot:
+      type: object
+      additionalProperties: false
+      description: The direct resource returned by the versioned API root.
+      required:
+        - version
+      properties:
+        version:
+          type: string
+          enum:
+            - v1
+    Page:
+      type: object
+      additionalProperties: false
+      description: Pagination metadata shared by collection response fixtures.
+      required:
+        - has_more
+      properties:
+        has_more:
+          type: boolean
+    APIRootCollection:
+      type: object
+      additionalProperties: false
+      description: A concrete collection contract fixture; domain collections define their own schemas.
+      required:
+        - items
+        - page
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/APIRoot'
+        page:
+          $ref: '#/components/schemas/Page'
     Problem:
       type: object
       additionalProperties: false

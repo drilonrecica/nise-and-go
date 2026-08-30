@@ -208,8 +208,11 @@ boundary so deliberate changes can update code and contract together.
 After editing it, run `make api-generate`; `make api-check` performs a
 non-mutating byte comparison and is part of `make all`. Application handlers
 implement the generated `openapigen.StrictServerInterface` through
-`internal/platform/httpapi/api.go`. The initial `GET /api/v1/` returns a
-bodyless `204` as a wiring fixture, not as a health probe.
+`internal/platform/httpapi/api.go`. The initial `GET /api/v1/` returns the
+direct `{ "version": "v1" }` API-root resource, not health or dependency
+state. Single resources are returned directly. Collections define concrete,
+closed `{ "items": [...], "page": {...} }` schemas with `[]` for no items;
+do not introduce a generic `data`, `result`, or runtime envelope.
 
 Declared JSON request bodies are limited to 1 MiB and require the exact
 declared media type (parameters are allowed), one value, no unknown fields,

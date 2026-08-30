@@ -32,6 +32,10 @@ stable error classes without copying response details into their messages.
 Extend that wrapper deliberately as the API gains real operations; do not add
 a second client framework beside it.
 
+Successful single-resource calls resolve to the generated resource directly.
+Generated collection models have required `items` and `page` members; treat
+empty `items` as `[]`, never `null`, and do not add a client-side envelope.
+
 `pnpm build` and `pnpm check` both refuse stale models. The initial Vitest
 suite is Node-only and covers the fetch wrapper. Browser component and
 Playwright coverage arrive with the application-shell milestone.

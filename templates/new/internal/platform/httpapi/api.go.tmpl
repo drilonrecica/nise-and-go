@@ -54,9 +54,23 @@ func requestTransportError(w http.ResponseWriter, r *http.Request, err error) {
 	problem.Handler(definition)(w, r, err)
 }
 
-// GetAPIIndex is the transport contract fixture at GET /api/v1/. It confirms
-// that strict generated registration is live without duplicating the public
-// health probes or creating a domain endpoint.
+// GetAPIIndex returns the versioned API root directly, without a generic
+// response envelope. It remains distinct from the public health probes.
 func (*Server) GetAPIIndex(context.Context, openapigen.GetAPIIndexRequestObject) (openapigen.GetAPIIndexResponseObject, error) {
-	return openapigen.GetAPIIndex204Response{}, nil
+	return openapigen.GetAPIIndex200JSONResponse{
+		Version: openapigen.V1,
+	}, nil
+}
+
+// newAPIRootCollection keeps the concrete collection fixture faithful to its
+// non-null OpenAPI contract. Generated Go slices remain nil-able, so every
+// domain collection constructor must enforce the same empty-array invariant.
+func newAPIRootCollection(items []openapigen.APIRoot, page openapigen.Page) openapigen.APIRootCollection {
+	if items == nil {
+		items = []openapigen.APIRoot{}
+	}
+	return openapigen.APIRootCollection{
+		Items: items,
+		Page:  page,
+	}
 }

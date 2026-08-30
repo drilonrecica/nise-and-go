@@ -4,13 +4,51 @@
 package openapigen
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 )
+
+// Defines values for APIRootVersion.
+const (
+	V1 APIRootVersion = "v1"
+)
+
+// Valid indicates whether the value is a known member of the APIRootVersion enum.
+func (e APIRootVersion) Valid() bool {
+	switch e {
+	case V1:
+		return true
+	default:
+		return false
+	}
+}
+
+// APIRoot The direct resource returned by the versioned API root.
+type APIRoot struct {
+	Version APIRootVersion `json:"version"`
+}
+
+// APIRootVersion defines model for APIRoot.Version.
+type APIRootVersion string
+
+// APIRootCollection A concrete collection contract fixture; domain collections define their own schemas.
+type APIRootCollection struct {
+	Items []APIRoot `json:"items"`
+
+	// Page Pagination metadata shared by collection response fixtures.
+	Page Page `json:"page"`
+}
+
+// Page Pagination metadata shared by collection response fixtures.
+type Page struct {
+	HasMore bool `json:"has_more"`
+}
 
 // Problem RFC 9457 Problem Details with the application's controlled extensions.
 type Problem struct {
@@ -26,7 +64,7 @@ type Problem struct {
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
-	// GetAPIIndex Confirm that the versioned API boundary is available
+	// GetAPIIndex Describe the versioned API boundary
 	// (GET /)
 	GetAPIIndex(w http.ResponseWriter, r *http.Request)
 }
@@ -35,7 +73,7 @@ type ServerInterface interface {
 
 type Unimplemented struct{}
 
-// GetAPIIndex Confirm that the versioned API boundary is available
+// GetAPIIndex Describe the versioned API boundary
 // (GET /)
 func (_ Unimplemented) GetAPIIndex(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -193,17 +231,26 @@ type GetAPIIndexResponseObject interface {
 	VisitGetAPIIndexResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error
 }
 
-type GetAPIIndex204Response struct {
-}
+type GetAPIIndex200JSONResponse APIRoot
 
-func (response GetAPIIndex204Response) VisitGetAPIIndexResponse(w http.ResponseWriter, _ func(size int) error) error {
-	w.WriteHeader(204)
-	return nil
+func (response GetAPIIndex200JSONResponse) VisitGetAPIIndexResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
-	// GetAPIIndex Confirm that the versioned API boundary is available
+	// GetAPIIndex Describe the versioned API boundary
 	// (GET /)
 	GetAPIIndex(ctx context.Context, request GetAPIIndexRequestObject) (GetAPIIndexResponseObject, error)
 }
