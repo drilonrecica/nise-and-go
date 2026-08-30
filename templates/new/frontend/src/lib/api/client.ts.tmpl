@@ -1,0 +1,165 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import type { paths } from './schema';
+
+const API_BASE_PATH = '/api/v1';
+const ACCEPT = 'application/json, application/problem+json';
+
+type HTTPMethod = 'get' | 'put' | 'post' | 'delete' | 'options' | 'head' | 'patch' | 'trace';
+type APIPath = Extract<keyof paths, string>;
+
+type OperationAt<Path extends APIPath, Method extends HTTPMethod> = Method extends keyof paths[Path]
+	? NonNullable<paths[Path][Method]>
+	: never;
+
+type PathsFor<Method extends HTTPMethod> = {
+	[Path in APIPath]: [OperationAt<Path, Method>] extends [never] ? never : Path;
+}[APIPath];
+
+type ContentValue<Content> = Content extends object ? Content[keyof Content] : undefined;
+
+type ResponseValue<Response> = Response extends { content: infer Content }
+	? ContentValue<Content>
+	: undefined;
+
+type SuccessfulResult<Operation> = Operation extends { responses: infer Responses }
+	? {
+			[Status in keyof Responses]: `${Status & (string | number)}` extends `2${string}`
+				? ResponseValue<Responses[Status]>
+				: never;
+		}[keyof Responses]
+	: never;
+
+export type APIFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+export interface APIRequestOptions {
+	readonly signal?: AbortSignal;
+}
+
+export interface APIClientOptions {
+	readonly fetch?: APIFetch;
+}
+
+export interface APIClient {
+	request<Method extends HTTPMethod, Path extends PathsFor<Method>>(
+		method: Method,
+		path: Path,
+		options?: APIRequestOptions
+	): Promise<SuccessfulResult<OperationAt<Path, Method>>>;
+
+	get<Path extends PathsFor<'get'>>(
+		path: Path,
+		options?: APIRequestOptions
+	): Promise<SuccessfulResult<OperationAt<Path, 'get'>>>;
+}
+
+// APIError represents a completed HTTP exchange with a non-success status.
+// Its message is intentionally independent of the response body; render the
+// typed public problem fields explicitly once the API defines them.
+export class APIError extends Error {
+	readonly status: number;
+	readonly requestID: string | null;
+	readonly body: unknown;
+
+	constructor(response: Response, body: unknown) {
+		super(`API request failed with status ${response.status}`);
+		this.name = 'APIError';
+		this.status = response.status;
+		this.requestID = response.headers.get('x-request-id');
+		this.body = body;
+	}
+}
+
+// APITransportError represents a failure before a usable HTTP response was
+// available, including an invalid success body. The public message never
+// includes the wrapped cause; cancellation errors are preserved separately.
+export class APITransportError extends Error {
+	readonly cause: unknown;
+
+	constructor(cause: unknown) {
+		super('API request could not be completed');
+		this.name = 'APITransportError';
+		this.cause = cause;
+	}
+}
+
+class Client implements APIClient {
+	readonly #fetch: APIFetch;
+
+	constructor(fetcher: APIFetch) {
+		this.#fetch = fetcher;
+	}
+
+	async request<Method extends HTTPMethod, Path extends PathsFor<Method>>(
+		method: Method,
+		path: Path,
+		options: APIRequestOptions = {}
+	): Promise<SuccessfulResult<OperationAt<Path, Method>>> {
+		let response: Response;
+		try {
+			response = await this.#fetch(apiURL(path), {
+				method: method.toUpperCase(),
+				credentials: 'same-origin',
+				headers: { Accept: ACCEPT },
+				signal: options.signal
+			});
+		} catch (error) {
+			if (isAbortError(error)) {
+				throw error;
+			}
+			throw new APITransportError(error);
+		}
+
+		if (!response.ok) {
+			throw new APIError(response, await readFailureBody(response));
+		}
+
+		try {
+			return (await readBody(response)) as SuccessfulResult<OperationAt<Path, Method>>;
+		} catch (error) {
+			throw new APITransportError(error);
+		}
+	}
+
+	get<Path extends PathsFor<'get'>>(
+		path: Path,
+		options?: APIRequestOptions
+	): Promise<SuccessfulResult<OperationAt<Path, 'get'>>> {
+		return this.request('get', path, options);
+	}
+}
+
+export function createAPIClient(options: APIClientOptions = {}): APIClient {
+	const fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
+	return new Client(fetcher);
+}
+
+function apiURL(path: APIPath): string {
+	return path === '/' ? `${API_BASE_PATH}/` : `${API_BASE_PATH}${path}`;
+}
+
+function isAbortError(error: unknown): boolean {
+	return error instanceof Error && error.name === 'AbortError';
+}
+
+async function readFailureBody(response: Response): Promise<unknown> {
+	try {
+		return await readBody(response);
+	} catch {
+		return undefined;
+	}
+}
+
+async function readBody(response: Response): Promise<unknown> {
+	if (response.status === 204 || response.status === 205 || response.body === null) {
+		return undefined;
+	}
+
+	const mediaType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+	if (mediaType === 'application/json' || mediaType?.endsWith('+json')) {
+		return response.json();
+	}
+
+	const text = await response.text();
+	return text === '' ? undefined : text;
+}

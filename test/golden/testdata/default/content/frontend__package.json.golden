@@ -9,20 +9,25 @@
   },
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "pnpm run api:check && vite build",
     "preview": "vite preview",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+    "check": "pnpm run api:check && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "test:unit": "svelte-kit sync && vitest run",
+    "api:generate": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts",
+    "api:check": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts --check"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "3.0.10",
     "@sveltejs/kit": "2.70.3",
     "@sveltejs/vite-plugin-svelte": "7.3.0",
     "@tailwindcss/vite": "4.3.3",
+    "openapi-typescript": "7.13.0",
     "svelte": "5.56.10",
     "svelte-check": "4.7.6",
     "tailwindcss": "4.3.3",
-    "typescript": "6.0.3",
-    "vite": "8.2.2"
+    "typescript": "5.9.3",
+    "vite": "8.2.2",
+    "vitest": "4.1.11"
   }
 }

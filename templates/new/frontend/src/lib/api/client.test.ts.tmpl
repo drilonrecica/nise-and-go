@@ -1,0 +1,87 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
+
+import {
+	APIError,
+	APITransportError,
+	createAPIClient,
+	type APIFetch
+} from './client';
+
+describe('API client', () => {
+	it('sends same-origin credentials and the cancellation signal', async () => {
+		const controller = new AbortController();
+		const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
+		const client = createAPIClient({ fetch: fetcher as APIFetch });
+
+		await expect(client.get('/', { signal: controller.signal })).resolves.toBeUndefined();
+		expect(fetcher).toHaveBeenCalledOnce();
+		expect(fetcher).toHaveBeenCalledWith('/api/v1/', {
+			method: 'GET',
+			credentials: 'same-origin',
+			headers: { Accept: 'application/json, application/problem+json' },
+			signal: controller.signal
+		});
+	});
+
+	it('maps HTTP failures without exposing their body in the message', async () => {
+		const problem = {
+			type: 'urn:problem:invalid',
+			detail: 'private decoder detail'
+		};
+		const fetcher: APIFetch = async () =>
+			new Response(JSON.stringify(problem), {
+				status: 422,
+				headers: {
+					'content-type': 'application/problem+json; charset=utf-8',
+					'x-request-id': 'req_123'
+				}
+			});
+		const client = createAPIClient({ fetch: fetcher });
+
+		const error = await client.get('/').catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(APIError);
+		expect(error).toMatchObject({ status: 422, requestID: 'req_123', body: problem });
+		expect((error as Error).message).toBe('API request failed with status 422');
+		expect((error as Error).message).not.toContain(problem.detail);
+	});
+
+	it('maps network failures without exposing their cause in the message', async () => {
+		const cause = new Error('failed beside /srv/private with secret-value');
+		const client = createAPIClient({
+			fetch: async () => {
+				throw cause;
+			}
+		});
+
+		const error = await client.get('/').catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(APITransportError);
+		expect(error).toMatchObject({ cause });
+		expect((error as Error).message).toBe('API request could not be completed');
+		expect((error as Error).message).not.toContain('secret-value');
+	});
+
+	it('preserves cancellation errors', async () => {
+		const cancellation = new DOMException('cancelled', 'AbortError');
+		const client = createAPIClient({
+			fetch: async () => {
+				throw cancellation;
+			}
+		});
+
+		await expect(client.get('/')).rejects.toBe(cancellation);
+	});
+
+	it('exposes only generated paths and methods to TypeScript', () => {
+		const client = createAPIClient({ fetch: async () => new Response(null, { status: 204 }) });
+
+		if (false) {
+			expectTypeOf(client.get('/')).toEqualTypeOf<Promise<undefined>>();
+			// @ts-expect-error /missing is not in the generated OpenAPI paths.
+			void client.get('/missing');
+			// @ts-expect-error the generated root path has no POST operation.
+			void client.request('post', '/');
+		}
+	});
+});

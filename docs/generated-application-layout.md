@@ -66,6 +66,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
 │   ├── pnpm-lock.yaml                 [app]   committed
 │   ├── svelte.config.js               [app]   adapter-static output path; see Embedding below
 │   ├── vite.config.ts                 [app]
+│   ├── vitest.config.ts               [app]   Node-only API-client unit suite; browser tests arrive later
 │   ├── tsconfig.json                  [app]
 │   ├── static/                        [app]   favicon and other served-as-is files
 │   └── src/
@@ -77,7 +78,8 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
 │       └── lib/
 │           ├── api/
 │           │   ├── schema.d.ts        [nise]  openapi-typescript output
-│           │   └── client.ts          [app]   small typed fetch wrapper over schema.d.ts
+│           │   ├── client.ts          [app]   small typed fetch wrapper over schema.d.ts
+│           │   └── client.test.ts     [app]   path, cookie, cancellation, and error contracts
 │           ├── components/            [app]   application-owned UI components
 │           └── features/<feature>/    [app]   feature-local stores, helpers, and components
 │
@@ -238,13 +240,15 @@ Three details matter:
 |---|---|---|---|
 | Strict chi server bindings | `internal/platform/httpapi/openapigen/openapi.gen.go` | oapi-codegen v2.8.0 | `[nise]` |
 | Typed SQL access | `internal/features/<feature>/store/` | sqlc | `[nise]` |
-| TypeScript models | `frontend/src/lib/api/schema.d.ts` | openapi-typescript | `[nise]` |
+| TypeScript models | `frontend/src/lib/api/schema.d.ts` | openapi-typescript 7.13.0 | `[nise]` |
 | Built SPA | `internal/platform/webui/embedded/client/` | `pnpm build` | `[nise]`, not committed |
 | sqlc configuration | `internal/features/<feature>/sqlc.yaml` | nise, then application | `[app]` |
 | Project recipe | `nise.json` | nise | `[nise]` |
 
-All three code generators write their own `Code generated … DO NOT EDIT.`
-headers, which satisfy the ownership-header rule for their output. sqlc
+External generators retain their own standard generated-file headers, which
+satisfy the ownership-header rule at their structurally generated paths.
+openapi-typescript's header omits its version, so its exact package pin and
+byte-diff gate provide that part of the reproducibility contract. sqlc
 configuration is deliberately feature-local and application-owned; see
 [ADR 0014](adr/0014-feature-colocated-sqlc.md).
 

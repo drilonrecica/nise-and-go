@@ -77,8 +77,9 @@ The four compile-time modules — `organizations`, `totp`, `notifications`, `upl
 | Strict chi server bindings | `internal/platform/httpapi/openapigen/` | oapi-codegen | Nise, regenerated |
 | Typed SQL access | `internal/features/<feature>/store/` | sqlc | Nise, regenerated |
 | SQL queries | `internal/features/<feature>/queries/` | hand-written | application |
-| TypeScript models | `frontend/src/lib/api/schema.d.ts` | openapi-typescript | Nise, regenerated |
+| TypeScript models | `frontend/src/lib/api/schema.d.ts` | openapi-typescript 7.13.0 | Nise, regenerated |
 | Typed fetch client | `frontend/src/lib/api/client.ts` | written once | application |
+| Typed fetch tests | `frontend/src/lib/api/client.test.ts` | written once | application |
 | Built SPA | `internal/platform/webui/embedded/client/` | `pnpm build` | Nise, regenerated, not committed |
 
 Ownership is readable from the path: the directory names `store/`, `openapigen/`, and `embedded/`, and any file ending `.gen.go`, mark regenerated output. Everything else is application-owned.

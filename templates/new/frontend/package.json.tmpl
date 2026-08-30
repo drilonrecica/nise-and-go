@@ -9,10 +9,13 @@
   },
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "pnpm run api:check && vite build",
     "preview": "vite preview",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+    "check": "pnpm run api:check && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "test:unit": "svelte-kit sync && vitest run",
+    "api:generate": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts",
+    "api:check": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts --check"
   },
   "devDependencies": {
 {{- range $i, $d := .FrontendDeps }}{{if $i}},{{end}}

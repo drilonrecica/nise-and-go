@@ -12,6 +12,7 @@ WORKDIR /src
 RUN corepack enable && corepack prepare {{.PackageManager}} --activate
 COPY frontend/package.json frontend/pnpm-lock.yaml* ./frontend/
 RUN pnpm --dir frontend install --frozen-lockfile
+COPY api/openapi.yaml ./api/openapi.yaml
 COPY frontend ./frontend
 RUN pnpm --dir frontend build
 
