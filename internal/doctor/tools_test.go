@@ -205,17 +205,13 @@ func TestGooseDoesNotRunImplicitlyInsideGeneratedProject(t *testing.T) {
 	}
 }
 
-// TestFutureGeneratorToolsSkipInsideGeneratedProject is fix round 2's
-// regression coverage: inside a generated project, tools not pinned there
-// yet must report StatusSkipped — never
-// StatusFail, and never even attempt to run the tool at all, since a
-// generated project's go.mod is not expected to declare them until their
-// M3/M4 tasks land.
+// TestOAPICodegenSkipsImplicitExecutionInsideGeneratedProject proves doctor
+// recognizes the generated-project pin without resolving or running it.
+// It must report StatusSkipped — never StatusFail — because explicit
+// `make api-check` is the user-authorized network/tool execution boundary.
 // The fakeRunner below has NO stubs for any "go tool ..." invocation on
-// purpose: if checkGeneratorTool ever called Runner.Run in this branch,
-// fakeRunner.Run's "no stub for ..." fallback error would surface as a
-// StatusFail, failing these tests loudly rather than silently.
-func TestFutureGeneratorToolsSkipInsideGeneratedProject(t *testing.T) {
+// purpose: an accidental Runner.Run call surfaces as a StatusFail.
+func TestOAPICodegenSkipsImplicitExecutionInsideGeneratedProject(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {

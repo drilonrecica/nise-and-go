@@ -3,19 +3,29 @@
 # api/
 
 `api/openapi.yaml` lives here: the authoritative transport contract for this
-application's JSON API. It is hand-edited, and both the Go server bindings
-(`internal/platform/httpapi/openapigen/`) and the TypeScript models
-(`frontend/src/lib/api/schema.d.ts`) are generated from it.
+application's JSON API. It is hand-edited. The Go server bindings under
+`internal/platform/httpapi/openapigen/` are generated from it now; the
+frontend TypeScript models will use the same source contract when added.
 
-This directory has no OpenAPI document yet. Later API tasks add the contract,
-generated bindings, and typed frontend client. The routing boundary already
-exists in `internal/platform/httpapi/router.go`: register operation routes
-relative to `/api/v1` through `httpapi.Deps.RegisterAPI`. Unknown paths under
-that exact prefix remain API `404` responses and never fall through to the
-embedded frontend.
+Edit `openapi.yaml`, then run `make api-generate`. The pinned oapi-codegen
+tool writes strict chi models and server bindings to
+`internal/platform/httpapi/openapigen/openapi.gen.go`. `make api-check`
+performs the same generation into a temporary file and fails on a byte
+difference without modifying the checked-in output; it is part of `make all`.
+
+Paths in the document are relative to the `/api/v1` server and router
+boundary. For example, `/widgets` becomes `/api/v1/widgets`; do not repeat
+the version prefix in every OpenAPI path. The initial bodyless API index at
+`GET /api/v1/` is only a wiring fixture, not a health endpoint.
 
 The API and document routers are sibling security boundaries with independent
 policies. Application middleware may be added only through the documented
 `httpapi.MiddlewareSlots`, inside the fixed security, request identity/logging,
 recovery, and metrics core. Keep `router_test.go` current if the application
 deliberately changes that contract.
+
+Implement generated operations on the application-owned `httpapi.Server` in
+`api.go`. Its compile-time `StrictServerInterface` assertion makes a changed
+contract fail the build until every operation has an implementation. Never
+edit `openapigen/`; it retains oapi-codegen's standard generated-code header
+and is replaced as a complete tool-owned output.

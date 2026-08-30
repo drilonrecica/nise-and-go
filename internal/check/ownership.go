@@ -35,19 +35,19 @@ const headerWindowLines = 5
 // The two directions are deliberately asymmetric, and the asymmetry is the
 // whole judgment in this check:
 //
-//   - A Nise-owned file MUST still carry the Nise-owned header. Losing it is
-//     unambiguous evidence of a hand edit, and — unlike the regeneration
-//     check — it stays conclusive no matter which nise built the file, because
-//     the header records no version (see internal/generator's manifest.go).
+//   - A Nise-owned file MUST still carry its expected generated-code marker.
+//     Usually that is the Nise-owned header. Checked-in output from a pinned
+//     external generator retains that tool's exact standard marker instead,
+//     so running the documented generation command leaves the tree clean.
 //
-//   - An app-owned file must merely NOT carry the Nise-owned header. Its
-//     absence proves nothing: the application owns the whole file and is free
-//     to delete the courtesy header, reorganize the file, or rewrite it from
-//     scratch. Requiring the app-owned header to survive would be enforcing
-//     starter conformity on a file whose entire point is that the application
-//     may do as it likes with it. What the check does catch is the one thing
-//     that is a real violation: generated output having landed on top of a
-//     file the application owns.
+//   - An app-owned file must merely NOT carry a recognized generated-code
+//     marker. Its absence proves nothing: the application owns the whole file
+//     and is free to delete the courtesy header, reorganize the file, or
+//     rewrite it from scratch. Requiring the app-owned header to survive would
+//     be enforcing starter conformity on a file whose entire point is that the
+//     application may do as it likes with it. What the check does catch is the
+//     one thing that is a real violation: generated output having landed on
+//     top of a file the application owns.
 //
 // A generated file that is simply gone is not a violation either. Deleting
 // an app-owned file is the application's prerogative, and a deleted
@@ -84,16 +84,19 @@ func checkOwnershipHeaders(root string, plan []generator.File) Check {
 		}
 		present++
 
-		marked := strings.Contains(head, generator.NiseOwnedHeader)
+		expectedMarker := ownershipMarker(f)
+		marked := strings.Contains(head, expectedMarker)
+		generated := strings.Contains(head, generator.NiseOwnedHeader) ||
+			strings.Contains(head, generator.OAPICodegenGeneratedHeader)
 		switch {
 		case f.Owner == generator.OwnerNise && !marked:
 			violations = append(violations, f.Path)
 			details = append(details, fmt.Sprintf(
-				"%s is nise-owned but its first %d lines no longer carry %q", f.Path, headerWindowLines, generator.NiseOwnedHeader))
-		case f.Owner == generator.OwnerApp && marked:
+				"%s is nise-owned but its first %d lines no longer carry %q", f.Path, headerWindowLines, expectedMarker))
+		case f.Owner == generator.OwnerApp && generated:
 			violations = append(violations, f.Path)
 			details = append(details, fmt.Sprintf(
-				"%s is application-owned but now carries the nise-owned header %q", f.Path, generator.NiseOwnedHeader))
+				"%s is application-owned but now carries a generated-code ownership marker", f.Path))
 		}
 	}
 
@@ -111,6 +114,13 @@ func checkOwnershipHeaders(root string, plan []generator.File) Check {
 	)
 	c.Paths = violations
 	return c
+}
+
+func ownershipMarker(f generator.File) string {
+	if f.Path == generator.OpenAPIGeneratedPath {
+		return generator.OAPICodegenGeneratedHeader
+	}
+	return generator.NiseOwnedHeader
 }
 
 // checkOwnershipContent verifies the two Nise-owned files that carry their

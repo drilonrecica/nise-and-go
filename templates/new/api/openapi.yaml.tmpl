@@ -1,0 +1,17 @@
+# Generated once by nise; owned by this application. Nise will not overwrite it.
+
+openapi: 3.0.3
+info:
+  title: "{{.AppName}} API"
+  version: 1.0.0
+  description: "The authoritative HTTP transport contract for {{.AppName}}."
+servers:
+  - url: /api/v1
+paths:
+  /:
+    get:
+      operationId: getAPIIndex
+      summary: Confirm that the versioned API boundary is available
+      responses:
+        "204":
+          description: The API boundary is available.

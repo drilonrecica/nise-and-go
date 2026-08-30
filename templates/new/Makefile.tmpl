@@ -8,14 +8,17 @@ GO_PACKAGES := ./cmd/... ./db/... ./internal/...
 GO_FMT_DIRS := cmd db internal
 BINARY := bin/{{.AppName}}
 SQLC_CONFIGS := $(shell find internal/features -type f -name sqlc.yaml -print | LC_ALL=C sort)
+OAPI_SPEC := api/openapi.yaml
+OAPI_CONFIG := api/oapi-codegen.yaml
+OAPI_GENERATED := internal/platform/httpapi/openapigen/openapi.gen.go
 
-.PHONY: help build run test migration-test fmt lint sqlc-generate sqlc-compile sqlc-vet web-install web-build all
+.PHONY: help build run test migration-test fmt lint sqlc-generate sqlc-compile sqlc-vet api-generate api-check web-install web-build all
 
 help: ## List the available targets.
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
 
-all: fmt lint sqlc-vet test build ## Format, lint, vet SQL, test, and build.
+all: fmt api-check lint sqlc-vet test build ## Format, verify generated API bindings, lint, vet SQL, test, and build.
 
 build: ## Build the application binary into bin/.
 	go build -o $(BINARY) ./cmd/{{.AppName}}
@@ -67,6 +70,20 @@ sqlc-vet: ## Enforce output confinement and project SQL safety rules.
 			echo "sqlc vet -f $$config"; \
 			go tool sqlc vet --no-remote -f "$$config"; \
 		done; \
+	fi
+
+api-generate: ## Regenerate strict chi bindings from the authoritative OpenAPI document.
+	go tool oapi-codegen --config $(OAPI_CONFIG) -o $(OAPI_GENERATED) $(OAPI_SPEC)
+
+api-check: ## Fail when checked-in strict chi bindings are stale.
+	@set -e; \
+	temporary="$$(mktemp)"; \
+	trap 'rm -f "$$temporary"' 0 1 2 15; \
+	go tool oapi-codegen --config $(OAPI_CONFIG) -o "$$temporary" $(OAPI_SPEC); \
+	if ! cmp -s $(OAPI_GENERATED) "$$temporary"; then \
+		echo "$(OAPI_GENERATED) is stale; run 'make api-generate'" >&2; \
+		diff -u $(OAPI_GENERATED) "$$temporary" || true; \
+		exit 1; \
 	fi
 
 web-install: ## Install the frontend's dependencies.

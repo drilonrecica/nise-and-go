@@ -133,6 +133,14 @@ func TestRunInsideAGeneratedProject(t *testing.T) {
 			if c.Remedy != "" {
 				t.Errorf("%s check Remedy = %q, want empty inside a generated project", c.Name, c.Remedy)
 			}
+			if c.Name == "oapi-codegen" {
+				if c.Found != "declared by this project's go.mod but not executed implicitly" {
+					t.Errorf("oapi-codegen Found = %q, want generated-project declaration", c.Found)
+				}
+				if !strings.Contains(c.Required, "make api-check") {
+					t.Errorf("oapi-codegen Required = %q, want explicit API generation check", c.Required)
+				}
+			}
 		}
 	}
 

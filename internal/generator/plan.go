@@ -120,23 +120,24 @@ func (o Options) Recipe() (recipe.Recipe, error) {
 // mode that matters — a template silently rendering an empty value is how a
 // generated project ends up with a blank module path.
 type templateData struct {
-	AppName        string
-	ModulePath     string
-	Profile        string
-	Modules        []string
-	NiseModule     string
-	NiseVersion    string
-	ChiVersion     string
-	PgxVersion     string
-	SQLCVersion    string
-	GooseVersion   string
-	GoVersion      string
-	GoImageTag     string
-	NodeVersion    string
-	NodeMajor      string
-	PnpmVersion    string
-	PackageManager string
-	FrontendDeps   []Dependency
+	AppName            string
+	ModulePath         string
+	Profile            string
+	Modules            []string
+	NiseModule         string
+	NiseVersion        string
+	ChiVersion         string
+	PgxVersion         string
+	SQLCVersion        string
+	GooseVersion       string
+	OAPICodegenVersion string
+	GoVersion          string
+	GoImageTag         string
+	NodeVersion        string
+	NodeMajor          string
+	PnpmVersion        string
+	PackageManager     string
+	FrontendDeps       []Dependency
 	// ReplacePlaceholder is the literal stand-in for a local framework
 	// checkout in the pre-release replace directive. It is never a
 	// resolved path — see ReplacePathPlaceholder.
@@ -160,6 +161,7 @@ func newTemplateData(opts Options) templateData {
 		PgxVersion:         PgxVersion,
 		SQLCVersion:        SQLCVersion,
 		GooseVersion:       GooseVersion,
+		OAPICodegenVersion: OAPICodegenVersion,
 		GoVersion:          GoDirective,
 		GoImageTag:         GoImageTag,
 		NodeVersion:        NodeVersion,
