@@ -6,10 +6,30 @@ and its `servers` entry declares `/api/v1` for clients and documentation. A
 path `/widgets` in the document is registered at `/api/v1/widgets`; do not put
 the prefix into every path a second time.
 
-The initial document defines only `GET /api/v1/`, a bodyless `204` API index.
-It is a compile and routing fixture proving that the contract, generated
-strict interface, application adapter, and versioned router are connected. It
-is not a liveness probe and exposes no process or dependency state.
+The initial operation is `GET /api/v1/`. It returns the direct `APIRoot`
+resource `{ "version": "v1" }`, proving that the contract, generated strict
+interface, application adapter, typed frontend client, and versioned router
+are connected. It is not a liveness probe and exposes no process or dependency
+state.
+
+## Successful response shapes
+
+A single resource is the response body itself; do not wrap it in `data` or
+`result`. A collection is a concrete object with required `items` and `page`
+members. `items` is always an array (`[]` when empty), and `page` is always a
+non-null object. Both the resource and collection schemas are closed with
+`additionalProperties: false` so an accidental generic envelope is contract
+drift rather than an undocumented convention.
+
+`APIRootCollection` demonstrates this shape in generated Go and TypeScript
+models without inventing a public list endpoint. Define each domain collection
+explicitly in OpenAPI—for example, `InvoiceCollection`—instead of adding a
+generic runtime response type. Because a generated Go slice can still be nil,
+each concrete server-side collection constructor normalizes nil items to an
+empty non-nil slice before writing; the API-root fixture makes that rule
+executable. The initial neutral `Page` requires `has_more`; cursor and offset
+reporting contracts add their distinct metadata without combining incompatible
+pagination semantics.
 
 ## Files and ownership
 
@@ -181,9 +201,9 @@ not to damage the last valid checked-in output.
 
 `client.ts` imports `paths` from the generated model and exposes only methods
 that exist for a generated path. Successful values are inferred from the
-operation's 2xx responses; the initial bodyless API index is therefore typed
-as `Promise<undefined>`. Invalid paths and unsupported methods fail TypeScript
-checking.
+operation's 2xx responses; the API index is therefore typed as
+`Promise<APIRoot>` and returns the direct resource without an envelope.
+Invalid paths and unsupported methods fail TypeScript checking.
 
 Every request uses the fixed same-origin `/api/v1` base, explicit
 `credentials: 'same-origin'`, and an optional caller-provided `AbortSignal`.

@@ -173,7 +173,9 @@ diff gate. Its vendored strict templates delegate JSON to an
 application-owned decoder/writer that rejects oversized, ambiguous, unknown,
 and wrongly typed input before application code runs. A validated,
 application-owned Problem catalog gives every API failure one closed RFC 9457
-shape without exposing internal causes. See
+shape without exposing internal causes. Successful resources are returned
+directly, while concrete collection schemas require non-null `items` and
+`page` members rather than a generic runtime envelope. See
 [OpenAPI server bindings](openapi.md).
 
 ## Core services and optional modules

@@ -40,8 +40,16 @@ with fixed same-origin credentials, cancellation, and stable error mapping.
 
 Paths in the document are relative to the `/api/v1` server and router
 boundary. For example, `/widgets` becomes `/api/v1/widgets`; do not repeat
-the version prefix in every OpenAPI path. The initial bodyless API index at
-`GET /api/v1/` is only a wiring fixture, not a health endpoint.
+the version prefix in every OpenAPI path. The API index at `GET /api/v1/`
+returns the direct version resource and is not a health endpoint.
+
+Return a single resource as the body itself. Define every collection as a
+concrete closed `{items,page}` schema: `items` is required and encodes empty as
+`[]`, while `page` is a required non-null object. `APIRootCollection` is the
+generated contract fixture, not a public list endpoint. Domain APIs should
+define schemas and constructors such as `InvoiceCollection`; each constructor
+must normalize a nil Go slice to `[]` before writing. Do not add a generic
+runtime envelope or `data`, `result`, and `meta` wrappers.
 
 The API and document routers are sibling security boundaries with independent
 policies. Application middleware may be added only through the documented

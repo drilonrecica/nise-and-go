@@ -11,7 +11,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Confirm that the versioned API boundary is available */
+        /** Describe the versioned API boundary */
         get: operations["getAPIIndex"];
         put?: never;
         post?: never;
@@ -25,6 +25,20 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description The direct resource returned by the versioned API root. */
+        APIRoot: {
+            /** @enum {string} */
+            version: "v1";
+        };
+        /** @description Pagination metadata shared by collection response fixtures. */
+        Page: {
+            has_more: boolean;
+        };
+        /** @description A concrete collection contract fixture; domain collections define their own schemas. */
+        APIRootCollection: {
+            items: components["schemas"]["APIRoot"][];
+            page: components["schemas"]["Page"];
+        };
         /** @description RFC 9457 Problem Details with the application's controlled extensions. */
         Problem: {
             /** Format: uri-reference */
@@ -67,12 +81,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The API boundary is available. */
-            204: {
+            /** @description The API boundary resource. */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["APIRoot"];
+                };
             };
         };
     };

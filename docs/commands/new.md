@@ -406,7 +406,8 @@ files and omitted directories.
 - **Authoritative OpenAPI and strict chi bindings** with an explicit
   application adapter, compile-time interface completeness, a pinned v2.8.0
   generator, byte-identical regeneration, and a non-mutating stale-output
-  gate. `GET /api/v1/` is the bodyless wiring fixture.
+  gate. `GET /api/v1/` returns the direct version resource, while collections
+  use explicit non-null `{items,page}` contracts.
 - **Controlled RFC 9457 API failures** for generated transport errors,
   routing failures, and recovery, with stable codes, request/correlation IDs,
   bounded output, and no arbitrary extension or internal-cause leakage.

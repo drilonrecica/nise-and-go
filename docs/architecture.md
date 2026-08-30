@@ -46,6 +46,7 @@ Optional multitenancy uses `org_id` plus PostgreSQL row-level security as defens
 - Bounded single-value JSON decoding with unknown and duplicate fields refused.
 - openapi-typescript frontend models and a lightweight fetch client.
 - RFC 9457 Problem Details errors.
+- Direct resource bodies and explicit `{items,page}` collection schemas.
 - Cursor pagination by default; offset pagination for appropriate reports.
 - Idempotency for sensitive commands.
 

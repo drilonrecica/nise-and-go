@@ -8,14 +8,21 @@ import {
 	createAPIClient,
 	type APIFetch
 } from './client';
+import type { components } from './schema';
 
 describe('API client', () => {
-	it('sends same-origin credentials and the cancellation signal', async () => {
+	it('returns the direct resource without an envelope', async () => {
 		const controller = new AbortController();
-		const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
+		const fetcher = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ version: 'v1' }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' }
+				})
+		);
 		const client = createAPIClient({ fetch: fetcher as APIFetch });
 
-		await expect(client.get('/', { signal: controller.signal })).resolves.toBeUndefined();
+		await expect(client.get('/', { signal: controller.signal })).resolves.toEqual({ version: 'v1' });
 		expect(fetcher).toHaveBeenCalledOnce();
 		expect(fetcher).toHaveBeenCalledWith('/api/v1/', {
 			method: 'GET',
@@ -75,9 +82,24 @@ describe('API client', () => {
 
 	it('exposes only generated paths and methods to TypeScript', () => {
 		const client = createAPIClient({ fetch: async () => new Response(null, { status: 204 }) });
+		const collection = {
+			items: [],
+			page: { has_more: false }
+		} satisfies components['schemas']['APIRootCollection'];
+		expect(collection).toEqual({ items: [], page: { has_more: false } });
 
 		if (false) {
-			expectTypeOf(client.get('/')).toEqualTypeOf<Promise<undefined>>();
+			expectTypeOf(client.get('/')).toEqualTypeOf<
+				Promise<components['schemas']['APIRoot']>
+			>();
+			// @ts-expect-error collection items are required and never null.
+			void ({ items: null, page: { has_more: false } } satisfies components['schemas']['APIRootCollection']);
+			// @ts-expect-error collection page metadata is required and never null.
+			void ({ items: [], page: null } satisfies components['schemas']['APIRootCollection']);
+			// @ts-expect-error collection items cannot be omitted.
+			void ({ page: { has_more: false } } satisfies components['schemas']['APIRootCollection']);
+			// @ts-expect-error generic envelope members are not in the collection contract.
+			void ({ items: [], page: { has_more: false }, data: [] } satisfies components['schemas']['APIRootCollection']);
 			// @ts-expect-error /missing is not in the generated OpenAPI paths.
 			void client.get('/missing');
 			// @ts-expect-error the generated root path has no POST operation.

@@ -35,11 +35,18 @@ func TestStrictOpenAPIIndexRoute(t *testing.T) {
 	}
 	for _, requestPath := range []string{"/api/v1", "/api/v1/"} {
 		response := serveRouter(handler, requestPath)
-		if response.Code != http.StatusNoContent {
-			t.Errorf("GET %s status = %d, want 204", requestPath, response.Code)
+		if response.Code != http.StatusOK {
+			t.Errorf("GET %s status = %d, want 200", requestPath, response.Code)
 		}
-		if response.Body.Len() != 0 {
-			t.Errorf("GET %s body = %q, want empty", requestPath, response.Body.String())
+		if got := response.Header().Get("Content-Type"); got != "application/json" {
+			t.Errorf("GET %s Content-Type = %q, want application/json", requestPath, got)
+		}
+		wantBody := map[string]any{"version": "v1"}
+		var gotBody map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &gotBody); err != nil {
+			t.Errorf("GET %s decode body: %v", requestPath, err)
+		} else if len(gotBody) != len(wantBody) || gotBody["version"] != wantBody["version"] {
+			t.Errorf("GET %s body = %#v, want direct resource %#v", requestPath, gotBody, wantBody)
 		}
 		if got := response.Header().Get(secure.HeaderCSP); got != policy.ContentSecurityPolicy() {
 			t.Errorf("GET %s CSP = %q, want API policy", requestPath, got)
@@ -57,6 +64,31 @@ func TestStrictOpenAPIIndexRoute(t *testing.T) {
 	unmatched := serveRouter(handler, "/api/v1/not-in-openapi")
 	if unmatched.Code != http.StatusNotFound {
 		t.Fatalf("unmatched API status = %d, want 404", unmatched.Code)
+	}
+}
+
+func TestCollectionResponseShape(t *testing.T) {
+	t.Parallel()
+
+	response := httptest.NewRecorder()
+	err := httpjson.Write(response, http.StatusOK, newAPIRootCollection(
+		nil,
+		openapigen.Page{
+			HasMore: false,
+		},
+	))
+	if err != nil {
+		t.Fatalf("write collection fixture: %v", err)
+	}
+
+	const want = `{"items":[],"page":{"has_more":false}}` + "\n"
+	if got := response.Body.String(); got != want {
+		t.Fatalf("collection body = %q, want exact non-null shape %q", got, want)
+	}
+	if strings.Contains(response.Body.String(), `"data"`) ||
+		strings.Contains(response.Body.String(), `"result"`) ||
+		strings.Contains(response.Body.String(), `"meta"`) {
+		t.Fatalf("collection body contains a generic envelope: %q", response.Body.String())
 	}
 }
 

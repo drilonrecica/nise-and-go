@@ -11,11 +11,11 @@
 .nise/architecture.json file 0644 2c1b7fa51a2f42102a4cc0ee94e4f3ab46fafa949c4bcfb6cd4c8ddbff1b6eaa
 AGENTS.md file 0644 1a53a2c39c6f292c18ed89e1c6095758f0d0e7d8ad2b5e439cfd87e7a3c7a76c
 Makefile file 0644 972bb2e915d46ae0f6997aa08265399e8a8faa84b00c9640267f3a9d230afc78
-README.md file 0644 fdf67a7142dd123fd86582a64532a6a9407d983e8832cf9112beea30c41e00b2
+README.md file 0644 5b8ac85ebbc7056387669fc12f98a2ea41ac26d8eab79e4a91e2499ffd12b7a3
 api dir 0755
-api/README.md file 0644 bb9d8717bf470935e54e3581de9dfc7f277d7c407c1ee0bd17757a92e0d31370
+api/README.md file 0644 bb86bea4b9f1806aff456f78c5e19b6a9ae3567c16f8bfe917bc751f66152571
 api/oapi-codegen.yaml file 0644 d309bcb97daca34cbe295ab8deeb503f7a9081599ec52ad266360f5e7e329ae7
-api/openapi.yaml file 0644 8b7069a66b28416b952d72badae0f663b164ac53f01dfd8f24a772a9ff92f3d7
+api/openapi.yaml file 0644 af378e3d34e19916d8ac7691fe95c5f02ae6e9c84dc8d5d341fe1c7b79f178c2
 cmd dir 0755
 cmd/myapp dir 0755
 cmd/myapp/main.go file 0644 63f3365d397387f6a33691be538d77a893a16e95ec1f674be2e8e4eef0a65c7a
@@ -32,7 +32,7 @@ deploy/README.md file 0644 8040eed460f74fbece44b0f5bf1080bf1d821f99d6a7119947028
 deploy/compose.yaml file 0644 a993cfffeb42db237179c3663f8e22e574580ef0c7ab74a008664b961c332933
 frontend dir 0755
 frontend/.gitignore file 0644 2dd21d60d8b83062584d4be22e8b314de402773497ce0041fccdd6968fbc34aa
-frontend/README.md file 0644 583f3b92d9e31977e5a948af8d48b62145af188b28006b3408a4a178963fb700
+frontend/README.md file 0644 f0fae3d2e1022b6367fde7e6f037ee0674fc061212b7ff72c39cefcd50e842b2
 frontend/package.json file 0644 8999b65f0d6c31210c33ebaca62ec6f94f7eeaa2d27c5be050bf6183b2ad988f
 frontend/src dir 0755
 frontend/src/app.css file 0644 5015474a40107560eb09eb5bc3f28bef1beae96d7030fc2068f11253e7c58033
@@ -40,9 +40,9 @@ frontend/src/app.d.ts file 0644 d231593a748a2379dc8248d2a06d2d8ef723c8e8f8a4a3b1
 frontend/src/app.html file 0644 7e5338b791f818f9e4cbb2d84d9a2e04dc674415292da1061d6634cb206dbb18
 frontend/src/lib dir 0755
 frontend/src/lib/api dir 0755
-frontend/src/lib/api/client.test.ts file 0644 c43e1f5ed794d04ef5c70a98efb39ed95673f7049303f868153142d538e8dfba
+frontend/src/lib/api/client.test.ts file 0644 0057bcc260c56f6ba0b02a12916ca2619d26db2296d48307c53d84253512742b
 frontend/src/lib/api/client.ts file 0644 f117bc9d9a514bb145fe4ed8ce0433410af11c47aad45bc7a17f54da4eb3dd66
-frontend/src/lib/api/schema.d.ts file 0644 144665dc2fc4836b4cc79a84637251c0a21749e5b2328f8e936795329050280a
+frontend/src/lib/api/schema.d.ts file 0644 e130c654a63883c5fd3b846ed5a77c35591082751210e194ec08b1f140246902
 frontend/src/routes dir 0755
 frontend/src/routes/+layout.svelte file 0644 7fd5a3d417470dc49c42f74fbfa39e12d138f22e5c879215d9738c2800c5d1a6
 frontend/src/routes/+layout.ts file 0644 48e77d596307eaae3c74ffe8785ead5af1bda4a96218306fab7ee34658d132e1
@@ -91,13 +91,13 @@ internal/platform/database/testdata/migration-upgrades/00001_baseline.sql file 0
 internal/platform/database/transaction.go file 0644 ce4a448d06884dc199f3e5b496d96815fef57fa4ae0ab1237a6f264f2e28742b
 internal/platform/database/transaction_test.go file 0644 afd0840cc8f1c8f4a845367865af78be3875699f781d63c1a12a11e92b3bd9fd
 internal/platform/httpapi dir 0755
-internal/platform/httpapi/api.go file 0644 3ca526d8dd878ebbfea774b91eace8c1e00270197581e4b19ad56bb970ced143
-internal/platform/httpapi/api_test.go file 0644 c25a12d20ce7d4477ccb5db2ef91356886b29e563e7593e06c956dbd4970c46e
+internal/platform/httpapi/api.go file 0644 5331adc9678b169d273acf8313519600eef7f5125fafd1cc4ea31daf88ffff52
+internal/platform/httpapi/api_test.go file 0644 c87e5159cd40acbf9c8937c54a1f70e4e6a8433c43d67857837930b037e8ddc5
 internal/platform/httpapi/httpjson dir 0755
 internal/platform/httpapi/httpjson/json.go file 0644 a3044e4abe486e569be1f815539f66b6b99ce447d624469a18e9b965b8f94ac6
 internal/platform/httpapi/httpjson/json_test.go file 0644 f25721346a0b16cbfe5f9746dabcba2b10892fe2e09a3f72b2d136a3138b48db
 internal/platform/httpapi/openapigen dir 0755
-internal/platform/httpapi/openapigen/openapi.gen.go file 0644 984837165d1c78dcb727566a2e4eaa2c2aab026921bc7a9f376b85777cfd520f
+internal/platform/httpapi/openapigen/openapi.gen.go file 0644 305d0ccb48024fcf38ea5104dbbf1aaf9ca61885383a8a870f6747266373ae1e
 internal/platform/httpapi/problem dir 0755
 internal/platform/httpapi/problem/problem.go file 0644 65fe32aa67c6fc0769cc8bd7a5dc249c0c2ebd0da30223f6577ee493f3dbb6c0
 internal/platform/httpapi/problem/problem_test.go file 0644 58ec205b552c9bfb69ba04c2e13d263f39f27ef129023b78776f44321583be0c
