@@ -11,7 +11,30 @@ pnpm install     # once
 pnpm dev         # Vite dev server, hot reload
 pnpm build       # production build — see below
 pnpm check       # svelte-check type checking
+pnpm test:unit   # typed API-client unit contracts
 ```
+
+## OpenAPI models and client
+
+`../api/openapi.yaml` is authoritative. The frontend pins
+openapi-typescript and checks its complete output into
+`src/lib/api/schema.d.ts`:
+
+```sh
+pnpm api:generate  # replace schema.d.ts
+pnpm api:check     # non-mutating stale-output check
+```
+
+Do not edit `schema.d.ts`. `src/lib/api/client.ts` is application-owned: it
+uses the generated path/operation types, always sends same-origin browser
+credentials, forwards `AbortSignal`, and maps HTTP and transport failures to
+stable error classes without copying response details into their messages.
+Extend that wrapper deliberately as the API gains real operations; do not add
+a second client framework beside it.
+
+`pnpm build` and `pnpm check` both refuse stale models. The initial Vitest
+suite is Node-only and covers the fetch wrapper. Browser component and
+Playwright coverage arrive with the application-shell milestone.
 
 ## `pnpm build` writes outside this directory
 
@@ -56,8 +79,8 @@ whose inline style attribute the policy blocks. Do not remove that rule.
 ## What is deliberately absent
 
 This is a minimal but real SvelteKit project: it installs, builds,
-type-checks, and renders one page served by the Go binary. The application
-shell — navigation, theme and language controls, authentication screens,
-tables, and the component set — arrives with a later milestone, as do the
-Vitest component suite and the Playwright end-to-end suite. This tree is
-where all of it lands.
+type-checks, tests its API client, and renders one page served by the Go
+binary. The application shell — navigation, theme and language controls,
+authentication screens, tables, and the component set — arrives with a later
+milestone, as do the Vitest browser-component suite and the Playwright
+end-to-end suite. This tree is where all of it lands.

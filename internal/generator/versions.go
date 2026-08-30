@@ -68,6 +68,18 @@ const (
 	// through its packageManager field, so Corepack activates exactly this
 	// one per project.
 	PnpmVersion = "10.33.0"
+
+	// OpenAPITypescriptVersion pins frontend type generation from the same
+	// authoritative document as the strict Go server bindings.
+	OpenAPITypescriptVersion = "7.13.0"
+
+	// TypeScriptVersion is the newest TypeScript release in the major range
+	// openapi-typescript declares compatible.
+	TypeScriptVersion = "5.9.3"
+
+	// VitestVersion pins the Node-based unit runner used for the generated
+	// frontend's application-owned TypeScript contracts.
+	VitestVersion = "4.1.11"
 )
 
 // Dependency is one pinned frontend package.
@@ -88,11 +100,13 @@ var frontendDependencies = []Dependency{
 	{Name: "@sveltejs/kit", Version: "2.70.3"},
 	{Name: "@sveltejs/vite-plugin-svelte", Version: "7.3.0"},
 	{Name: "@tailwindcss/vite", Version: "4.3.3"},
+	{Name: "openapi-typescript", Version: OpenAPITypescriptVersion},
 	{Name: "svelte", Version: "5.56.10"},
 	{Name: "svelte-check", Version: "4.7.6"},
 	{Name: "tailwindcss", Version: "4.3.3"},
-	{Name: "typescript", Version: "6.0.3"},
+	{Name: "typescript", Version: TypeScriptVersion},
 	{Name: "vite", Version: "8.2.2"},
+	{Name: "vitest", Version: VitestVersion},
 }
 
 // FrontendDependencies returns the pinned frontend packages, in the order

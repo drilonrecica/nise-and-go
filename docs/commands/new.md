@@ -269,10 +269,15 @@ myapp/
 │   ├── svelte.config.js          [app]   adapter output path into the Go package
 │   ├── tsconfig.json             [app]
 │   ├── vite.config.ts            [app]
+│   ├── vitest.config.ts          [app]   Node-only API-client unit config
 │   ├── src/
 │   │   ├── app.css               [app]   Tailwind entry; restores the a11y announcer
 │   │   ├── app.d.ts              [app]
 │   │   ├── app.html              [app]
+│   │   ├── lib/api/
+│   │   │   ├── schema.d.ts       [nise] complete openapi-typescript output
+│   │   │   ├── client.ts         [app]   lightweight typed fetch client
+│   │   │   └── client.test.ts    [app]   credentials/cancellation/error contracts
 │   │   └── routes/
 │   │       ├── +layout.svelte    [app]
 │   │       ├── +layout.ts        [app]   prerender = true, ssr = false
@@ -326,7 +331,7 @@ myapp/
 
 ```
 
-67 files. Ownership markers are from
+71 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Files rendered directly by Nise declare the same thing in a
@@ -396,6 +401,10 @@ files and omitted directories.
   application adapter, compile-time interface completeness, a pinned v2.8.0
   generator, byte-identical regeneration, and a non-mutating stale-output
   gate. `GET /api/v1/` is the bodyless wiring fixture.
+- **Generated TypeScript API paths and a lightweight client** with a pinned
+  openapi-typescript drift gate, compile-time path/method restrictions,
+  explicit same-origin credentials, forwarded cancellation, generic public
+  errors, and a real Node-only Vitest contract.
 - **HTTP metrics** labeled by the router's resolved route template, exposed
   at `/internal/metrics` in Prometheus text format — mounted only when
   `OPERATOR_TOKEN` is set, and always behind it. Without the token the
@@ -423,9 +432,8 @@ scaffold code for subsystems that do not exist yet.
 | Absent | Arrives with |
 |---|---|
 | Generated feature `sqlc` output | M7 — the feature generator will write configs carrying the M3 query-safety contract; the validator and `sqlc-vet` target are present now |
-| Generated TypeScript models and typed frontend client | M4-003 — the authoritative OpenAPI document and strict Go server boundary are present now |
 | Sessions, authentication, authorization, audit log | M5 — `internal/features/` is the reserved seam |
-| **The application shell**: sidebar, navigation, theme and language controls, authentication screens, tables, the component set, and the Vitest and Playwright suites | **M6** — `frontend/` is a minimal but real SvelteKit project today: it installs, builds, type-checks, and renders one page served by the Go binary. Nothing in the layout moves when M6 fills it in. |
+| **The application shell**: sidebar, navigation, theme and language controls, authentication screens, tables, the component set, and browser-component/Playwright suites | **M6** — `frontend/` already installs, builds, type-checks, unit-tests the API client, and renders one page served by the Go binary. Nothing in the layout moves when M6 fills it in. |
 | Feature and resource generation | M7 — see [`nise generate`](generate.md) |
 | Background jobs and mail | M8 — `internal/app/modes.go` already wires a worker component whose loop registers nothing |
 
@@ -433,12 +441,10 @@ scaffold code for subsystems that do not exist yet.
 
 [`nise test`](test.md) looks for `test:unit` or `test:component`, and
 `test:e2e` or `e2e`, in `frontend/package.json`. The generated
-`package.json` declares **none of them**, so `nise test` reports the
-component and end-to-end suites as `skipped` — which is accurate: no such
-suite exists in this slice. The Vitest and Playwright integrations are M6's,
-and adding a script that runs an empty suite would trade an honest `skipped`
-for a meaningless `passed`. When M6 adds them, it must use the names
-`nise test` already looks for.
+`test:unit` runs the real Node-only typed-client suite, so the default command
+runs it after the Go suite. End-to-end remains honestly `skipped`. M6 expands
+the Vitest boundary to browser components and adds Playwright; it does not
+need to invent a second script-discovery convention.
 
 ### Compile-time modules today
 

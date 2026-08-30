@@ -3,15 +3,20 @@
 # api/
 
 `api/openapi.yaml` lives here: the authoritative transport contract for this
-application's JSON API. It is hand-edited. The Go server bindings under
-`internal/platform/httpapi/openapigen/` are generated from it now; the
-frontend TypeScript models will use the same source contract when added.
+application's JSON API. It is hand-edited. Both the Go server bindings under
+`internal/platform/httpapi/openapigen/` and the frontend TypeScript models at
+`frontend/src/lib/api/schema.d.ts` are generated from it.
 
 Edit `openapi.yaml`, then run `make api-generate`. The pinned oapi-codegen
 tool writes strict chi models and server bindings to
 `internal/platform/httpapi/openapigen/openapi.gen.go`. `make api-check`
 performs the same generation into a temporary file and fails on a byte
 difference without modifying the checked-in output; it is part of `make all`.
+
+Run `make api-types-generate` for the checked-in frontend model and
+`make api-types-check` for its non-mutating openapi-typescript `--check` gate.
+The application-owned `frontend/src/lib/api/client.ts` wraps those path types
+with fixed same-origin credentials, cancellation, and stable error mapping.
 
 Paths in the document are relative to the `/api/v1` server and router
 boundary. For example, `/widgets` becomes `/api/v1/widgets`; do not repeat

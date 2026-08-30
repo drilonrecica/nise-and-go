@@ -60,7 +60,11 @@ Commit `go.sum` and `frontend/pnpm-lock.yaml` after the first run.
 | `make sqlc-generate` | Regenerate every feature-local `store/` |
 | `make api-generate` | Regenerate strict chi bindings from `api/openapi.yaml` |
 | `make api-check` | Fail if checked-in strict chi bindings are stale |
+| `make api-types-generate` | Regenerate TypeScript models from `api/openapi.yaml` |
+| `make api-types-check` | Fail if checked-in TypeScript models are stale |
 | `make web-install` | `pnpm --dir frontend install` |
+| `make web-check` | Check generated API types and type-check the frontend |
+| `make web-test` | Run the frontend's typed-client unit suite |
 | `make web-build` | `pnpm --dir frontend build` |
 
 Go targets are named explicitly rather than `./...`, because `frontend/`
@@ -206,6 +210,13 @@ non-mutating byte comparison and is part of `make all`. Application handlers
 implement the generated `openapigen.StrictServerInterface` through
 `internal/platform/httpapi/api.go`. The initial `GET /api/v1/` returns a
 bodyless `204` as a wiring fixture, not as a health probe.
+
+The same document generates `frontend/src/lib/api/schema.d.ts`; use
+`make api-types-generate` and `make api-types-check`. The application-owned
+`client.ts` restricts calls to generated paths and methods, sends explicit
+same-origin credentials, forwards cancellation, and maps failures without
+putting bodies or causes into public error messages. `make all` type-checks
+and runs this client contract after the frontend dependencies are installed.
 
 ## Health probes
 

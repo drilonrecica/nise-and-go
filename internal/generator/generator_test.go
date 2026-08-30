@@ -146,6 +146,9 @@ func TestEveryGeneratedFileDeclaresItsOwnership(t *testing.T) {
 		if f.Path == generator.OpenAPIGeneratedPath {
 			want = generator.OAPICodegenGeneratedHeader
 		}
+		if f.Path == generator.OpenAPITypescriptGeneratedPath {
+			want = generator.OpenAPITypescriptGeneratedHeader
+		}
 		head := string(f.Content)
 		if len(head) > 400 {
 			head = head[:400]

@@ -12,13 +12,13 @@ OAPI_SPEC := api/openapi.yaml
 OAPI_CONFIG := api/oapi-codegen.yaml
 OAPI_GENERATED := internal/platform/httpapi/openapigen/openapi.gen.go
 
-.PHONY: help build run test migration-test fmt lint sqlc-generate sqlc-compile sqlc-vet api-generate api-check web-install web-build all
+.PHONY: help build run test migration-test fmt lint sqlc-generate sqlc-compile sqlc-vet api-generate api-check api-types-generate api-types-check web-install web-check web-test web-build all
 
 help: ## List the available targets.
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
 
-all: fmt api-check lint sqlc-vet test build ## Format, verify generated API bindings, lint, vet SQL, test, and build.
+all: fmt api-check lint sqlc-vet test web-test build ## Format, verify generated API contracts, lint, test, and build.
 
 build: ## Build the application binary into bin/.
 	go build -o $(BINARY) ./cmd/{{.AppName}}
@@ -86,8 +86,20 @@ api-check: ## Fail when checked-in strict chi bindings are stale.
 		exit 1; \
 	fi
 
+api-types-generate: ## Regenerate TypeScript models from the authoritative OpenAPI document.
+	pnpm --dir frontend run api:generate
+
+api-types-check: ## Fail when checked-in TypeScript models are stale.
+	pnpm --dir frontend run api:check
+
 web-install: ## Install the frontend's dependencies.
 	pnpm --dir frontend install
+
+web-check: api-types-check ## Type-check the frontend and its generated API contract.
+	pnpm --dir frontend run check
+
+web-test: web-check ## Run the frontend unit contract tests after type checking.
+	pnpm --dir frontend run test:unit
 
 web-build: ## Build the frontend into internal/platform/webui/embedded/client/.
 	pnpm --dir frontend build

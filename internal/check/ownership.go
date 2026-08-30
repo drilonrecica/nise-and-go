@@ -87,7 +87,8 @@ func checkOwnershipHeaders(root string, plan []generator.File) Check {
 		expectedMarker := ownershipMarker(f)
 		marked := strings.Contains(head, expectedMarker)
 		generated := strings.Contains(head, generator.NiseOwnedHeader) ||
-			strings.Contains(head, generator.OAPICodegenGeneratedHeader)
+			strings.Contains(head, generator.OAPICodegenGeneratedHeader) ||
+			strings.Contains(head, generator.OpenAPITypescriptGeneratedHeader)
 		switch {
 		case f.Owner == generator.OwnerNise && !marked:
 			violations = append(violations, f.Path)
@@ -119,6 +120,9 @@ func checkOwnershipHeaders(root string, plan []generator.File) Check {
 func ownershipMarker(f generator.File) string {
 	if f.Path == generator.OpenAPIGeneratedPath {
 		return generator.OAPICodegenGeneratedHeader
+	}
+	if f.Path == generator.OpenAPITypescriptGeneratedPath {
+		return generator.OpenAPITypescriptGeneratedHeader
 	}
 	return generator.NiseOwnedHeader
 }

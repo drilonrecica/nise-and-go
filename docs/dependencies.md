@@ -92,7 +92,9 @@ has not yet pinned and verified a released tag.
 
 ### Frontend (generated application)
 
-Named without a version — none has been verified yet:
+Generated `package.json` pins every dependency exactly. Versions are shown
+below where the implementing task has also exercised that exact pair in a
+clean install; the remaining planned packages are named without one.
 
 | Package | Why it is allowed |
 |---|---|
@@ -101,8 +103,9 @@ Named without a version — none has been verified yet:
 | Valibot | Frontend form validation and ergonomics, paired with the generated API client. Go remains authoritative: this is for the user's benefit in the browser, never the security boundary. |
 | TanStack Table | The table primitive. It is wrapped behind Nise-owned Svelte 5 components rather than exposed directly, so a generated resource table has one shape an application can read and edit. |
 | Paraglide | Compile-time internationalization for the generated frontend: messages compile to code, so unused translations do not ship. |
-| openapi-typescript | Generates the frontend's types from the same authoritative OpenAPI document the Go server bindings come from, so client and server cannot drift. The client itself is a lightweight typed fetch wrapper, not a client framework. |
-| Vitest | Svelte component tests, in browser mode, covering component behavior. |
+| openapi-typescript (`7.13.0`) | Generates checked-in frontend path/operation types from the same authoritative OpenAPI document as the Go server. Its own non-mutating `--check` gate prevents drift. The client is application-owned and adds no runtime client framework. |
+| TypeScript (`5.9.3`) | Type-checks the generated frontend and client. Version 5.9.3 is the newest compatible 5.x patch for openapi-typescript 7.13.0's declared `^5.x` peer; the unsupported 6.0.3 pairing was rejected after a clean pnpm install reported it. |
+| Vitest (`4.1.11`) | Runs the initial Node-only typed-client unit contract on Node 22. Browser component coverage remains a separate M6 addition. |
 | Playwright | A deliberately small end-to-end suite for critical user journeys — end-to-end tests are the slowest and most brittle layer, so they cover journeys, not coverage. |
 
 ## Denylist

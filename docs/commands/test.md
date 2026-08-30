@@ -1,8 +1,7 @@
 # `nise test`
 
-`nise test` runs a generated project's own Go, browser-component, and
-end-to-end test suites, without inventing a command a project did not
-declare.
+`nise test` runs a generated project's own Go, frontend unit/component, and
+end-to-end test suites, without inventing a command a project did not declare.
 
 ```
 $ nise test
@@ -26,19 +25,19 @@ use — and operates on that project's root from there.
 
 | Flag | Selects |
 |---|---|
-| (none) | The Go suite and the browser-component suite. |
+| (none) | The Go suite and the frontend unit/component suite. |
 | `--go` | The Go suite. |
-| `--component` | The browser-component suite. |
+| `--component` | The frontend unit/component suite. |
 | `--e2e` | The end-to-end suite. |
 
 Passing any of `--go`, `--component`, or `--e2e` selects **exactly** the
 suites named, with no suite added implicitly alongside them —
 `nise test --e2e` runs only the end-to-end suite.
 
-**Why the bare command runs Go and component, not end-to-end:** the Go
-suite and the Vitest browser-component suite are both hermetic — no real
-browser session, no network, no running application — and fast enough for
-a tight local edit/test loop. The end-to-end suite spins an actual browser
+**Why the bare command runs Go and frontend, not end-to-end:** the Go suite
+and generated Vitest API-client suite are both hermetic—no network or running
+application—and fast enough for a tight local edit/test loop. M6 may run the
+same frontend selection in Vitest browser mode. The end-to-end suite spins an actual browser
 against a real running application; it is slower and more prone to
 environmental flakiness, so it is opt-in via `--e2e` rather than part of
 every plain `nise test`.
@@ -57,18 +56,15 @@ and not treated as a failure:
   same Go module and a bare `./...` would also walk
   `frontend/node_modules/`. The `db` package's source/embed parity test is
   therefore part of every standard Go suite.
-- **Component**: runs when `frontend/package.json` exists and its
+- **Frontend/component**: runs when `frontend/package.json` exists and its
   `scripts` object declares one of `test:unit` or `test:component` (the
   first one found, in that order), as `pnpm --dir frontend run <script>`.
 - **End-to-end**: runs when `frontend/package.json` declares one of
   `test:e2e` or `e2e`, as `pnpm --dir frontend run <script>`.
 
-There is no single established convention for the component and
-end-to-end script names yet — the Vitest and Playwright integrations
-themselves are milestone M6, not built as of this task (M1-013) — so this
-list of script names is this command's own documented seam: a frontend
-scaffold that wants `nise test` to find its suite names its
-`package.json` script one of the names above.
+`test:unit` is present in current generated projects and runs the Node-only
+typed-client contract. `test:component`, `test:e2e`, and `e2e` remain the
+documented seams M6 uses when browser component and Playwright suites land.
 
 ## Passing arguments through to a suite (`--`)
 
@@ -99,7 +95,7 @@ per selected suite:
 ```
 go test: ok  	fixture/internal/x	0.002s
 [PASSED] go (go test ./cmd/... ./db/... ./internal/..., 0.31s)
-[SKIPPED] component — no test:unit or test:component script found in frontend/package.json
+[PASSED] component (pnpm --dir frontend run test:unit, 0.42s)
 ```
 
 **`--json` mode** never interleaves a suite's raw output into the JSON
@@ -108,7 +104,7 @@ printing — not itself valid JSON). It emits exactly one structured
 summary document instead:
 
 ```json
-{"suites":[{"name":"go","status":"passed","command":"go test ./cmd/... ./db/... ./internal/...","durationSeconds":0.31,"exitCode":0},{"name":"component","status":"skipped","reason":"no test:unit or test:component script found in frontend/package.json"}]}
+{"suites":[{"name":"go","status":"passed","command":"go test ./cmd/... ./db/... ./internal/...","durationSeconds":0.31,"exitCode":0},{"name":"component","status":"passed","command":"pnpm --dir frontend run test:unit","durationSeconds":0.42,"exitCode":0}]}
 ```
 
 `status` is one of `passed`, `failed`, or `skipped`. `reason` is present

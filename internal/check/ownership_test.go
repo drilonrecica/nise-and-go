@@ -48,12 +48,28 @@ func TestOpenAPIGeneratedFileRequiresThePinnedToolHeader(t *testing.T) {
 	}
 }
 
+func TestOpenAPITypescriptFileRequiresTheToolHeader(t *testing.T) {
+	t.Parallel()
+
+	root := newProject(t)
+	body := readFile(t, root, generator.OpenAPITypescriptGeneratedPath)
+	writeFile(t, root, generator.OpenAPITypescriptGeneratedPath,
+		strings.Replace(body, generator.OpenAPITypescriptGeneratedHeader,
+			"This file was hand-written despite living at a generated path.", 1))
+
+	c := assertStatus(t, run(t, root), check.CheckOwnershipHeaders, check.StatusFail)
+	if !containsPath(c.Paths, generator.OpenAPITypescriptGeneratedPath) {
+		t.Errorf("paths = %v, want it to name the TypeScript model missing its tool header", c.Paths)
+	}
+}
+
 // TestAppOwnedFileGainingTheNiseHeaderFails is the clobber direction: a file
 // the application owns should never end up marked as generated output.
 func TestAppOwnedFileGainingTheNiseHeaderFails(t *testing.T) {
 	for _, marker := range []string{
 		generator.NiseOwnedHeader,
 		generator.OAPICodegenGeneratedHeader,
+		generator.OpenAPITypescriptGeneratedHeader,
 	} {
 		marker := marker
 		t.Run(marker, func(t *testing.T) {
