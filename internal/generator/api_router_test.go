@@ -23,7 +23,7 @@ func TestGeneratedProjectDefinesVersionedAPIRouterCore(t *testing.T) {
 		"RegisterAPI func(chi.Router)",
 		"secure.NewDocumentPolicy",
 		"secure.NewAPIPolicy",
-		`root.Mount("/api/v1", newCoreHandler(d, apiPolicy, d.Middleware.API, api))`,
+		`root.Mount("/api/v1", newCoreHandler(d, apiPolicy, d.Middleware.API, api, problem.HTTPHandler(problem.InternalServerError()), true))`,
 		"newCoreHandler",
 	} {
 		if !strings.Contains(content["internal/platform/httpapi/router.go"], fragment) {

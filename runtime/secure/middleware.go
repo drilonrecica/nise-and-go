@@ -1,7 +1,9 @@
 package secure
 
 import (
+	"bufio"
 	"context"
+	"net"
 	"net/http"
 )
 
@@ -86,6 +88,14 @@ func (w *responseWriter) applyPolicy() {
 
 // WriteHeader applies the policy headers before committing the status line.
 func (w *responseWriter) WriteHeader(statusCode int) {
+	if statusCode >= 100 && statusCode <= 199 && statusCode != http.StatusSwitchingProtocols {
+		// Informational responses do not commit the final header block. Apply
+		// the policy to this block without marking it final so a handler cannot
+		// weaken the policy before its eventual non-1xx response.
+		w.policy.apply(w.Header(), w.nonce)
+		w.ResponseWriter.WriteHeader(statusCode)
+		return
+	}
 	w.applyPolicy()
 	w.ResponseWriter.WriteHeader(statusCode)
 }
@@ -108,6 +118,20 @@ func (w *responseWriter) Flush() {
 	w.applyPolicy()
 	//nolint:errcheck // Flush has no error return to propagate through.
 	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+// Hijack applies the final policy header values before transferring the
+// connection. The caller that serializes the hijacked HTTP response can then
+// read the protected header map. A failed takeover remains uncommitted, so a
+// later fallback response re-applies the policy normally.
+func (w *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.policy.apply(w.Header(), w.nonce)
+	connection, readWriter, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	w.applied = true
+	return connection, readWriter, nil
 }
 
 // Unwrap returns the wrapped ResponseWriter, so that

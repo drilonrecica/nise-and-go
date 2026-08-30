@@ -11,7 +11,7 @@ inside the other:
 
 | Surface | Paths | Security policy | Terminal behavior |
 |---|---|---|---|
-| API | `/api/v1`, `/api/v1/`, and every descendant | `secure.NewAPIPolicy` | unmatched requests are API `404` responses |
+| API | `/api/v1`, `/api/v1/`, and every descendant | `secure.NewAPIPolicy` | unmatched requests are RFC 9457 API `404` responses |
 | Document | health and operator endpoints, then every other path | `secure.NewDocumentPolicy` | the embedded single-page application |
 
 This boundary is exact: `/api/v10` is a document path, while an unknown
@@ -44,6 +44,17 @@ Nesting the API beneath the document chain was rejected: response middleware
 unwinds from the inside out, so the outer document security middleware would
 overwrite the stricter API CSP. A small unprotected root dispatcher selects
 one complete sibling chain instead.
+
+API `404`, `405`, and recovered `500` responses use the same controlled
+Problem Details catalog as generated OpenAPI failures. Request and correlation
+IDs in each body match the headers assigned by the outer logging middleware.
+The custom `405` writer derives `Allow` from chi's route tree—including
+registered extension methods—and matches it without executing a handler,
+preserving normal method-discovery semantics. API recovery stages a bounded
+response until normal return so a write-then-panic can become one clean
+Problem. A flushed/hijacked stream is already irreversible; a later panic
+aborts that connection instead of appending JSON. Document and operator
+failures retain their existing formats.
 
 ## Application extension points
 

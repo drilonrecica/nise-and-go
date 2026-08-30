@@ -145,6 +145,8 @@ var templateFiles = []templateFile{
 	{Template: "internal/platform/httpapi/httpjson/json.go.tmpl", Output: "internal/platform/httpapi/httpjson/json.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/httpjson/json_test.go.tmpl", Output: "internal/platform/httpapi/httpjson/json_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/openapigen/openapi.gen.go.tmpl", Output: OpenAPIGeneratedPath, Owner: OwnerNise},
+	{Template: "internal/platform/httpapi/problem/problem.go.tmpl", Output: "internal/platform/httpapi/problem/problem.go", Owner: OwnerApp},
+	{Template: "internal/platform/httpapi/problem/problem_test.go.tmpl", Output: "internal/platform/httpapi/problem/problem_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/router.go.tmpl", Output: "internal/platform/httpapi/router.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/router_test.go.tmpl", Output: "internal/platform/httpapi/router_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/webui/embedded/placeholder.html.tmpl", Output: "internal/platform/webui/embedded/placeholder.html", Owner: OwnerNise},

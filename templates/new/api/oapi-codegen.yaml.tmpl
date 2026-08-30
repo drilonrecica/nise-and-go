@@ -11,6 +11,7 @@ generate:
   strict-server: true
   models: true
 output-options:
+  skip-prune: true
   user-templates:
     strict/strict-http.tmpl: |
       type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)

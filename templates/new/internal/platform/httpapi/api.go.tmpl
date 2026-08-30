@@ -13,6 +13,7 @@ import (
 
 	"{{.ModulePath}}/internal/platform/httpapi/httpjson"
 	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
+	"{{.ModulePath}}/internal/platform/httpapi/problem"
 )
 
 // Server adapts application behavior to the strict interface generated from
@@ -33,7 +34,7 @@ var _ openapigen.StrictServerInterface = (*Server)(nil)
 func (s *Server) Register(r chi.Router) {
 	strict := openapigen.NewStrictHandlerWithOptions(s, nil, openapigen.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:   requestTransportError,
-		ResponseErrorHandlerFunc:  fixedTransportError(http.StatusInternalServerError, "internal server error"),
+		ResponseErrorHandlerFunc:  problem.Handler(problem.InternalServerError()),
 		JSONBodyDecoder:           httpjson.Decode,
 		JSONResponseSizeChecker:   httpjson.CheckResponseSize,
 		RequestContentTypeMatcher: httpjson.MatchesMediaType,
@@ -43,17 +44,14 @@ func (s *Server) Register(r chi.Router) {
 }
 
 func requestTransportError(w http.ResponseWriter, r *http.Request, err error) {
-	status := http.StatusBadRequest
-	message := "invalid request"
+	definition := problem.InvalidRequest()
 	switch {
 	case errors.Is(err, httpjson.ErrRequestBodyTooLarge):
-		status = http.StatusRequestEntityTooLarge
-		message = "request body too large"
+		definition = problem.RequestBodyTooLarge()
 	case errors.Is(err, httpjson.ErrUnsupportedMediaType), errors.Is(err, openapigen.ErrUnsupportedRequestContentType):
-		status = http.StatusUnsupportedMediaType
-		message = "unsupported media type"
+		definition = problem.UnsupportedMediaType()
 	}
-	fixedTransportError(status, message)(w, r, err)
+	problem.Handler(definition)(w, r, err)
 }
 
 // GetAPIIndex is the transport contract fixture at GET /api/v1/. It confirms
@@ -61,13 +59,4 @@ func requestTransportError(w http.ResponseWriter, r *http.Request, err error) {
 // health probes or creating a domain endpoint.
 func (*Server) GetAPIIndex(context.Context, openapigen.GetAPIIndexRequestObject) (openapigen.GetAPIIndexResponseObject, error) {
 	return openapigen.GetAPIIndex204Response{}, nil
-}
-
-// fixedTransportError is deliberately generic: generated decoder and handler
-// errors may contain implementation details. The Problem Details milestone
-// replaces this temporary fixed-body seam without changing generated code.
-func fixedTransportError(status int, message string) func(http.ResponseWriter, *http.Request, error) {
-	return func(w http.ResponseWriter, _ *http.Request, _ error) {
-		http.Error(w, message, status)
-	}
 }

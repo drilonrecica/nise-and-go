@@ -1,0 +1,227 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package problem owns this application's RFC 9457 error catalog and writer.
+package problem
+
+import (
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+
+	"{{.ModulePath}}/internal/platform/httpapi/httpjson"
+	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
+)
+
+const (
+	MediaType      = "application/problem+json"
+	maxTypeBytes   = 2048
+	maxTitleBytes  = 256
+	maxDetailBytes = 4096
+	maxCodeBytes   = 64
+)
+
+// Definition is one stable public problem type. Its fields are private so
+// every value has passed NewDefinition's wire and safety validation.
+type Definition struct {
+	typeURI string
+	title   string
+	status  int
+	detail  string
+	code    string
+}
+
+// NewDefinition validates one application problem type.
+func NewDefinition(typeURI, title string, status int, detail, code string) (Definition, error) {
+	definition := Definition{typeURI: typeURI, title: title, status: status, detail: detail, code: code}
+	if err := validateDefinition(definition); err != nil {
+		return Definition{}, err
+	}
+	return definition, nil
+}
+
+// Status returns the definition's HTTP status code.
+func (d Definition) Status() int { return d.status }
+
+// Code returns the definition's stable machine-readable code.
+func (d Definition) Code() string { return d.code }
+
+var (
+	invalidRequest = mustDefinition(
+		"/problems/invalid-request", "Invalid Request", http.StatusBadRequest,
+		"The request could not be processed.", "invalid_request",
+	)
+	notFound = mustDefinition(
+		"/problems/not-found", "Not Found", http.StatusNotFound,
+		"The requested API resource was not found.", "not_found",
+	)
+	methodNotAllowed = mustDefinition(
+		"/problems/method-not-allowed", "Method Not Allowed", http.StatusMethodNotAllowed,
+		"The requested method is not allowed for this API resource.", "method_not_allowed",
+	)
+	requestBodyTooLarge = mustDefinition(
+		"/problems/request-body-too-large", "Request Body Too Large", http.StatusRequestEntityTooLarge,
+		"The request body exceeds the allowed size.", "request_body_too_large",
+	)
+	unsupportedMediaType = mustDefinition(
+		"/problems/unsupported-media-type", "Unsupported Media Type", http.StatusUnsupportedMediaType,
+		"The request Content-Type is not supported for this operation.", "unsupported_media_type",
+	)
+	internalServerError = mustDefinition(
+		"/problems/internal-server-error", "Internal Server Error", http.StatusInternalServerError,
+		"The server could not complete the request.", "internal_server_error",
+	)
+)
+
+// InvalidRequest returns the generic request-validation failure.
+func InvalidRequest() Definition { return invalidRequest }
+
+// NotFound returns the API resource-not-found failure.
+func NotFound() Definition { return notFound }
+
+// MethodNotAllowed returns the API method rejection.
+func MethodNotAllowed() Definition { return methodNotAllowed }
+
+// RequestBodyTooLarge returns the bounded-request failure.
+func RequestBodyTooLarge() Definition { return requestBodyTooLarge }
+
+// UnsupportedMediaType returns the request media-type failure.
+func UnsupportedMediaType() Definition { return unsupportedMediaType }
+
+// InternalServerError returns the generic server failure.
+func InternalServerError() Definition { return internalServerError }
+
+// Write emits one bounded Problem Details response. The Go cause is
+// deliberately absent from this API and therefore cannot cross the wire.
+func Write(w http.ResponseWriter, r *http.Request, definition Definition) error {
+	payload, err := newPayload(r, definition)
+	if err != nil {
+		return err
+	}
+	return writePayload(w, definition.status, payload)
+}
+
+// HTTPHandler adapts a definition to chi's 404/405 and recovery seams.
+func HTTPHandler(definition Definition) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		serve(w, r, definition)
+	}
+}
+
+// Handler adapts a definition to oapi-codegen's error callback. Only 5xx
+// failures are error-level records, and arbitrary cause text is never logged.
+func Handler(definition Definition) func(http.ResponseWriter, *http.Request, error) {
+	return func(w http.ResponseWriter, r *http.Request, cause error) {
+		if definition.status >= http.StatusInternalServerError {
+			attributes := []any{
+				slog.String("problem_code", definition.code),
+				slog.Int("status", definition.status),
+			}
+			if cause != nil {
+				attributes = append(attributes, slog.String("error_type", fmt.Sprintf("%T", cause)))
+			}
+			logging.FromContext(r.Context()).Error("API request failed", attributes...)
+		}
+		serve(w, r, definition)
+	}
+}
+
+func serve(w http.ResponseWriter, r *http.Request, definition Definition) {
+	payload, err := newPayload(r, definition)
+	if err != nil {
+		logging.FromContext(r.Context()).Error("build API problem response",
+			slog.String("problem_code", definition.code),
+			slog.String("error_type", fmt.Sprintf("%T", err)))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := writePayload(w, definition.status, payload); err != nil {
+		logging.FromContext(r.Context()).Error("write API problem response",
+			slog.String("problem_code", definition.code),
+			slog.String("error_type", fmt.Sprintf("%T", err)))
+	}
+}
+
+func writePayload(w http.ResponseWriter, status int, payload openapigen.Problem) error {
+	w.Header().Set(logging.DefaultRequestIDHeader, payload.RequestId)
+	w.Header().Set(logging.DefaultCorrelationIDHeader, payload.CorrelationId)
+	return httpjson.WriteMediaType(w, status, MediaType, payload)
+}
+
+func newPayload(r *http.Request, definition Definition) (openapigen.Problem, error) {
+	if err := validateDefinition(definition); err != nil {
+		return openapigen.Problem{}, err
+	}
+	requestID, requestOK := logging.RequestID(r.Context())
+	correlationID, correlationOK := logging.CorrelationID(r.Context())
+	if !requestOK || !correlationOK || !logging.ValidID(requestID) || !logging.ValidID(correlationID) {
+		return openapigen.Problem{}, fmt.Errorf("problem response requires valid request and correlation IDs")
+	}
+	return openapigen.Problem{
+		Type:          definition.typeURI,
+		Title:         definition.title,
+		Status:        int32(definition.status),
+		Detail:        definition.detail,
+		Code:          definition.code,
+		RequestId:     requestID,
+		CorrelationId: correlationID,
+	}, nil
+}
+
+func mustDefinition(typeURI, title string, status int, detail, code string) Definition {
+	definition, err := NewDefinition(typeURI, title, status, detail, code)
+	if err != nil {
+		panic(err)
+	}
+	return definition
+}
+
+func validateDefinition(definition Definition) error {
+	if !validTypeURI(definition.typeURI) {
+		return fmt.Errorf("problem type must be an absolute URI or root-relative full path of at most %d bytes", maxTypeBytes)
+	}
+	if !validPublicText(definition.title, maxTitleBytes) {
+		return fmt.Errorf("problem title must be valid nonempty UTF-8 of at most %d bytes", maxTitleBytes)
+	}
+	if definition.status < 400 || definition.status > 599 {
+		return fmt.Errorf("problem status %d is outside 400..599", definition.status)
+	}
+	if !validPublicText(definition.detail, maxDetailBytes) {
+		return fmt.Errorf("problem detail must be valid nonempty UTF-8 of at most %d bytes", maxDetailBytes)
+	}
+	if !validCode(definition.code) {
+		return fmt.Errorf("problem code must match [a-z][a-z0-9_]{2,63}")
+	}
+	return nil
+}
+
+func validTypeURI(value string) bool {
+	if !validPublicText(value, maxTypeBytes) {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return false
+	}
+	return parsed.IsAbs() || (strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//"))
+}
+
+func validPublicText(value string, limit int) bool {
+	return value != "" && len(value) <= limit && utf8.ValidString(value)
+}
+
+func validCode(value string) bool {
+	if len(value) < 3 || len(value) > maxCodeBytes || value[0] < 'a' || value[0] > 'z' {
+		return false
+	}
+	for _, char := range value[1:] {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '_' {
+			return false
+		}
+	}
+	return true
+}

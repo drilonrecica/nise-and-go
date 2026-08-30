@@ -1,0 +1,185 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package problem
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+)
+
+func TestWriteRFC9457Problem(t *testing.T) {
+	t.Parallel()
+	request := requestWithIDs("request_123", "correlation_456")
+	response := httptest.NewRecorder()
+	if err := Write(response, request, InvalidRequest()); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", response.Code)
+	}
+	if got := response.Header().Get("Content-Type"); got != MediaType {
+		t.Fatalf("Content-Type = %q, want %q", got, MediaType)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	want := map[string]any{
+		"type":           "/problems/invalid-request",
+		"title":          "Invalid Request",
+		"status":         float64(http.StatusBadRequest),
+		"detail":         "The request could not be processed.",
+		"code":           "invalid_request",
+		"request_id":     "request_123",
+		"correlation_id": "correlation_456",
+	}
+	if len(body) != len(want) {
+		t.Fatalf("problem members = %v, want exactly %v", body, want)
+	}
+	for key, value := range want {
+		if body[key] != value {
+			t.Errorf("problem[%q] = %#v, want %#v", key, body[key], value)
+		}
+	}
+}
+
+func TestDefinitionValidation(t *testing.T) {
+	t.Parallel()
+	valid := []struct {
+		name    string
+		typeURI string
+	}{
+		{name: "root-relative full path", typeURI: "/problems/custom"},
+		{name: "absolute URI", typeURI: "https://example.com/problems/custom"},
+	}
+	for _, tc := range valid {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := NewDefinition(tc.typeURI, "Custom", 422, "Correct the public input.", "custom_error"); err != nil {
+				t.Fatalf("NewDefinition: %v", err)
+			}
+		})
+	}
+	if _, err := NewDefinition(
+		"/"+strings.Repeat("t", maxTypeBytes-1),
+		strings.Repeat("T", maxTitleBytes),
+		599,
+		strings.Repeat("d", maxDetailBytes),
+		"a"+strings.Repeat("b", maxCodeBytes-1),
+	); err != nil {
+		t.Fatalf("NewDefinition rejected exact field bounds: %v", err)
+	}
+
+	invalidUTF8 := string([]byte{0xff})
+	tests := []struct {
+		name    string
+		typeURI string
+		title   string
+		status  int
+		detail  string
+		code    string
+	}{
+		{name: "relative type", typeURI: "problems/custom", title: "Custom", status: 422, detail: "Public.", code: "custom_error"},
+		{name: "network-path type", typeURI: "//other.test/problem", title: "Custom", status: 422, detail: "Public.", code: "custom_error"},
+		{name: "oversized type", typeURI: "/" + strings.Repeat("t", maxTypeBytes), title: "Custom", status: 422, detail: "Public.", code: "custom_error"},
+		{name: "empty title", typeURI: "/problems/custom", status: 422, detail: "Public.", code: "custom_error"},
+		{name: "oversized title", typeURI: "/problems/custom", title: strings.Repeat("T", maxTitleBytes+1), status: 422, detail: "Public.", code: "custom_error"},
+		{name: "success status", typeURI: "/problems/custom", title: "Custom", status: 200, detail: "Public.", code: "custom_error"},
+		{name: "status above HTTP range", typeURI: "/problems/custom", title: "Custom", status: 600, detail: "Public.", code: "custom_error"},
+		{name: "invalid detail UTF-8", typeURI: "/problems/custom", title: "Custom", status: 422, detail: invalidUTF8, code: "custom_error"},
+		{name: "oversized detail", typeURI: "/problems/custom", title: "Custom", status: 422, detail: strings.Repeat("d", maxDetailBytes+1), code: "custom_error"},
+		{name: "unsafe code", typeURI: "/problems/custom", title: "Custom", status: 422, detail: "Public.", code: "Custom-Error"},
+		{name: "oversized code", typeURI: "/problems/custom", title: "Custom", status: 422, detail: "Public.", code: "a" + strings.Repeat("b", maxCodeBytes)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := NewDefinition(tc.typeURI, tc.title, tc.status, tc.detail, tc.code); err == nil {
+				t.Fatal("NewDefinition accepted an invalid definition")
+			}
+		})
+	}
+}
+
+func TestWriteEscapesPublicDetail(t *testing.T) {
+	t.Parallel()
+	detail := "</script>\n\"quoted\""
+	definition, err := NewDefinition("/problems/escaped", "Escaped", 422, detail, "escaped_error")
+	if err != nil {
+		t.Fatalf("NewDefinition: %v", err)
+	}
+	response := httptest.NewRecorder()
+	if err := Write(response, requestWithIDs("request_123", "correlation_456"), definition); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if strings.Contains(response.Body.String(), "</script>") {
+		t.Fatalf("response did not HTML-escape hostile detail: %q", response.Body.String())
+	}
+	var body struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Detail != detail {
+		t.Fatalf("decoded detail = %q, %v; want %q", body.Detail, err, detail)
+	}
+}
+
+func TestHandlerKeepsCausePrivate(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	logger := slog.New(logging.NewJSONHandler(&logs, logging.HandlerOptions{}))
+	request := requestWithIDs("request_123", "correlation_456")
+	request = request.WithContext(logging.WithLogger(request.Context(), logger))
+	cause := errors.New("failed beside /srv/private with secret-value")
+	response := httptest.NewRecorder()
+	Handler(InternalServerError())(response, request, cause)
+
+	for _, output := range []string{response.Body.String(), logs.String()} {
+		for _, forbidden := range []string{"/srv/private", "secret-value"} {
+			if strings.Contains(output, forbidden) {
+				t.Errorf("output exposed %q: %q", forbidden, output)
+			}
+		}
+	}
+	for _, safe := range []string{`"problem_code":"internal_server_error"`, `"status":500`, `"error_type":"*errors.errorString"`} {
+		if !strings.Contains(logs.String(), safe) {
+			t.Errorf("internal failure log lacks %s: %s", safe, logs.String())
+		}
+	}
+
+	logs.Reset()
+	Handler(InvalidRequest())(httptest.NewRecorder(), request, cause)
+	if logs.Len() != 0 {
+		t.Errorf("expected client error was error-logged: %s", logs.String())
+	}
+}
+
+func TestWriteRequiresValidatedContextIDsBeforeCommit(t *testing.T) {
+	t.Parallel()
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		requestWithIDs("contains newline\n", "correlation_456"),
+	} {
+		response := httptest.NewRecorder()
+		if err := Write(response, request, InvalidRequest()); err == nil {
+			t.Fatal("Write accepted missing or invalid IDs")
+		}
+		if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "" {
+			t.Fatalf("invalid context committed a response: headers %v, body %q", response.Header(), response.Body.String())
+		}
+	}
+}
+
+func requestWithIDs(requestID, correlationID string) *http.Request {
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := logging.WithRequestID(request.Context(), requestID)
+	ctx = logging.WithCorrelationID(ctx, correlationID)
+	return request.WithContext(ctx)
+}

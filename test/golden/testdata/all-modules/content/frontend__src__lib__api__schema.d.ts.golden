@@ -24,8 +24,33 @@ export interface paths {
 }
 export type webhooks = Record<string, never>;
 export interface components {
-    schemas: never;
-    responses: never;
+    schemas: {
+        /** @description RFC 9457 Problem Details with the application's controlled extensions. */
+        Problem: {
+            /** Format: uri-reference */
+            type: string;
+            title: string;
+            /** Format: int32 */
+            status: number;
+            detail: string;
+            /** Format: uri-reference */
+            instance?: string;
+            code: string;
+            request_id: string;
+            correlation_id: string;
+        };
+    };
+    responses: {
+        /** @description The request failed with an RFC 9457 Problem Details response. */
+        Problem: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+    };
     parameters: never;
     requestBodies: never;
     headers: never;

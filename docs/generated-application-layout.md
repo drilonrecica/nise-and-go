@@ -115,6 +115,9 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
         │   ├── httpjson/
         │   │   ├── json.go            [app]   bounded strict JSON decoder and response writer
         │   │   └── json_test.go       [app]   hostile-input and response-bound contracts
+        │   ├── problem/
+        │   │   ├── problem.go         [app]   validated RFC 9457 catalog and bounded writer
+        │   │   └── problem_test.go    [app]   public shape and cause-isolation contracts
         │   ├── router.go              [app]   middleware order and the /api/v1 mount
         │   ├── router_test.go         [app]   surface boundary and middleware-order contract
         │   └── openapigen/
@@ -168,7 +171,9 @@ source document and generation config, the pinned tool replaces
 generated strict interface. The checked-in binding has a non-mutating byte
 diff gate. Its vendored strict templates delegate JSON to an
 application-owned decoder/writer that rejects oversized, ambiguous, unknown,
-and wrongly typed input before application code runs. See
+and wrongly typed input before application code runs. A validated,
+application-owned Problem catalog gives every API failure one closed RFC 9457
+shape without exposing internal causes. See
 [OpenAPI server bindings](openapi.md).
 
 ## Core services and optional modules

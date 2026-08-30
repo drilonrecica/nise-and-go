@@ -9,12 +9,17 @@
 package httpapi
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -26,6 +31,8 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/secure"
 
 	"github.com/example/myapp/internal/platform/config"
+	"github.com/example/myapp/internal/platform/httpapi/httpjson"
+	"github.com/example/myapp/internal/platform/httpapi/problem"
 	"github.com/example/myapp/internal/platform/webui"
 )
 
@@ -142,6 +149,8 @@ func New(d Deps) (http.Handler, error) {
 	if d.RegisterAPI != nil {
 		d.RegisterAPI(api)
 	}
+	api.NotFound(problem.HTTPHandler(problem.NotFound()))
+	api.MethodNotAllowed(apiMethodNotAllowed(api))
 
 	// Mount sibling chains at the unprotected dispatch layer. Mounting the API
 	// below the document policy would let the outer document middleware
@@ -150,21 +159,21 @@ func New(d Deps) (http.Handler, error) {
 	// Each core is composed around its router as an opaque http.Handler. This
 	// keeps an empty API's default 404 inside the core without adding a wildcard
 	// route that would turn a known path's native 405 into a 404.
-	root.Mount("/api/v1", newCoreHandler(d, apiPolicy, d.Middleware.API, api))
-	root.Mount("/", newCoreHandler(d, documentPolicy, d.Middleware.Document, document))
+	root.Mount("/api/v1", newCoreHandler(d, apiPolicy, d.Middleware.API, api, problem.HTTPHandler(problem.InternalServerError()), true))
+	root.Mount("/", newCoreHandler(d, documentPolicy, d.Middleware.Document, document, fixedHTTPError(http.StatusInternalServerError, "internal server error"), false))
 	return root, nil
 }
 
 // newCoreHandler fixes the core ordering in one place. Application middleware
 // cannot move ahead of security, recovery, request identity/logging, or
 // metrics through Deps.
-func newCoreHandler(d Deps, policy *secure.Policy, application []Middleware, routes http.Handler) http.Handler {
+func newCoreHandler(d Deps, policy *secure.Policy, application []Middleware, routes http.Handler, panicHandler http.HandlerFunc, bufferForRecovery bool) http.Handler {
 	handler := routes
 	for index := len(application) - 1; index >= 0; index-- {
 		handler = application[index](handler)
 	}
 	handler = d.Metrics.Middleware(routeTemplate)(handler)
-	handler = recoverer(d.Logger)(handler)
+	handler = recoverer(d.Logger, panicHandler, bufferForRecovery)(handler)
 	handler = logging.Middleware(d.Logger, logging.MiddlewareOptions{
 		TrustInbound: d.Config.TrustProxyHeaders,
 	})(handler)
@@ -207,12 +216,24 @@ func routeTemplate(r *http.Request) string {
 // recoverer turns a panic in a downstream handler into a logged 500. It
 // logs through the request-scoped logger, so the failing request's own IDs
 // are on the record, and never writes the panic value to the response.
-func recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
+func recoverer(logger *slog.Logger, panicHandler http.HandlerFunc, bufferForRecovery bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var buffered *recoveryResponseWriter
+			responseWriter := w
+			if bufferForRecovery {
+				buffered = newRecoveryResponseWriter(w)
+				responseWriter = buffered
+			}
 			defer func() {
 				p := recover()
 				if p == nil {
+					if buffered != nil {
+						if err := buffered.commit(); err != nil {
+							logging.FromContext(r.Context()).Error("commit API response",
+								slog.String("error_type", fmt.Sprintf("%T", err)))
+						}
+					}
 					return
 				}
 				if err, ok := p.(error); ok && errors.Is(err, http.ErrAbortHandler) {
@@ -225,12 +246,205 @@ func recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 				log.Error("panic serving request",
 					slog.String("method", r.Method),
 					slog.String("route", routeTemplate(r)),
-					slog.Any("panic", p),
+					slog.String("panic_type", fmt.Sprintf("%T", p)),
 				)
-				http.Error(w, "internal server error", http.StatusInternalServerError)
+				if buffered != nil && buffered.passthrough {
+					panic(http.ErrAbortHandler)
+				}
+				panicHandler(w, r)
 			}()
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(responseWriter, r)
 		})
+	}
+}
+
+// recoveryResponseWriter stages an API response until its handler returns so
+// a pre-commit panic can replace every partial byte with one valid Problem.
+// Memory remains bounded by the JSON response limit. Explicit flush/hijack and
+// larger non-JSON output switch to passthrough; a later panic aborts the
+// connection instead of appending a misleading second response.
+type recoveryResponseWriter struct {
+	target      http.ResponseWriter
+	header      http.Header
+	body        bytes.Buffer
+	status      int
+	wroteHeader bool
+	passthrough bool
+}
+
+func newRecoveryResponseWriter(target http.ResponseWriter) *recoveryResponseWriter {
+	return &recoveryResponseWriter{target: target, header: target.Header().Clone()}
+}
+
+func (w *recoveryResponseWriter) Header() http.Header {
+	if w.passthrough {
+		return w.target.Header()
+	}
+	return w.header
+}
+
+func (w *recoveryResponseWriter) WriteHeader(status int) {
+	if w.passthrough {
+		w.target.WriteHeader(status)
+		return
+	}
+	if status >= 100 && status <= 199 && status != http.StatusSwitchingProtocols {
+		w.syncHeaders()
+		w.target.WriteHeader(status)
+		return
+	}
+	if !w.wroteHeader {
+		w.status = status
+		w.wroteHeader = true
+	}
+}
+
+func (w *recoveryResponseWriter) Write(data []byte) (int, error) {
+	if w.passthrough {
+		return w.target.Write(data)
+	}
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if int64(w.body.Len())+int64(len(data)) > httpjson.MaxResponseBodyBytes {
+		if err := w.commit(); err != nil {
+			return 0, err
+		}
+		return w.target.Write(data)
+	}
+	return w.body.Write(data)
+}
+
+func (w *recoveryResponseWriter) commit() error {
+	if w.passthrough {
+		return nil
+	}
+	w.syncHeaders()
+	status := w.status
+	if !w.wroteHeader {
+		status = http.StatusOK
+	}
+	w.passthrough = true
+	w.target.WriteHeader(status)
+	_, err := w.body.WriteTo(w.target)
+	return err
+}
+
+func (w *recoveryResponseWriter) syncHeaders() {
+	targetHeader := w.target.Header()
+	clear(targetHeader)
+	for name, values := range w.header {
+		targetHeader[name] = slices.Clone(values)
+	}
+}
+
+func (w *recoveryResponseWriter) startPassthrough() error {
+	if w.passthrough {
+		return nil
+	}
+	if w.wroteHeader || w.body.Len() != 0 {
+		return w.commit()
+	}
+	w.syncHeaders()
+	w.passthrough = true
+	return nil
+}
+
+// FlushError is the net/http.ResponseController flush seam used through the
+// metrics wrapper. Flushing deliberately commits and exits recovery staging.
+func (w *recoveryResponseWriter) FlushError() error {
+	if err := w.commit(); err != nil {
+		return err
+	}
+	return http.NewResponseController(w.target).Flush()
+}
+
+// Hijack marks the response irreversible before transferring the connection.
+func (w *recoveryResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	// Give outer response middleware the complete staged header map before it
+	// applies write-time protections during takeover.
+	w.syncHeaders()
+	connection, readWriter, err := http.NewResponseController(w.target).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	// A successful takeover is irreversible even if serializing staged bytes
+	// into the returned writer subsequently fails.
+	w.passthrough = true
+	w.header = w.target.Header().Clone()
+	if w.wroteHeader || w.body.Len() != 0 {
+		status := w.status
+		if !w.wroteHeader {
+			status = http.StatusOK
+		}
+		response := &http.Response{
+			StatusCode:    status,
+			ProtoMajor:    1,
+			ProtoMinor:    1,
+			Header:        w.header.Clone(),
+			Body:          io.NopCloser(bytes.NewReader(w.body.Bytes())),
+			ContentLength: int64(w.body.Len()),
+		}
+		if err := response.Write(readWriter.Writer); err != nil {
+			if connection != nil {
+				_ = connection.Close()
+			}
+			return nil, nil, err
+		}
+	}
+	return connection, readWriter, nil
+}
+
+// EnableFullDuplex exits staging only after the underlying writer accepts the
+// mode, so an unsupported request can still produce its buffered fallback.
+func (w *recoveryResponseWriter) EnableFullDuplex() error {
+	if err := http.NewResponseController(w.target).EnableFullDuplex(); err != nil {
+		return err
+	}
+	return w.startPassthrough()
+}
+
+// Unwrap preserves ResponseController access to optional interfaces that do
+// not change response commitment, such as deadline and full-duplex controls.
+func (w *recoveryResponseWriter) Unwrap() http.ResponseWriter { return w.target }
+
+func fixedHTTPError(status int, message string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, message, status)
+	}
+}
+
+// apiMethodNotAllowed preserves chi's Allow semantics while replacing its
+// empty 405 body with the API's Problem Details representation. chi does not
+// pass its discovered method set to a custom 405 handler, so match the same
+// immutable route tree without executing application handlers.
+func apiMethodNotAllowed(routes chi.Routes) http.HandlerFunc {
+	methods := make([]string, 0)
+	seen := make(map[string]struct{})
+	_ = chi.Walk(routes, func(method, _ string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		if method == "*" {
+			return nil
+		}
+		if _, exists := seen[method]; !exists {
+			seen[method] = struct{}{}
+			methods = append(methods, method)
+		}
+		return nil
+	}) // The callback always returns nil, so Walk cannot fail.
+	slices.Sort(methods)
+
+	writeProblem := problem.HTTPHandler(problem.MethodNotAllowed())
+	return func(w http.ResponseWriter, r *http.Request) {
+		routePath := r.URL.Path
+		if routeContext := chi.RouteContext(r.Context()); routeContext != nil && routeContext.RoutePath != "" {
+			routePath = routeContext.RoutePath
+		}
+		for _, method := range methods {
+			if routes.Match(chi.NewRouteContext(), method, routePath) {
+				w.Header().Add("Allow", method)
+			}
+		}
+		writeProblem(w, r)
 	}
 }
 

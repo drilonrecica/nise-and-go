@@ -22,6 +22,8 @@ is not a liveness probe and exposes no process or dependency state.
 | `internal/platform/httpapi/api_test.go` | application | route-level contract through the real middleware core |
 | `internal/platform/httpapi/httpjson/json.go` | application | bounded strict request decoder and response writer |
 | `internal/platform/httpapi/httpjson/json_test.go` | application | malformed, duplicate, unknown, and oversized-body contracts |
+| `internal/platform/httpapi/problem/problem.go` | application | validated RFC 9457 catalog and bounded writer |
+| `internal/platform/httpapi/problem/problem_test.go` | application | shape, escaping, identity, and cause-isolation contracts |
 | `frontend/src/lib/api/schema.d.ts` | Nise/tool | complete checked-in openapi-typescript output |
 | `frontend/src/lib/api/client.ts` | application | small typed fetch wrapper over the generated paths |
 | `frontend/src/lib/api/client.test.ts` | application | credentials, cancellation, typing, and error contracts |
@@ -114,10 +116,44 @@ Hand-written JSON endpoints use `httpjson.Write` to get the same bound and
 pre-commit behavior. Streaming and non-JSON responses are intentionally not
 buffered by this policy.
 
-Until the Problem Details writer is wired, the application adapter uses fixed
-public text for `400`, `413`, `415`, and `500` responses. Generated decoder
-errors and handler causes are never copied to a response. M4-005 replaces this
-temporary rendering seam without changing the strict decoding policy.
+API failures use [RFC 9457 Problem Details](https://www.rfc-editor.org/rfc/rfc9457.html) with
+`Content-Type: application/problem+json`. The OpenAPI `Problem` schema closes
+the public shape with `additionalProperties: false`: the standard `type`,
+`title`, `status`, and `detail` members, optional `instance`, and exactly three
+application extensions—`code`, `request_id`, and `correlation_id`. The Go and
+TypeScript generators consume that one schema; the application does not keep
+a second wire struct. Required text and identity members are explicitly
+nonempty in both the schema and the Go definition validator.
+
+The application-owned `problem` package exposes validated catalog accessors
+for `400`, `404`, `405`, `413`, `415`, and `500`. Built-in `type` identifiers
+are root-relative full paths under `/problems/`, titles and public details are
+stable, and HTTP/JSON statuses come from the same definition. Definitions
+bound every text field and restrict machine codes. `httpjson.WriteMediaType`
+buffers and applies the existing 1 MiB response limit before committing the
+Problem status or headers.
+
+Generated request/response callbacks, API routing failures, and API panic
+recovery all use this writer. The document, health, and operator surfaces keep
+their established non-API formats. A `405` retains every method in chi's
+`Allow` set, including methods added through chi's extension-method registry.
+Both IDs must come from the validated request context; the writer restores
+their response headers from that payload, so downstream header replacement
+cannot create a body/header mismatch. Missing identity fails closed rather
+than emitting a partially trustworthy Problem.
+
+API recovery stages at most 1 MiB until a handler returns. A pre-commit panic
+therefore discards status, headers, and partial bytes before writing one clean
+500 Problem. Explicit flush/hijack and output beyond that bound switch to
+passthrough so streaming and large non-JSON responses are not held in memory.
+A panic after that irreversible point aborts the connection with
+`http.ErrAbortHandler`; it never appends Problem JSON to an existing response.
+
+Wrapped decoder/handler errors and panic values never cross the wire. Expected
+4xx failures are not error-logged. A generated 5xx callback records only the
+stable code, status, and concrete error type; recovery similarly records the
+panic type, never its value. Public text is encoded with the standard JSON
+encoder, including HTML escaping, rather than concatenated into JSON.
 
 ## Frontend generation
 
@@ -159,8 +195,10 @@ Non-2xx responses become `APIError` with the status, request ID, and parsed
 JSON/text body. Fetch or success-body failures become `APITransportError`.
 Both public messages are fixed and never interpolate bodies or causes;
 `AbortError` is rethrown unchanged so cancellation remains distinguishable.
-Problem Details adds a narrower typed public error body in M4-005 without
-changing this transport boundary.
+The generated model includes the typed `Problem` shape. The lightweight
+client deliberately retains its generic non-2xx transport value until the UI
+adds opinionated Problem rendering in M6-007; this avoids making a transport
+wrapper choose presentation behavior.
 
 Vitest 4.1.11 runs the initial Node-only client suite through `test:unit`.
 `svelte-kit sync` is part of that script so it succeeds immediately after a

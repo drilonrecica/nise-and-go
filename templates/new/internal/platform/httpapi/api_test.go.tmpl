@@ -3,16 +3,22 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
 	"github.com/drilonrecica/nise-and-go/runtime/secure"
 
 	"{{.ModulePath}}/internal/platform/httpapi/httpjson"
+	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
+	"{{.ModulePath}}/internal/platform/httpapi/problem"
 )
 
 func TestStrictOpenAPIIndexRoute(t *testing.T) {
@@ -54,19 +60,19 @@ func TestStrictOpenAPIIndexRoute(t *testing.T) {
 	}
 }
 
-func TestFixedTransportErrorDoesNotExposeCause(t *testing.T) {
+func TestResponseTransportErrorDoesNotExposeCause(t *testing.T) {
 	response := httptest.NewRecorder()
-	fixedTransportError(http.StatusBadRequest, "invalid request")(
+	problem.Handler(problem.InternalServerError())(
 		response,
-		httptest.NewRequest(http.MethodPost, "/", nil),
+		transportRequestWithIDs(),
 		errors.New("decoder failed beside /srv/private and secret-value"),
 	)
 
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", response.Code)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", response.Code)
 	}
-	if got := response.Body.String(); got != "invalid request\n" {
-		t.Fatalf("body = %q, want fixed public message", got)
+	if got := response.Header().Get("Content-Type"); got != problem.MediaType {
+		t.Fatalf("Content-Type = %q, want %q", got, problem.MediaType)
 	}
 	for _, forbidden := range []string{"decoder", "/srv/private", "secret-value"} {
 		if strings.Contains(response.Body.String(), forbidden) {
@@ -82,11 +88,11 @@ func TestRequestTransportErrorMapsBoundedPublicFailures(t *testing.T) {
 		name       string
 		err        error
 		wantStatus int
-		wantBody   string
+		wantCode   string
 	}{
-		{name: "invalid request", err: httpjson.ErrInvalidJSON, wantStatus: http.StatusBadRequest, wantBody: "invalid request\n"},
-		{name: "body too large", err: httpjson.ErrRequestBodyTooLarge, wantStatus: http.StatusRequestEntityTooLarge, wantBody: "request body too large\n"},
-		{name: "media type", err: httpjson.ErrUnsupportedMediaType, wantStatus: http.StatusUnsupportedMediaType, wantBody: "unsupported media type\n"},
+		{name: "invalid request", err: httpjson.ErrInvalidJSON, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
+		{name: "body too large", err: httpjson.ErrRequestBodyTooLarge, wantStatus: http.StatusRequestEntityTooLarge, wantCode: "request_body_too_large"},
+		{name: "media type", err: httpjson.ErrUnsupportedMediaType, wantStatus: http.StatusUnsupportedMediaType, wantCode: "unsupported_media_type"},
 	}
 
 	for _, tc := range tests {
@@ -95,15 +101,33 @@ func TestRequestTransportErrorMapsBoundedPublicFailures(t *testing.T) {
 			response := httptest.NewRecorder()
 			requestTransportError(
 				response,
-				httptest.NewRequest(http.MethodPost, "/", nil),
+				transportRequestWithIDs(),
 				fmt.Errorf("private decoder detail: %w", tc.err),
 			)
-			if response.Code != tc.wantStatus || response.Body.String() != tc.wantBody {
-				t.Fatalf("response = status %d, body %q; want status %d, body %q", response.Code, response.Body.String(), tc.wantStatus, tc.wantBody)
+			if response.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", response.Code, tc.wantStatus)
+			}
+			if got := response.Header().Get("Content-Type"); got != problem.MediaType {
+				t.Fatalf("Content-Type = %q, want %q", got, problem.MediaType)
+			}
+			var body openapigen.Problem
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode problem: %v", err)
+			}
+			if body.Status != int32(tc.wantStatus) || body.Code != tc.wantCode {
+				t.Fatalf("problem = status %d, code %q; want status %d, code %q", body.Status, body.Code, tc.wantStatus, tc.wantCode)
 			}
 			if strings.Contains(response.Body.String(), "private decoder detail") {
 				t.Errorf("response exposed wrapped cause: %q", response.Body.String())
 			}
 		})
 	}
+}
+
+func transportRequestWithIDs() *http.Request {
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	ctx := logging.WithRequestID(request.Context(), "request_123")
+	ctx = logging.WithCorrelationID(ctx, "correlation_456")
+	ctx = logging.WithLogger(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return request.WithContext(ctx)
 }

@@ -78,6 +78,18 @@ func Decode(w http.ResponseWriter, r *http.Request, expectedMediaType string, ds
 
 // Write encodes and bounds a JSON response before committing headers.
 func Write(w http.ResponseWriter, status int, value any) error {
+	return WriteMediaType(w, status, "application/json", value)
+}
+
+// WriteMediaType encodes and bounds a JSON response with an explicit,
+// syntactically valid media type before committing headers.
+func WriteMediaType(w http.ResponseWriter, status int, mediaType string, value any) error {
+	parsedType, params, err := mime.ParseMediaType(mediaType)
+	if err != nil {
+		return fmt.Errorf("parsing JSON response media type: %w", err)
+	}
+	mediaType = mime.FormatMediaType(parsedType, params)
+
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(value); err != nil {
 		return fmt.Errorf("encoding JSON response: %w", err)
@@ -85,10 +97,10 @@ func Write(w http.ResponseWriter, status int, value any) error {
 	if err := CheckResponseSize(buf.Len()); err != nil {
 		return err
 	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 	w.WriteHeader(status)
-	_, err := buf.WriteTo(w)
+	_, err = buf.WriteTo(w)
 	return err
 }
 

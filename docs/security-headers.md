@@ -256,6 +256,14 @@ mux.Mount("/", secure.Middleware(documentPolicy)(webuiHandler))
 
 Mount `secure.Middleware` as the outermost middleware in each chain, so a response produced by an inner middleware — a rejected request, a rate-limit refusal, a recovered panic — carries the headers too. The generated router uses sibling API and document chains so the outer document policy cannot overwrite the API policy while a response unwinds; exact and unmatched `/api/v1` requests remain in the API chain. The ordered contract lives in the application's own `internal/platform/httpapi/router.go` ([API routing and middleware](api-routing.md), [ADR 0009](adr/0009-generated-application-layout.md)), which is where the order is meant to be read and changed.
 
+Informational `1xx` blocks receive the policy without freezing it: the final
+non-`1xx` response applies the policy again, so a handler cannot weaken the
+last header block after sending `103 Early Hints`. Code that takes over a
+connection must use `http.NewResponseController(w).Hijack()`; the middleware
+finalizes the policy header map before delegating the takeover. This is also
+the seam the generated API recovery buffer uses when it carries a staged
+response into a hijacked HTTP/1 writer.
+
 `ParseDeployment` accepts `development`, `test`, and `production`, mapping `test` to development. An unrecognized value is an error, so a typo fails at startup rather than silently selecting the weaker policy.
 
 ## Confirming the policy when the application shell exists

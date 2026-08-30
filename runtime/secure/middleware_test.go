@@ -1,9 +1,13 @@
 package secure_test
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -197,6 +201,49 @@ func TestHandlerCannotRemoveAProtection(t *testing.T) {
 		"X-Content-Type-Options":       "nosniff",
 		"X-Frame-Options":              "DENY",
 	})
+}
+
+func TestInformationalResponseDoesNotFreezeAWeakenedFinalPolicy(t *testing.T) {
+	t.Parallel()
+	policy, err := secure.NewAPIPolicy(secure.Development)
+	if err != nil {
+		t.Fatalf("NewAPIPolicy: %v", err)
+	}
+	target := &policyStatusRecorder{header: make(http.Header)}
+	secure.Middleware(policy)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(secure.HeaderCSP, "default-src *")
+		w.WriteHeader(http.StatusEarlyHints)
+		w.Header().Set(secure.HeaderCSP, "default-src *; script-src *")
+		w.WriteHeader(http.StatusCreated)
+	})).ServeHTTP(target, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if got, want := target.statuses, []int{http.StatusEarlyHints, http.StatusCreated}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("status sequence = %v, want %v", got, want)
+	}
+	for index, header := range target.snapshots {
+		if got := header.Get(secure.HeaderCSP); got != policy.ContentSecurityPolicy() {
+			t.Errorf("status %d CSP = %q, want %q", target.statuses[index], got, policy.ContentSecurityPolicy())
+		}
+	}
+}
+
+func TestHijackFinalizesSecurityPolicyHeaders(t *testing.T) {
+	t.Parallel()
+	policy, err := secure.NewAPIPolicy(secure.Development)
+	if err != nil {
+		t.Fatalf("NewAPIPolicy: %v", err)
+	}
+	target := newPolicyHijacker()
+	secure.Middleware(policy)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(secure.HeaderCSP, "default-src *")
+		if _, _, err := http.NewResponseController(w).Hijack(); err != nil {
+			t.Errorf("Hijack: %v", err)
+		}
+	})).ServeHTTP(target, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if got := target.snapshot.Get(secure.HeaderCSP); got != policy.ContentSecurityPolicy() {
+		t.Fatalf("hijack CSP = %q, want %q", got, policy.ContentSecurityPolicy())
+	}
 }
 
 func TestDevelopmentPolicyDeletesAStrayHSTSHeader(t *testing.T) {
@@ -492,4 +539,47 @@ func TestConstructedPolicyIsAccepted(t *testing.T) {
 			})
 		}
 	}
+}
+
+type policyStatusRecorder struct {
+	header    http.Header
+	statuses  []int
+	snapshots []http.Header
+}
+
+func (w *policyStatusRecorder) Header() http.Header { return w.header }
+
+func (w *policyStatusRecorder) WriteHeader(status int) {
+	w.statuses = append(w.statuses, status)
+	w.snapshots = append(w.snapshots, w.header.Clone())
+}
+
+func (w *policyStatusRecorder) Write(data []byte) (int, error) { return len(data), nil }
+
+type policyHijacker struct {
+	header   http.Header
+	snapshot http.Header
+	rw       *bufio.ReadWriter
+}
+
+func newPolicyHijacker() *policyHijacker {
+	var output bytes.Buffer
+	return &policyHijacker{
+		header: make(http.Header),
+		rw: bufio.NewReadWriter(
+			bufio.NewReader(strings.NewReader("")),
+			bufio.NewWriter(&output),
+		),
+	}
+}
+
+func (w *policyHijacker) Header() http.Header { return w.header }
+
+func (w *policyHijacker) WriteHeader(int) {}
+
+func (w *policyHijacker) Write(data []byte) (int, error) { return len(data), nil }
+
+func (w *policyHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.snapshot = w.header.Clone()
+	return nil, w.rw, nil
 }

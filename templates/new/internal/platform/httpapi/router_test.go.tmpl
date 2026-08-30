@@ -3,14 +3,20 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -21,16 +27,25 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/secure"
 
 	"{{.ModulePath}}/internal/platform/config"
+	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
+	"{{.ModulePath}}/internal/platform/httpapi/problem"
 	"{{.ModulePath}}/internal/platform/webui"
 )
 
 func TestRouterUsesIndependentAPIAndDocumentPolicies(t *testing.T) {
+	chi.RegisterMethod("PROPFIND")
 	deps, _, _ := routerTestDeps(t)
 	deps.RegisterAPI = func(r chi.Router) {
 		r.Get("/probe", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set(secure.HeaderCSP, "default-src *")
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"surface":"api"}`)
+		})
+		r.Head("/probe", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})
+		r.MethodFunc("PROPFIND", "/probe", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
 		})
 	}
 	handler, err := New(deps)
@@ -56,9 +71,10 @@ func TestRouterUsesIndependentAPIAndDocumentPolicies(t *testing.T) {
 	if methodResponse.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("known API path with wrong method status = %d, want 405", methodResponse.Code)
 	}
-	if got := methodResponse.Header().Get("Allow"); got != http.MethodGet {
-		t.Fatalf("known API path Allow = %q, want GET", got)
+	if got, want := methodResponse.Header().Values("Allow"), []string{http.MethodGet, http.MethodHead, "PROPFIND"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("known API path Allow = %v, want %v", got, want)
 	}
+	assertAPIProblem(t, methodResponse, http.StatusMethodNotAllowed, "method_not_allowed")
 	if got := methodResponse.Header().Get(secure.HeaderCSP); got != apiPolicy.ContentSecurityPolicy() {
 		t.Fatalf("API method rejection CSP = %q, want API policy", got)
 	}
@@ -102,8 +118,23 @@ func TestRouterCoreWrapsApplicationMiddleware(t *testing.T) {
 			w.Header().Set(secure.HeaderCSP, "default-src *")
 			w.WriteHeader(http.StatusNoContent)
 		})
-		r.Get("/panic", func(http.ResponseWriter, *http.Request) {
+		r.Get("/panic", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set(logging.DefaultRequestIDHeader, "hostile-request-id")
+			w.Header().Set(logging.DefaultCorrelationIDHeader, "hostile-correlation-id")
 			panic("router-test-panic")
+		})
+		r.Get("/write-then-panic", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, "partial-secret-value")
+			panic("write-then-panic-secret")
+		})
+		r.Get("/flush-then-panic", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "stream-prefix")
+			if err := http.NewResponseController(w).Flush(); err != nil {
+				panic(err)
+			}
+			panic("flush-then-panic-secret")
 		})
 	}
 	handler, err := New(deps)
@@ -134,11 +165,37 @@ func TestRouterCoreWrapsApplicationMiddleware(t *testing.T) {
 	if got := panicResponse.Header().Get(secure.HeaderCSP); got != apiPolicy.ContentSecurityPolicy() {
 		t.Fatalf("recovered panic lacks API CSP: %q", got)
 	}
+	assertAPIProblem(t, panicResponse, http.StatusInternalServerError, "internal_server_error")
 	if !strings.Contains(logs.String(), "panic serving request") ||
-		!strings.Contains(logs.String(), "router-test-panic") ||
+		!strings.Contains(logs.String(), `"panic_type":"string"`) ||
 		!strings.Contains(logs.String(), `"request_id"`) ||
 		!strings.Contains(logs.String(), `"correlation_id"`) {
 		t.Fatalf("core recovery did not log panic: %s", logs.String())
+	}
+	if strings.Contains(logs.String(), "router-test-panic") || strings.Contains(panicResponse.Body.String(), "router-test-panic") {
+		t.Fatalf("core recovery exposed the panic value: response %q, logs %s", panicResponse.Body.String(), logs.String())
+	}
+
+	partialResponse := serveRouter(handler, "/api/v1/write-then-panic")
+	assertAPIProblem(t, partialResponse, http.StatusInternalServerError, "internal_server_error")
+	for _, forbidden := range []string{"partial-secret-value", "write-then-panic-secret"} {
+		if strings.Contains(partialResponse.Body.String(), forbidden) || strings.Contains(logs.String(), forbidden) {
+			t.Fatalf("write-then-panic exposed %q: response %q, logs %s", forbidden, partialResponse.Body.String(), logs.String())
+		}
+	}
+
+	streamResponse, recovered := serveRouterRecover(handler, "/api/v1/flush-then-panic")
+	if recoveredErr, ok := recovered.(error); !ok || !errors.Is(recoveredErr, http.ErrAbortHandler) {
+		t.Fatalf("flush-then-panic recovered value = %#v, want http.ErrAbortHandler", recovered)
+	}
+	if got := streamResponse.Body.String(); got != "stream-prefix" {
+		t.Fatalf("flushed streaming response = %q, want original committed prefix only", got)
+	}
+	if got := streamResponse.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("flushed streaming Content-Type = %q, want text/event-stream", got)
+	}
+	if strings.Contains(logs.String(), "flush-then-panic-secret") {
+		t.Fatalf("streaming recovery exposed panic value: %s", logs.String())
 	}
 	var metrics bytes.Buffer
 	if err := observability.WriteText(&metrics, registry); err != nil {
@@ -179,6 +236,7 @@ func TestRouterKeepsUnmatchedAPIPathsOutOfTheUI(t *testing.T) {
 		if got := response.Header().Get(secure.HeaderCSP); got != apiPolicy.ContentSecurityPolicy() {
 			t.Errorf("%s CSP = %q, want API policy", requestPath, got)
 		}
+		assertAPIProblem(t, response, http.StatusNotFound, "not_found")
 	}
 	if apiCalls != 3 || documentCalls != 0 {
 		t.Fatalf("unmatched API calls = api:%d document:%d, want 3/0", apiCalls, documentCalls)
@@ -201,6 +259,195 @@ func TestRouterRejectsNilApplicationMiddleware(t *testing.T) {
 	deps.Middleware.API = []Middleware{nil}
 	if _, err := New(deps); err == nil || !strings.Contains(err.Error(), "api middleware slot 0") {
 		t.Fatalf("New error = %v, want nil API slot rejection", err)
+	}
+}
+
+func TestRecoveryResponseWriterRetainsStateWhenHijackIsUnsupported(t *testing.T) {
+	t.Parallel()
+	target := httptest.NewRecorder()
+	writer := newRecoveryResponseWriter(target)
+	writer.Header().Set("X-Staged", "yes")
+	writer.WriteHeader(http.StatusAccepted)
+	_, _ = writer.Write([]byte("staged body"))
+
+	if _, _, err := writer.Hijack(); !errors.Is(err, http.ErrNotSupported) {
+		t.Fatalf("Hijack error = %v, want http.ErrNotSupported", err)
+	}
+	if writer.passthrough {
+		t.Fatal("unsupported hijack irreversibly changed the writer to passthrough")
+	}
+	if err := writer.commit(); err != nil {
+		t.Fatalf("commit after unsupported hijack: %v", err)
+	}
+	if target.Code != http.StatusAccepted || target.Body.String() != "staged body" || target.Header().Get("X-Staged") != "yes" {
+		t.Fatalf("committed response = status %d, headers %v, body %q", target.Code, target.Header(), target.Body.String())
+	}
+}
+
+func TestRecoveryResponseWriterCarriesStagedResponseIntoHijack(t *testing.T) {
+	t.Parallel()
+	policy, err := secure.NewAPIPolicy(secure.Development)
+	if err != nil {
+		t.Fatalf("NewAPIPolicy: %v", err)
+	}
+	target := newHijackRecorder()
+	var writer *recoveryResponseWriter
+	var readWriter *bufio.ReadWriter
+	secure.Middleware(policy)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writer = newRecoveryResponseWriter(w)
+		writer.Header().Set("X-Staged", "yes")
+		writer.Header().Set(secure.HeaderCSP, "default-src *")
+		writer.WriteHeader(http.StatusAccepted)
+		_, _ = writer.Write([]byte("staged body"))
+		_, readWriter, err = writer.Hijack()
+	})).ServeHTTP(target, httptest.NewRequest(http.MethodGet, "/", nil))
+	if err != nil {
+		t.Fatalf("Hijack: %v", err)
+	}
+	if !writer.passthrough {
+		t.Fatal("successful hijack did not mark the response irreversible")
+	}
+	if err := readWriter.Writer.Flush(); err != nil {
+		t.Fatalf("flush hijacked writer: %v", err)
+	}
+	for _, fragment := range []string{"HTTP/1.1 202 Accepted", "X-Staged: yes", "staged body", "Content-Security-Policy: " + policy.ContentSecurityPolicy()} {
+		if !strings.Contains(target.output.String(), fragment) {
+			t.Errorf("hijacked response lacks %q: %q", fragment, target.output.String())
+		}
+	}
+	if strings.Contains(target.output.String(), "default-src *") {
+		t.Fatalf("hijacked response retained weakened CSP: %q", target.output.String())
+	}
+}
+
+func TestRecoveryResponseWriterFullDuplexSwitchesToPassthrough(t *testing.T) {
+	t.Parallel()
+	target := &fullDuplexRecorder{ResponseRecorder: httptest.NewRecorder()}
+	writer := newRecoveryResponseWriter(target)
+	if err := http.NewResponseController(writer).EnableFullDuplex(); err != nil {
+		t.Fatalf("EnableFullDuplex: %v", err)
+	}
+	if !target.enabled || !writer.passthrough {
+		t.Fatalf("full duplex state = target enabled %t, passthrough %t; want both true", target.enabled, writer.passthrough)
+	}
+	writer.Header().Set("Content-Type", "application/octet-stream")
+	writer.WriteHeader(http.StatusAccepted)
+	_, _ = writer.Write([]byte("duplex body"))
+	if target.Code != http.StatusAccepted || target.Body.String() != "duplex body" {
+		t.Fatalf("full duplex response = status %d, body %q", target.Code, target.Body.String())
+	}
+}
+
+func TestRecoveryResponseWriterSupportsRealHTTP1FullDuplex(t *testing.T) {
+	handlerErr := make(chan error, 1)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := recoverer(logger, fixedHTTPError(http.StatusInternalServerError, "internal server error"), true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+			handlerErr <- err
+			return
+		}
+		_, _ = io.WriteString(w, "ready\n")
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			handlerErr <- err
+			return
+		}
+		marker := make([]byte, len("finish"))
+		if _, err := io.ReadFull(r.Body, marker); err != nil {
+			handlerErr <- err
+			return
+		}
+		if string(marker) != "finish" {
+			handlerErr <- fmt.Errorf("request marker = %q, want finish", marker)
+			return
+		}
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			handlerErr <- err
+			return
+		}
+		_, _ = io.WriteString(w, "done\n")
+		handlerErr <- nil
+	}))
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	requestReader, requestWriter := io.Pipe()
+	t.Cleanup(func() { _ = requestWriter.Close() })
+	request, err := http.NewRequest(http.MethodPost, server.URL, requestReader)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	client := server.Client()
+	client.Timeout = 5 * time.Second
+	responseResult := make(chan struct {
+		response *http.Response
+		err      error
+	}, 1)
+	go func() {
+		response, err := client.Do(request)
+		responseResult <- struct {
+			response *http.Response
+			err      error
+		}{response: response, err: err}
+	}()
+
+	var response *http.Response
+	select {
+	case result := <-responseResult:
+		if result.err != nil {
+			t.Fatalf("Do before request completion: %v", result.err)
+		}
+		response = result.response
+	case <-time.After(3 * time.Second):
+		t.Fatal("HTTP/1 response did not arrive before request-body completion")
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	prefix := make([]byte, len("ready\n"))
+	if _, err := io.ReadFull(response.Body, prefix); err != nil || string(prefix) != "ready\n" {
+		t.Fatalf("response prefix = %q, %v; want ready", prefix, err)
+	}
+	if _, err := requestWriter.Write([]byte("finish")); err != nil {
+		t.Fatalf("write request marker after response: %v", err)
+	}
+	if err := requestWriter.Close(); err != nil {
+		t.Fatalf("close request body: %v", err)
+	}
+	remainder, err := io.ReadAll(response.Body)
+	if err != nil || string(remainder) != "done\n" {
+		t.Fatalf("response remainder = %q, %v; want done", remainder, err)
+	}
+	if err := <-handlerErr; err != nil {
+		t.Fatalf("full-duplex handler: %v", err)
+	}
+}
+
+func TestRecoveryResponseWriterPreservesInformationalThenFinalStatus(t *testing.T) {
+	t.Parallel()
+	policy, err := secure.NewAPIPolicy(secure.Development)
+	if err != nil {
+		t.Fatalf("NewAPIPolicy: %v", err)
+	}
+	target := &statusSequenceWriter{header: make(http.Header)}
+	secure.Middleware(policy)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writer := newRecoveryResponseWriter(w)
+		writer.Header().Set(secure.HeaderCSP, "default-src *")
+		writer.WriteHeader(http.StatusEarlyHints)
+		writer.Header().Set(secure.HeaderCSP, "default-src *; script-src *")
+		writer.WriteHeader(http.StatusCreated)
+		_, _ = writer.Write([]byte("created"))
+		if err := writer.commit(); err != nil {
+			t.Errorf("commit: %v", err)
+		}
+	})).ServeHTTP(target, httptest.NewRequest(http.MethodGet, "/", nil))
+	if got, want := target.statuses, []int{http.StatusEarlyHints, http.StatusCreated}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("status sequence = %v, want %v", got, want)
+	}
+	if target.body.String() != "created" {
+		t.Fatalf("body = %q, want created", target.body.String())
+	}
+	for index, header := range target.headerSnapshots {
+		if got := header.Get(secure.HeaderCSP); got != policy.ContentSecurityPolicy() {
+			t.Errorf("status %d CSP = %q, want %q", target.statuses[index], got, policy.ContentSecurityPolicy())
+		}
 	}
 }
 
@@ -238,6 +485,13 @@ func serveRouterMethod(handler http.Handler, method, requestPath string) *httpte
 	return response
 }
 
+func serveRouterRecover(handler http.Handler, requestPath string) (response *httptest.ResponseRecorder, recovered any) {
+	response = httptest.NewRecorder()
+	defer func() { recovered = recover() }()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, requestPath, nil))
+	return response, nil
+}
+
 func recordRouterEvents(events *[]string, name string) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -254,5 +508,75 @@ func countRouterCalls(calls *int) Middleware {
 			(*calls)++
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+type fullDuplexRecorder struct {
+	*httptest.ResponseRecorder
+	enabled bool
+}
+
+func (r *fullDuplexRecorder) EnableFullDuplex() error {
+	r.enabled = true
+	return nil
+}
+
+type statusSequenceWriter struct {
+	header          http.Header
+	statuses        []int
+	headerSnapshots []http.Header
+	body            bytes.Buffer
+}
+
+type hijackRecorder struct {
+	header http.Header
+	output bytes.Buffer
+	rw     *bufio.ReadWriter
+}
+
+func newHijackRecorder() *hijackRecorder {
+	recorder := &hijackRecorder{header: make(http.Header)}
+	recorder.rw = bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(&recorder.output))
+	return recorder
+}
+
+func (w *hijackRecorder) Header() http.Header { return w.header }
+
+func (w *hijackRecorder) WriteHeader(int) {}
+
+func (w *hijackRecorder) Write(data []byte) (int, error) { return w.output.Write(data) }
+
+func (w *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, w.rw, nil
+}
+
+func (w *statusSequenceWriter) Header() http.Header { return w.header }
+
+func (w *statusSequenceWriter) WriteHeader(status int) {
+	w.statuses = append(w.statuses, status)
+	w.headerSnapshots = append(w.headerSnapshots, w.header.Clone())
+}
+
+func (w *statusSequenceWriter) Write(data []byte) (int, error) {
+	return w.body.Write(data)
+}
+
+func assertAPIProblem(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+	if got := response.Header().Get("Content-Type"); got != problem.MediaType {
+		t.Fatalf("Content-Type = %q, want %q", got, problem.MediaType)
+	}
+	var body openapigen.Problem
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode API problem: %v", err)
+	}
+	if body.Status != int32(status) || body.Code != code {
+		t.Fatalf("problem = status %d, code %q; want status %d, code %q", body.Status, body.Code, status, code)
+	}
+	if body.RequestId == "" || body.RequestId != response.Header().Get(logging.DefaultRequestIDHeader) {
+		t.Fatalf("problem request_id = %q, response header = %q", body.RequestId, response.Header().Get(logging.DefaultRequestIDHeader))
+	}
+	if body.CorrelationId == "" || body.CorrelationId != response.Header().Get(logging.DefaultCorrelationIDHeader) {
+		t.Fatalf("problem correlation_id = %q, response header = %q", body.CorrelationId, response.Header().Get(logging.DefaultCorrelationIDHeader))
 	}
 }

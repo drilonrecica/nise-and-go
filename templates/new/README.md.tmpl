@@ -215,10 +215,18 @@ Declared JSON request bodies are limited to 1 MiB and require the exact
 declared media type (parameters are allowed), one value, no unknown fields,
 and no repeated object keys, including case variants at any nesting level.
 JSON container nesting is limited to 100 levels.
-Failures map to fixed `400`, `413`, or `415` responses without exposing the
-decoder cause. Generated buffered JSON responses and `httpjson.Write` are
-also limited to 1 MiB before success headers are committed; streaming and
-non-JSON responses are not buffered by this policy.
+Failures map to RFC 9457 Problem Details for `400`, `413`, or `415` without
+exposing the decoder cause. The same controlled shape handles API `404`,
+`405`, generated `500`, and recovered panic responses. It contains stable
+public fields plus only `code`, `request_id`, and `correlation_id`; add new
+extensions through `api/openapi.yaml`, never an arbitrary map. Definitions
+and the bounded writer live in `internal/platform/httpapi/problem`. API
+recovery stages at most 1 MiB so a write-then-panic becomes one clean Problem;
+explicitly flushed/hijacked streams pass through and are aborted, never
+followed by appended JSON, if they later panic.
+Generated buffered JSON responses, Problems, and `httpjson.Write` are limited
+to 1 MiB before headers are committed; streaming and non-JSON responses are
+not buffered by this policy.
 
 The same document generates `frontend/src/lib/api/schema.d.ts`; use
 `make api-types-generate` and `make api-types-check`. The application-owned

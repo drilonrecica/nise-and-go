@@ -12,6 +12,18 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// Problem RFC 9457 Problem Details with the application's controlled extensions.
+type Problem struct {
+	Code          string  `json:"code"`
+	CorrelationId string  `json:"correlation_id"`
+	Detail        string  `json:"detail"`
+	Instance      *string `json:"instance,omitempty"`
+	RequestId     string  `json:"request_id"`
+	Status        int32   `json:"status"`
+	Title         string  `json:"title"`
+	Type          string  `json:"type"`
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// GetAPIIndex Confirm that the versioned API boundary is available
@@ -171,6 +183,8 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 
 	return r
 }
+
+type ProblemApplicationProblemPlusJSONResponse Problem
 
 type GetAPIIndexRequestObject struct {
 }
