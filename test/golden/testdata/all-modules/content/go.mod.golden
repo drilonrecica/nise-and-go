@@ -7,13 +7,17 @@ module github.com/example/myapp
 
 go 1.26.0
 
-tool github.com/sqlc-dev/sqlc/cmd/sqlc
-tool github.com/pressly/goose/v3/cmd/goose
+tool (
+	github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
+	github.com/pressly/goose/v3/cmd/goose
+	github.com/sqlc-dev/sqlc/cmd/sqlc
+)
 
 require (
 	github.com/drilonrecica/nise-and-go v0.1.0
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/oapi-codegen/oapi-codegen/v2 v2.8.0 // indirect
 	github.com/pressly/goose/v3 v3.27.3
 	github.com/sqlc-dev/sqlc v1.31.1 // indirect
 )

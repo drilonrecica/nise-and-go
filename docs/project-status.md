@@ -14,6 +14,11 @@ The V0.1 target is frozen around one golden profile:
 
 ## What “frozen” means
 
+The authoritative OpenAPI document, pinned strict chi generation, explicit
+handler adapter, and `/api/v1` routing boundary are implemented. Typed
+frontend generation and the remaining transport foundations are still in
+progress; this is not yet a complete public API surface.
+
 V0.1 may implement and correct the documented foundation. It may not add another router, database, frontend framework, plugin system, AI integration, billing system, or deployment platform merely because it could be useful someday.
 
 An addition must either:
@@ -41,4 +46,3 @@ Until evidence exists, Nise must not claim to be:
 - Maximally secure.
 - Backward compatible.
 - Suitable for a particular compliance regime.
-

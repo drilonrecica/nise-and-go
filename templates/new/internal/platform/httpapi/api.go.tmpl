@@ -1,0 +1,53 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+//go:generate go tool oapi-codegen --config ../../../api/oapi-codegen.yaml -o openapigen/openapi.gen.go ../../../api/openapi.yaml
+
+package httpapi
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+
+	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
+)
+
+// Server adapts application behavior to the strict interface generated from
+// api/openapi.yaml. Add dependencies as explicit fields when operations need
+// them; transport methods should delegate business behavior to use cases.
+type Server struct{}
+
+// NewServer constructs the application's strict OpenAPI adapter.
+func NewServer() *Server {
+	return &Server{}
+}
+
+var _ openapigen.StrictServerInterface = (*Server)(nil)
+
+// Register mounts every generated operation relative to the router supplied by
+// the /api/v1 boundary. The generated non-strict interface is only an adapter;
+// application code implements StrictServerInterface above.
+func (s *Server) Register(r chi.Router) {
+	strict := openapigen.NewStrictHandlerWithOptions(s, nil, openapigen.StrictHTTPServerOptions{
+		RequestErrorHandlerFunc:  fixedTransportError(http.StatusBadRequest, "invalid request"),
+		ResponseErrorHandlerFunc: fixedTransportError(http.StatusInternalServerError, "internal server error"),
+	})
+	_ = openapigen.HandlerFromMux(strict, r)
+}
+
+// GetAPIIndex is the transport contract fixture at GET /api/v1/. It confirms
+// that strict generated registration is live without duplicating the public
+// health probes or creating a domain endpoint.
+func (*Server) GetAPIIndex(context.Context, openapigen.GetAPIIndexRequestObject) (openapigen.GetAPIIndexResponseObject, error) {
+	return openapigen.GetAPIIndex204Response{}, nil
+}
+
+// fixedTransportError is deliberately generic: generated decoder and handler
+// errors may contain implementation details. The Problem Details milestone
+// replaces this temporary fixed-body seam without changing generated code.
+func fixedTransportError(status int, message string) func(http.ResponseWriter, *http.Request, error) {
+	return func(w http.ResponseWriter, _ *http.Request, _ error) {
+		http.Error(w, message, status)
+	}
+}

@@ -140,6 +140,12 @@ func TestEveryGeneratedFileDeclaresItsOwnership(t *testing.T) {
 		if f.Owner == generator.OwnerNise {
 			want = generator.NiseOwnedHeader
 		}
+		// Tool-owned output retains the pinned generator's standard Go header.
+		// Its openapigen/ path is the ownership marker (ADR 0009), and forcing
+		// a Nise-specific header would make an ordinary oapi-codegen rerun dirty.
+		if f.Path == generator.OpenAPIGeneratedPath {
+			want = generator.OAPICodegenGeneratedHeader
+		}
 		head := string(f.Content)
 		if len(head) > 400 {
 			head = head[:400]

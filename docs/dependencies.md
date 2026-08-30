@@ -34,16 +34,14 @@ itself maintains and what Nise generates by default, and nothing more.
 
 ## Currently allowed dependencies (Nise-maintained code)
 
-As of this task, `cmd/`, `internal/`, and `runtime/` contain no Go source
-files yet (only placeholder `README.md` files), so there is nothing for them
-to import. The table records the dependency graph that already exists in
-`go.mod` for other reasons.
+The table records the dependency graph Nise itself maintains. Generated
+applications have their separate allowlist below.
 
 | Import path | Layer | Why it is allowed | What would remove it |
 |---|---|---|---|
 | `github.com/sqlc-dev/sqlc/cmd/sqlc` | Framework tool (`tool` directive) | Generates type-safe Go from SQL for the generated application's data layer. sqlc is the database default: queries are handwritten SQL colocated with the feature that owns them, and sqlc generates the typed Go for them, so there is no ORM, query builder, or schema DSL between the application and its SQL. Never imported by `runtime/`, `internal/`, or `cmd/` — invoked only as `go tool sqlc`. | Nise stops using sqlc as the generated-application query generator. |
 | `github.com/pressly/goose/v3/cmd/goose` | Framework tool (`tool` directive) | Runs and generates handwritten SQL migrations. goose is the migration runner because migrations are primarily handwritten SQL, embedded in the application binary while staying readable SQL in the repository, and applied as an explicit deployment step rather than on startup. Never imported by `runtime/`, `internal/`, or `cmd/` — invoked only as `go tool goose`. | Nise stops using goose as the migration runner. |
-| `github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen` | Framework tool (`tool` directive) | Generates the strict chi server and client stubs from the OpenAPI document, which is the authoritative transport boundary: the server bindings and the frontend's types are both generated from it, so the two cannot drift from the contract or from each other. Never imported by `runtime/`, `internal/`, or `cmd/` — invoked only as `go tool oapi-codegen`. | Nise stops treating OpenAPI as authoritative for generated server/client code. |
+| `github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen` | Framework tool (`tool` directive) | Generates strict chi server bindings from the authoritative OpenAPI document. Never imported by `runtime/`, `internal/`, or `cmd/` — invoked only as `go tool oapi-codegen`. | Nise stops treating OpenAPI as authoritative for generated server code. |
 
 The remaining 101 entries in `go.mod`'s `require (... // indirect)` block
 are transitive dependencies of the three tools above (for example
@@ -83,10 +81,11 @@ version; those entries name the package only.
 | `github.com/jackc/pgx/v5` (`v5.10.0`) | The PostgreSQL driver and pool underlying sqlc-generated code. It is also the documented escape hatch: exceptional bulk operations, PostgreSQL-specific behavior, and carefully optimized paths may use pgx directly, keeping the application's own transaction boundaries. The generated pool pins explicit limits rather than accepting pgx's CPU-dependent maximum. |
 | `github.com/pressly/goose/v3` (`v3.27.3`, runtime plus generated-project `tool` directive) | Loads readable embedded SQL migrations through an instance-scoped provider. The generated migrator disables Goose's package-global registry, owns a dedicated pgx `database/sql` connection, and serializes explicit migration runs with PostgreSQL advisory locking. |
 | `github.com/sqlc-dev/sqlc/cmd/sqlc` (`v1.31.1`, generated-project `tool` directive) | Generates each feature's typed `store/` package from its handwritten SQL and feature-local config. Generated commands pass `--no-remote`; no hosted sqlc service is required. |
+| `github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen` (`v2.8.0`, generated-project `tool` directive) | Generates checked-in strict chi bindings from `api/openapi.yaml`. The application-owned config enables models, chi server, and strict server only; `make api-check` proves the output byte-for-byte without mutating it. |
 | `github.com/riverqueue/river` | The background-job runner, used transactionally through pgx. Jobs are PostgreSQL-backed so a job can be enqueued in the same transaction as the business change that requires it — which is why there is no separate message broker in the denylist below. |
 | sqlc-generated query code | Output of `sqlc generate`; tool-owned complete `store/` directories, checked in and never hand-edited. |
 | goose migration files and runtime support | Handwritten SQL migrations run by Goose v3.27.3, embedded in the binary and applied as an explicit deployment step. |
-| oapi-codegen-generated server/client code | Output of `oapi-codegen` from the authoritative OpenAPI document; application-owned, checked in. |
+| oapi-codegen-generated server code | Complete output of pinned oapi-codegen from the authoritative OpenAPI document; Nise/tool-owned under `openapigen/`, checked in. |
 
 Version numbers remain omitted only for dependencies whose implementing task
 has not yet pinned and verified a released tag.

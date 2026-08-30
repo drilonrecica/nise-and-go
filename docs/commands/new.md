@@ -238,12 +238,15 @@ myapp/
 ├── .gitignore                    [app]
 ├── .nise/architecture.json       [nise]  machine-readable layout map for coding tools
 ├── AGENTS.md                     [nise]  static instructions for external coding tools
-├── Makefile                      [app]   build, run, test, fmt, lint, web-install, web-build
+├── Makefile                      [app]   build, test, API/SQL generation, and frontend targets
 ├── README.md                     [app]
 ├── go.mod                        [app]   pinned requires; no go.sum until `go mod tidy`
 ├── nise.json                     [nise]  the project recipe
 │
-├── api/README.md                 [app]   API contract and generation boundary
+├── api/
+│   ├── README.md                 [app]   API contract and generation boundary
+│   ├── openapi.yaml              [app]   authoritative transport contract
+│   └── oapi-codegen.yaml         [app]   strict chi generation config
 ├── cmd/myapp/
 │   ├── main.go                   [app]   process and explicit database command dispatch
 │   └── main_test.go              [app]   strict database command parsing
@@ -311,6 +314,10 @@ myapp/
         │   ├── transaction.go    [app]   pgx adapter for use-case-owned transactions
         │   └── transaction_test.go [app] sqlc DBTX propagation and option mapping
         ├── httpapi/
+        │   ├── api.go           [app]   strict interface adapter and registration
+        │   ├── api_test.go      [app]   generated-binding route contract
+        │   ├── openapigen/
+        │   │   └── openapi.gen.go [nise] complete strict chi bindings
         │   ├── router.go        [app]   sibling API/document chains and extension slots
         │   └── router_test.go   [app]   routing and middleware-order contract
         └── webui/
@@ -319,11 +326,12 @@ myapp/
 
 ```
 
-62 files. Ownership markers are from
+67 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
-overwritten. Every generated file declares the same thing in a header
-comment in its own language's syntax. The four JSON files have no comment
+overwritten. Files rendered directly by Nise declare the same thing in a
+header comment in their own language's syntax; pinned external-tool output
+retains that tool's standard generated-code header. The four JSON files have no comment
 syntax and declare ownership by path instead, which is the accommodation
 [ADR 0009](../adr/0009-generated-application-layout.md) makes.
 
@@ -384,6 +392,10 @@ files and omitted directories.
 - **An exact `/api/v1` boundary** with separate API and document security
   policies, a fixed protected middleware core, explicit application slots,
   and API `404` responses that never fall through to the SPA.
+- **Authoritative OpenAPI and strict chi bindings** with an explicit
+  application adapter, compile-time interface completeness, a pinned v2.8.0
+  generator, byte-identical regeneration, and a non-mutating stale-output
+  gate. `GET /api/v1/` is the bodyless wiring fixture.
 - **HTTP metrics** labeled by the router's resolved route template, exposed
   at `/internal/metrics` in Prometheus text format — mounted only when
   `OPERATOR_TOKEN` is set, and always behind it. Without the token the
@@ -411,7 +423,7 @@ scaffold code for subsystems that do not exist yet.
 | Absent | Arrives with |
 |---|---|
 | Generated feature `sqlc` output | M7 — the feature generator will write configs carrying the M3 query-safety contract; the validator and `sqlc-vet` target are present now |
-| OpenAPI document, generated server bindings, typed frontend client | Later M4 tasks — the exact `/api/v1` router boundary and registration seam are present now |
+| Generated TypeScript models and typed frontend client | M4-003 — the authoritative OpenAPI document and strict Go server boundary are present now |
 | Sessions, authentication, authorization, audit log | M5 — `internal/features/` is the reserved seam |
 | **The application shell**: sidebar, navigation, theme and language controls, authentication screens, tables, the component set, and the Vitest and Playwright suites | **M6** — `frontend/` is a minimal but real SvelteKit project today: it installs, builds, type-checks, and renders one page served by the Go binary. Nothing in the layout moves when M6 fills it in. |
 | Feature and resource generation | M7 — see [`nise generate`](generate.md) |

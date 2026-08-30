@@ -1,0 +1,73 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpapi
+
+import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/drilonrecica/nise-and-go/runtime/secure"
+)
+
+func TestStrictOpenAPIIndexRoute(t *testing.T) {
+	deps, _, _ := routerTestDeps(t)
+	deps.RegisterAPI = NewServer().Register
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	policy, err := secure.NewAPIPolicy(secure.Development)
+	if err != nil {
+		t.Fatalf("NewAPIPolicy: %v", err)
+	}
+	for _, requestPath := range []string{"/api/v1", "/api/v1/"} {
+		response := serveRouter(handler, requestPath)
+		if response.Code != http.StatusNoContent {
+			t.Errorf("GET %s status = %d, want 204", requestPath, response.Code)
+		}
+		if response.Body.Len() != 0 {
+			t.Errorf("GET %s body = %q, want empty", requestPath, response.Body.String())
+		}
+		if got := response.Header().Get(secure.HeaderCSP); got != policy.ContentSecurityPolicy() {
+			t.Errorf("GET %s CSP = %q, want API policy", requestPath, got)
+		}
+	}
+
+	methodResponse := serveRouterMethod(handler, http.MethodPost, "/api/v1/")
+	if methodResponse.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /api/v1/ status = %d, want 405", methodResponse.Code)
+	}
+	if got := methodResponse.Header().Get("Allow"); got != http.MethodGet {
+		t.Fatalf("POST /api/v1/ Allow = %q, want GET", got)
+	}
+
+	unmatched := serveRouter(handler, "/api/v1/not-in-openapi")
+	if unmatched.Code != http.StatusNotFound {
+		t.Fatalf("unmatched API status = %d, want 404", unmatched.Code)
+	}
+}
+
+func TestFixedTransportErrorDoesNotExposeCause(t *testing.T) {
+	response := httptest.NewRecorder()
+	fixedTransportError(http.StatusBadRequest, "invalid request")(
+		response,
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		errors.New("decoder failed beside /srv/private and secret-value"),
+	)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", response.Code)
+	}
+	if got := response.Body.String(); got != "invalid request\n" {
+		t.Fatalf("body = %q, want fixed public message", got)
+	}
+	for _, forbidden := range []string{"decoder", "/srv/private", "secret-value"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Errorf("body exposed %q: %q", forbidden, response.Body.String())
+		}
+	}
+}

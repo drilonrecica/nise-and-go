@@ -104,15 +104,17 @@ func Run(ctx context.Context, modeOverride string) error {
 	gate := health.NewGate(false)
 
 	prober := health.NewProber([]health.Check{database.ReadinessCheck(pool)})
+	apiServer := httpapi.NewServer()
 
 	handler, err := httpapi.New(httpapi.Deps{
-		Config:   cfg,
-		Logger:   logger,
-		Gate:     gate,
-		Prober:   prober,
-		Registry: registry,
-		Metrics:  httpMetrics,
-		UI:       ui,
+		Config:      cfg,
+		Logger:      logger,
+		Gate:        gate,
+		Prober:      prober,
+		Registry:    registry,
+		Metrics:     httpMetrics,
+		UI:          ui,
+		RegisterAPI: apiServer.Register,
 	})
 	if err != nil {
 		return fmt.Errorf("building the HTTP handler: %w", err)

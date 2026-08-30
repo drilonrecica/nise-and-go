@@ -120,33 +120,19 @@ func checkGoose(ctx context.Context, r Runner, timeout time.Duration, insideGene
 }
 
 func checkOapiCodegen(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool) Check {
-	return checkGeneratorTool(ctx, r, timeout, insideGeneratedProject, minVersionSpec{
+	spec := minVersionSpec{
 		name:    "oapi-codegen",
 		command: "go",
 		args:    []string{"tool", "oapi-codegen", "-version"},
 		min:     nil,
 		install: "Run `go get -tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen` from the repository root.",
-	})
-}
-
-// checkGeneratorTool routes a future go.mod-`tool`-pinned generator check
-// (currently oapi-codegen) based on whether doctor is running inside a
-// generated project. Inside a generated project it never even invokes
-// spec.command: there is nothing to run yet, by design, so a StatusFail
-// (and its "add a tool directive" remedy, which is actively wrong advice
-// for an application's own go.mod) would misreport a healthy project as
-// broken. Outside a generated project — i.e. inside the Nise framework
-// repository itself, where these tools are genuinely pinned and
-// genuinely required — behavior is unchanged from before: checkMinVersion
-// runs the tool and reports StatusFail if it is missing or unparsable.
-func checkGeneratorTool(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool, spec minVersionSpec) Check {
+	}
 	if insideGeneratedProject {
 		return Check{
-			Name:   spec.name,
-			Status: StatusSkipped,
-			Found:  "not declared by this project's go.mod",
-			Required: spec.name + " is only required inside the Nise framework repository itself; " +
-				"a generated project does not declare it yet — this generator tool arrives with its later M3/M4 integration task",
+			Name:     spec.name,
+			Status:   StatusSkipped,
+			Found:    "declared by this project's go.mod but not executed implicitly",
+			Required: "run `make api-check` explicitly to resolve the pinned tool and verify that strict server bindings match api/openapi.yaml",
 		}
 	}
 	return checkMinVersion(ctx, r, timeout, spec)

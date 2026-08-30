@@ -427,7 +427,10 @@ orchestrator) is not broken.
 `deploy/compose.yaml`, or any other application-owned path still exists. Generated
 application components are owned by the application and may be edited,
 replaced, or removed, and the ownership check already treats a deleted
-application-owned file as allowed.
+application-owned file as allowed. The generated project's `make api-check`
+is the opt-in contract-specific gate: when the application keeps the starter's
+OpenAPI boundary, it compares the checked-in strict bindings to
+`api/openapi.yaml` without making `nise check` require that boundary forever.
 
 ### 5. The dependency set
 
