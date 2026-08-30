@@ -1,7 +1,473 @@
 # Generated once by nise; owned by this application. Nise will not overwrite it.
+#
+# The inline templates are the pinned oapi-codegen v2.8.0 defaults with two
+# narrow transport changes: strict JSON request decoding and bounded buffered
+# JSON responses. Keep them inline so both root Make targets and package-scoped
+# go generate resolve the same bytes without remote or working-directory input.
 
 package: openapigen
 generate:
   chi-server: true
   strict-server: true
   models: true
+output-options:
+  user-templates:
+    strict/strict-http.tmpl: |
+      type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
+      type StrictMiddlewareFunc func(f StrictHandlerFunc, operationID string) StrictHandlerFunc
+
+      type StrictHTTPServerOptions struct {
+          RequestErrorHandlerFunc  func(w http.ResponseWriter, r *http.Request, err error)
+          ResponseErrorHandlerFunc func(w http.ResponseWriter, r *http.Request, err error)
+          JSONBodyDecoder          func(w http.ResponseWriter, r *http.Request, expectedMediaType string, dst any) error
+          JSONResponseSizeChecker  func(size int) error
+          RequestContentTypeMatcher func(actual string, expected string) bool
+          RequestBodyAbsentChecker func(w http.ResponseWriter, r *http.Request) (bool, error)
+      }
+
+      var ErrUnsupportedRequestContentType = errors.New("request Content-Type is not declared for this operation")
+
+      func NewStrictHandler(ssi StrictServerInterface, middlewares []StrictMiddlewareFunc) ServerInterface {
+          return &strictHandler{ssi: ssi, middlewares: middlewares, options: StrictHTTPServerOptions {
+              RequestErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
+                  http.Error(w, err.Error(), http.StatusBadRequest)
+              },
+              ResponseErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
+                  http.Error(w, err.Error(), http.StatusInternalServerError)
+              },
+              JSONBodyDecoder: func(http.ResponseWriter, *http.Request, string, any) error {
+                  return errors.New("strict JSON body decoder is not configured")
+              },
+              JSONResponseSizeChecker: func(int) error {
+                  return errors.New("strict JSON response size checker is not configured")
+              },
+              RequestContentTypeMatcher: func(string, string) bool {
+                  return false
+              },
+              RequestBodyAbsentChecker: func(http.ResponseWriter, *http.Request) (bool, error) {
+                  return false, errors.New("request body absence checker is not configured")
+              },
+          }}
+      }
+
+      func NewStrictHandlerWithOptions(ssi StrictServerInterface, middlewares []StrictMiddlewareFunc, options StrictHTTPServerOptions) ServerInterface {
+          if options.RequestErrorHandlerFunc == nil {
+              options.RequestErrorHandlerFunc = func(w http.ResponseWriter, r *http.Request, err error) {
+                  http.Error(w, err.Error(), http.StatusBadRequest)
+              }
+          }
+          if options.ResponseErrorHandlerFunc == nil {
+              options.ResponseErrorHandlerFunc = func(w http.ResponseWriter, r *http.Request, err error) {
+                  http.Error(w, err.Error(), http.StatusInternalServerError)
+              }
+          }
+          if options.JSONBodyDecoder == nil {
+              options.JSONBodyDecoder = func(http.ResponseWriter, *http.Request, string, any) error {
+                  return errors.New("strict JSON body decoder is not configured")
+              }
+          }
+          if options.JSONResponseSizeChecker == nil {
+              options.JSONResponseSizeChecker = func(int) error {
+                  return errors.New("strict JSON response size checker is not configured")
+              }
+          }
+          if options.RequestContentTypeMatcher == nil {
+              options.RequestContentTypeMatcher = func(string, string) bool {
+                  return false
+              }
+          }
+          if options.RequestBodyAbsentChecker == nil {
+              options.RequestBodyAbsentChecker = func(http.ResponseWriter, *http.Request) (bool, error) {
+                  return false, errors.New("request body absence checker is not configured")
+              }
+          }
+          return &strictHandler{ssi: ssi, middlewares: middlewares, options: options}
+      }
+
+      type strictHandler struct {
+          ssi StrictServerInterface
+          middlewares []StrictMiddlewareFunc
+          options StrictHTTPServerOptions
+      }
+
+      {{range .}}
+          {{$opid := .OperationId}}
+          {{if not .IsAlias}}
+          // {{$opid}} operation middleware
+          func (sh *strictHandler) {{.OperationId}}(w http.ResponseWriter, r *http.Request{{genParamArgs .PathParams}}{{if .RequiresParamObject}}, params {{.OperationId}}Params{{end}}) {
+              var request {{$opid | ucFirst}}RequestObject
+
+              {{range .PathParams -}}
+                  request.{{.GoName}} = {{.GoVariableName}}
+              {{end -}}
+
+              {{if .RequiresParamObject -}}
+                  request.Params = params
+              {{end -}}
+
+              {{ if .HasMaskedRequestContentTypes -}}
+                  request.ContentType = r.Header.Get("Content-Type")
+              {{end -}}
+
+              {{$multipleBodies := gt (len .Bodies) 1 -}}
+              {{$requestBodyRequired := false -}}
+              {{if $multipleBodies -}}
+                  requestBodyMatched := false
+              {{end -}}
+              {{range .Bodies -}}
+                  {{$requestBodyRequired = .Required -}}
+                  {{if $multipleBodies}}if !requestBodyMatched && (sh.options.RequestContentTypeMatcher(r.Header.Get("Content-Type"), {{.ContentType | toGoString}}){{if .IsJSON}} || strings.TrimSpace(r.Header.Get("Content-Type")) == ""{{end}}) {
+                      requestBodyMatched = true
+                  {{end}}
+                      {{if .IsJSON }}
+                          var body {{$opid}}{{.NameTag}}RequestBody
+                          _ = json.Valid // Keep the generator-selected JSON import when responses have no JSON body.
+                          if err := sh.options.JSONBodyDecoder(w, r, {{.ContentType | toGoString}}, &body); err != nil {
+                              {{if not .Required -}}
+                              if !errors.Is(err, io.EOF) {
+                                  sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+                                  return
+                              }
+                              {{else -}}
+                              sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+                              return
+                              {{end -}}
+                          } {{if not .Required -}} else { {{end}}
+                          request.{{if $multipleBodies}}{{.NameTag}}{{end}}Body = &body
+                          {{if not .Required -}} } {{end}}
+                      {{else if eq .NameTag "Formdata" -}}
+                          if err := r.ParseForm(); err != nil {
+                              sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode formdata: %w", err))
+                              return
+                          }
+                          var body {{$opid}}{{.NameTag}}RequestBody
+                          if err := runtime.BindForm(&body, r.Form, nil, nil); err != nil {
+                              sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't bind formdata: %w", err))
+                              return
+                          }
+                          request.{{if $multipleBodies}}{{.NameTag}}{{end}}Body = &body
+                      {{else if eq .NameTag "Multipart" -}}
+                          {{if eq .ContentType "multipart/form-data" -}}
+                          if reader, err := r.MultipartReader(); err != nil {
+                              sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode multipart body: %w", err))
+                              return
+                          } else {
+                              request.{{if $multipleBodies}}{{.NameTag}}{{end}}Body = reader
+                          }
+                          {{else -}}
+                          if _, params, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil {
+                              sh.options.RequestErrorHandlerFunc(w, r, err)
+                              return
+                          } else if boundary := params["boundary"]; boundary == "" {
+                              sh.options.RequestErrorHandlerFunc(w, r, http.ErrMissingBoundary)
+                              return
+                          } else {
+                              request.{{if $multipleBodies}}{{.NameTag}}{{end}}Body = multipart.NewReader(r.Body, boundary)
+                          }
+                          {{end -}}
+                      {{else if eq .NameTag "Text" -}}
+                          data, err := io.ReadAll(r.Body)
+                          if err != nil {
+                              sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't read body: %w", err))
+                              return
+                          }
+                          {{if not .Required -}}
+                          if len(data) > 0 {
+                          {{end -}}
+                          body := {{$opid}}{{.NameTag}}RequestBody(data)
+                          request.{{if $multipleBodies}}{{.NameTag}}{{end}}Body = &body
+                          {{if not .Required -}}
+                          }
+                          {{end -}}
+                      {{else -}}
+                          request.{{if $multipleBodies}}{{.NameTag}}{{end}}Body = r.Body
+                      {{end}}{{/* if eq .NameTag "JSON" */ -}}
+                  {{if $multipleBodies}}}{{end}}
+              {{end}}{{/* range .Bodies */}}
+              {{if $multipleBodies -}}
+                  if !requestBodyMatched {
+                      {{if not $requestBodyRequired -}}
+                      bodyAbsent, err := sh.options.RequestBodyAbsentChecker(w, r)
+                      if err != nil {
+                          sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't inspect optional request body: %w", err))
+                          return
+                      }
+                      if bodyAbsent {
+                          requestBodyMatched = true
+                      }
+                      {{end -}}
+                  }
+                  if !requestBodyMatched {
+                      sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("%w: %q", ErrUnsupportedRequestContentType, r.Header.Get("Content-Type")))
+                      return
+                  }
+              {{end -}}
+
+              handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+                  return sh.ssi.{{.OperationId}}(ctx, request.({{$opid | ucFirst}}RequestObject))
+              }
+              for _, middleware := range sh.middlewares {
+                  handler = middleware(handler, "{{.OperationId}}")
+              }
+
+              response, err := handler(r.Context(), w, r, request)
+
+              if err != nil {
+                  sh.options.ResponseErrorHandlerFunc(w, r, err)
+              } else if validResponse, ok := response.({{$opid | ucFirst}}ResponseObject); ok {
+                  if err := validResponse.Visit{{$opid}}Response(w, sh.options.JSONResponseSizeChecker); err != nil {
+                      sh.options.ResponseErrorHandlerFunc(w, r, err)
+                  }
+              } else if response != nil {
+                  sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+              }
+          }
+          {{end}}
+      {{end}}
+
+    strict/strict-interface.tmpl: |
+      {{range .}}{{if not .IsAlias}}
+          {{$opid := .OperationId -}}
+          type {{$opid | ucFirst}}RequestObject struct {
+              {{range .PathParams -}}
+                  {{.GoName | ucFirst}} {{.TypeDef}} {{.JsonTag}}
+              {{end -}}
+              {{if .RequiresParamObject -}}
+                  Params {{$opid}}Params
+              {{end -}}
+              {{if .HasMaskedRequestContentTypes -}}
+                  ContentType string
+              {{end -}}
+              {{$multipleBodies := gt (len .Bodies) 1 -}}
+              {{range .Bodies -}}
+                  {{if $multipleBodies}}{{.NameTag}}{{end}}Body {{if eq .NameTag "Multipart"}}*multipart.Reader{{else if ne .NameTag ""}}*{{$opid}}{{.NameTag}}RequestBody{{else}}io.Reader{{end}}
+              {{end -}}
+          }
+
+          type {{$opid | ucFirst}}ResponseObject interface {
+              Visit{{$opid}}Response(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error
+          }
+
+          {{range .Responses}}
+              {{$statusCode := .StatusCode -}}
+              {{$hasHeaders := ne 0 (len .Headers) -}}
+              {{$fixedStatusCode := .HasFixedStatusCode -}}
+              {{$isRef := .IsRef -}}
+              {{$isExternalRef := .IsExternalRef -}}
+              {{$ref := .Ref  | ucFirstWithPkgName -}}
+              {{$headers := .Headers -}}
+
+              {{if (and $hasHeaders (not $isRef)) -}}
+                  type {{$opid}}{{$statusCode}}ResponseHeaders struct {
+                      {{range .Headers -}}
+                          {{with .DeprecationComment}}{{.}}
+                          {{end -}}{{.GoName}} {{.GoTypeDef}}
+                      {{end -}}
+                  }
+              {{end}}
+
+              {{range .Contents}}
+                  {{$receiverTypeName := printf "%s%s%s%s" $opid $statusCode .NameTagOrContentType "Response"}}
+                  {{if and $fixedStatusCode $isRef -}}
+                      {{ if and (not $hasHeaders) ($fixedStatusCode) (.IsSupported) (or (eq .NameTag "Multipart") (eq .NameTag "Text")) -}}
+                      type {{$receiverTypeName}} {{$ref}}{{.NameTagOrContentType}}Response
+                      {{else -}}
+                      type {{$receiverTypeName}} struct{ {{$ref}}{{.NameTagOrContentType}}Response }
+                      {{end}}
+                  {{else if and (not $hasHeaders) ($fixedStatusCode) (.IsSupported) -}}
+                      type {{$receiverTypeName}} {{if eq .NameTag "Multipart"}}func(writer *multipart.Writer)error{{else if .IsSupported}}{{if and .Schema.IsRef (not .Schema.IsExternalRef)}}={{end}} {{.Schema.TypeDecl}}{{else}}io.Reader{{end}}
+                      {{- if and .IsJSON .Schema.HasCustomMarshalJSON}}
+
+                      func (t {{$receiverTypeName}}) MarshalJSON() ([]byte, error) {
+                          return {{.Schema.TypeDecl}}(t).MarshalJSON()
+                      }
+
+                      func (t *{{$receiverTypeName}}) UnmarshalJSON(b []byte) error {
+                          return (*{{.Schema.TypeDecl}})(t).UnmarshalJSON(b)
+                      }
+                      {{- end}}
+                  {{else -}}
+                      type {{$receiverTypeName}} struct {
+                          Body {{if eq .NameTag "Multipart"}}func(writer *multipart.Writer)error{{else if .IsSupported}}{{.Schema.TypeDecl}}{{else}}io.Reader{{end}}
+                          {{if $hasHeaders -}}
+                              Headers {{if $isRef}}{{$ref}}{{else}}{{$opid}}{{$statusCode}}{{end}}ResponseHeaders
+                          {{end -}}
+
+                          {{if not $fixedStatusCode -}}
+                              StatusCode int
+                          {{end -}}
+
+                          {{if not .HasFixedContentType -}}
+                              ContentType string
+                          {{end -}}
+
+                          {{if not .IsSupported -}}
+                              ContentLength int64
+                          {{end -}}
+                      }
+                  {{end}}
+
+                  func (response {{$receiverTypeName}}) Visit{{$opid}}Response(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+                      {{if eq .NameTag "Multipart" -}}
+                          writer := multipart.NewWriter(w)
+                      {{end -}}
+                      {{$hasBodyVar := or ($hasHeaders) (not $fixedStatusCode) (not .IsSupported)}}
+                      {{if .IsJSON -}}
+                          {{$hasUnionElements := ne 0 (len .Schema.UnionElements) -}}
+                          var buf bytes.Buffer
+                          if err := json.NewEncoder(&buf).Encode(response{{if $hasBodyVar}}.Body{{end}}{{if and $hasUnionElements (not .Schema.IsExternalRef)}}.union{{end}}); err != nil {
+                              return err
+                          }
+                          if err := checkJSONResponseSize(buf.Len()); err != nil {
+                              return err
+                          }
+                          w.Header().Set("Content-Type", {{if .HasFixedContentType }}{{.ContentType | toGoString}}{{else}}response.ContentType{{end}})
+                          {{range $headers -}}
+                              {{if .IsNullable -}}
+                                  if response.Headers.{{.GoName}}.IsSpecified() {
+                                      w.Header().Set("{{.Name}}", fmt.Sprint(response.Headers.{{.GoName}}.MustGet()))
+                                  }
+                              {{else if .IsOptional -}}
+                                  if response.Headers.{{.GoName}} != nil {
+                                      w.Header().Set("{{.Name}}", fmt.Sprint(*response.Headers.{{.GoName}}))
+                                  }
+                              {{else -}}
+                                  w.Header().Set("{{.Name}}", fmt.Sprint(response.Headers.{{.GoName}}))
+                              {{end -}}
+                          {{end -}}
+                          w.WriteHeader({{if $fixedStatusCode}}{{$statusCode}}{{else}}response.StatusCode{{end}})
+                          _, err := buf.WriteTo(w)
+                          return err
+                      {{else if eq .NameTag "Formdata" -}}
+                          form, err := runtime.MarshalForm({{if $hasBodyVar}}response.Body{{else}}response{{end}}, nil)
+                          if err != nil {
+                              return err
+                          }
+                          w.Header().Set("Content-Type", {{if .HasFixedContentType }}{{.ContentType | toGoString}}{{else}}response.ContentType{{end}})
+                          {{range $headers -}}
+                              {{if .IsNullable -}}
+                                  if response.Headers.{{.GoName}}.IsSpecified() {
+                                      w.Header().Set("{{.Name}}", fmt.Sprint(response.Headers.{{.GoName}}.MustGet()))
+                                  }
+                              {{else if .IsOptional -}}
+                                  if response.Headers.{{.GoName}} != nil {
+                                      w.Header().Set("{{.Name}}", fmt.Sprint(*response.Headers.{{.GoName}}))
+                                  }
+                              {{else -}}
+                                  w.Header().Set("{{.Name}}", fmt.Sprint(response.Headers.{{.GoName}}))
+                              {{end -}}
+                          {{end -}}
+                          w.WriteHeader({{if $fixedStatusCode}}{{$statusCode}}{{else}}response.StatusCode{{end}})
+                          _, err = w.Write([]byte(form.Encode()))
+                          return err
+                      {{else -}}
+                          w.Header().Set("Content-Type", {{if eq .NameTag "Multipart"}}{{if eq .ContentType "multipart/form-data"}}writer.FormDataContentType(){{else}}mime.FormatMediaType({{.ContentType | toGoString}}, map[string]string{"boundary": writer.Boundary()}){{end}}{{else if .HasFixedContentType }}{{.ContentType | toGoString}}{{else}}response.ContentType{{end}})
+                          {{if not .IsSupported -}}
+                              if response.ContentLength != 0 {
+                                  w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+                              }
+                          {{end -}}
+                          {{range $headers -}}
+                              {{if .IsNullable -}}
+                                  if response.Headers.{{.GoName}}.IsSpecified() {
+                                      w.Header().Set("{{.Name}}", fmt.Sprint(response.Headers.{{.GoName}}.MustGet()))
+                                  }
+                              {{else if .IsOptional -}}
+                                  if response.Headers.{{.GoName}} != nil {
+                                      w.Header().Set("{{.Name}}", fmt.Sprint(*response.Headers.{{.GoName}}))
+                                  }
+                              {{else -}}
+                                  w.Header().Set("{{.Name}}", fmt.Sprint(response.Headers.{{.GoName}}))
+                              {{end -}}
+                          {{end -}}
+                          w.WriteHeader({{if $fixedStatusCode}}{{$statusCode}}{{else}}response.StatusCode{{end}})
+
+                          {{if eq .NameTag "Text" -}}
+                              _, err := w.Write([]byte(fmt.Sprint({{if $hasBodyVar}}response.Body{{else}}response{{end}})))
+                              return err
+                          {{else if eq .NameTag "Multipart" -}}
+                              defer writer.Close()
+                              return {{if $hasBodyVar}}response.Body{{else}}response{{end}}(writer);
+                          {{else -}}
+                              if closer, ok := response.Body.(io.ReadCloser); ok {
+                                  defer closer.Close()
+                              }
+                              {{if .IsStreamingContentType -}}
+                                  flusher, ok := w.(http.Flusher)
+                                  if !ok {
+                                      // If w doesn't support flushing, fall back to io.Copy.
+                                      _, err := io.Copy(w, response.Body)
+                                      return err
+                                  }
+                                  // text/event-stream messages are typically small; use a
+                                  // modest buffer and flush after each chunk so clients see
+                                  // events immediately instead of waiting on OS buffering.
+                                  buf := make([]byte, 4096)
+                                  for {
+                                      n, err := response.Body.Read(buf)
+                                      if n > 0 {
+                                          if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+                                              return writeErr
+                                          }
+                                          flusher.Flush()
+                                      }
+                                      if err != nil {
+                                          if err == io.EOF {
+                                              return nil
+                                          }
+                                          return err
+                                      }
+                                  }
+                              {{else -}}
+                                  _, err := io.Copy(w, response.Body)
+                                  return err
+                              {{end}}{{/* if .IsStreamingContentType */ -}}
+                          {{end}}{{/* if eq .NameTag "Text" */ -}}
+                      {{end}}{{/* if .IsJSON */ -}}
+                  }
+              {{end}}
+
+              {{if eq 0 (len .Contents) -}}
+                  {{if and $fixedStatusCode $isRef -}}
+                      type {{$opid}}{{$statusCode}}Response {{if not $isExternalRef}}={{end}} {{$ref}}Response
+                  {{else -}}
+                      type {{$opid}}{{$statusCode}}Response struct {
+                          {{if $hasHeaders -}}
+                              Headers {{if $isRef}}{{$ref}}{{else}}{{$opid}}{{$statusCode}}{{end}}ResponseHeaders
+                          {{end}}
+                          {{if not $fixedStatusCode -}}
+                              StatusCode int
+                          {{end -}}
+                      }
+                  {{end -}}
+                  func (response {{$opid}}{{$statusCode}}Response) Visit{{$opid}}Response(w http.ResponseWriter, _ func(size int) error) error {
+                      {{range $headers -}}
+                          {{if .IsNullable -}}
+                              if response.Headers.{{.GoName}}.IsSpecified() {
+                                  w.Header().Set("{{.Name}}", fmt.Sprint(response.Headers.{{.GoName}}.MustGet()))
+                              }
+                          {{else if .IsOptional -}}
+                              if response.Headers.{{.GoName}} != nil {
+                                  w.Header().Set("{{.Name}}", fmt.Sprint(*response.Headers.{{.GoName}}))
+                              }
+                          {{else -}}
+                              w.Header().Set("{{.Name}}", fmt.Sprint(response.Headers.{{.GoName}}))
+                          {{end -}}
+                      {{end -}}
+                      w.WriteHeader({{if $fixedStatusCode}}{{$statusCode}}{{else}}response.StatusCode{{end}})
+                      return nil
+                  }
+              {{end}}
+          {{end}}
+      {{end}}{{end}}
+
+      // StrictServerInterface represents all server handlers.
+      type StrictServerInterface interface {
+      {{range .}}{{if not .IsAlias}}{{.SummaryAsComment .OperationId }}
+      // ({{.Method}} {{.Path}})
+      {{with .DeprecationComment}}//
+      {{.}}
+      {{end}}{{$opid := .OperationId -}}
+      {{$opid}}(ctx context.Context, request {{$opid | ucFirst}}RequestObject) ({{$opid | ucFirst}}ResponseObject, error)
+      {{end}}{{end}}{{/* range . */ -}}
+      }

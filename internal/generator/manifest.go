@@ -57,6 +57,10 @@ type templateFile struct {
 	// rendered bytes and the manifest agree — a header is easy to copy
 	// wrong when a template is added by hand.
 	Owner Ownership
+	// Raw copies the embedded source bytes without running Nise's template
+	// engine. It is reserved for vendored templates whose delimiters belong
+	// to another pinned generator.
+	Raw bool
 }
 
 // templateFiles is every template nise new renders, sorted by output path.
@@ -81,7 +85,7 @@ var templateFiles = []templateFile{
 	{Template: "Makefile.tmpl", Output: "Makefile", Owner: OwnerApp},
 	{Template: "README.md.tmpl", Output: "README.md", Owner: OwnerApp},
 	{Template: "api/README.md.tmpl", Output: "api/README.md", Owner: OwnerApp},
-	{Template: "api/oapi-codegen.yaml.tmpl", Output: "api/oapi-codegen.yaml", Owner: OwnerApp},
+	{Template: "api/oapi-codegen.yaml.tmpl", Output: "api/oapi-codegen.yaml", Owner: OwnerApp, Raw: true},
 	{Template: "api/openapi.yaml.tmpl", Output: "api/openapi.yaml", Owner: OwnerApp},
 	{Template: "cmd/main.go.tmpl", Output: "cmd/{{.AppName}}/main.go", Owner: OwnerApp},
 	{Template: "cmd/main_test.go.tmpl", Output: "cmd/{{.AppName}}/main_test.go", Owner: OwnerApp},
@@ -138,6 +142,8 @@ var templateFiles = []templateFile{
 	{Template: "internal/platform/database/transaction_test.go.tmpl", Output: "internal/platform/database/transaction_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/api.go.tmpl", Output: "internal/platform/httpapi/api.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/api_test.go.tmpl", Output: "internal/platform/httpapi/api_test.go", Owner: OwnerApp},
+	{Template: "internal/platform/httpapi/httpjson/json.go.tmpl", Output: "internal/platform/httpapi/httpjson/json.go", Owner: OwnerApp},
+	{Template: "internal/platform/httpapi/httpjson/json_test.go.tmpl", Output: "internal/platform/httpapi/httpjson/json_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/openapigen/openapi.gen.go.tmpl", Output: OpenAPIGeneratedPath, Owner: OwnerNise},
 	{Template: "internal/platform/httpapi/router.go.tmpl", Output: "internal/platform/httpapi/router.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/router_test.go.tmpl", Output: "internal/platform/httpapi/router_test.go", Owner: OwnerApp},

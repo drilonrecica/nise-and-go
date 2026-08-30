@@ -4,12 +4,15 @@ package httpapi
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/drilonrecica/nise-and-go/runtime/secure"
+
+	"{{.ModulePath}}/internal/platform/httpapi/httpjson"
 )
 
 func TestStrictOpenAPIIndexRoute(t *testing.T) {
@@ -69,5 +72,38 @@ func TestFixedTransportErrorDoesNotExposeCause(t *testing.T) {
 		if strings.Contains(response.Body.String(), forbidden) {
 			t.Errorf("body exposed %q: %q", forbidden, response.Body.String())
 		}
+	}
+}
+
+func TestRequestTransportErrorMapsBoundedPublicFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "invalid request", err: httpjson.ErrInvalidJSON, wantStatus: http.StatusBadRequest, wantBody: "invalid request\n"},
+		{name: "body too large", err: httpjson.ErrRequestBodyTooLarge, wantStatus: http.StatusRequestEntityTooLarge, wantBody: "request body too large\n"},
+		{name: "media type", err: httpjson.ErrUnsupportedMediaType, wantStatus: http.StatusUnsupportedMediaType, wantBody: "unsupported media type\n"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			response := httptest.NewRecorder()
+			requestTransportError(
+				response,
+				httptest.NewRequest(http.MethodPost, "/", nil),
+				fmt.Errorf("private decoder detail: %w", tc.err),
+			)
+			if response.Code != tc.wantStatus || response.Body.String() != tc.wantBody {
+				t.Fatalf("response = status %d, body %q; want status %d, body %q", response.Code, response.Body.String(), tc.wantStatus, tc.wantBody)
+			}
+			if strings.Contains(response.Body.String(), "private decoder detail") {
+				t.Errorf("response exposed wrapped cause: %q", response.Body.String())
+			}
+		})
 	}
 }

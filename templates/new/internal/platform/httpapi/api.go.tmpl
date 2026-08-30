@@ -6,10 +6,12 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"{{.ModulePath}}/internal/platform/httpapi/httpjson"
 	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
 )
 
@@ -30,10 +32,28 @@ var _ openapigen.StrictServerInterface = (*Server)(nil)
 // application code implements StrictServerInterface above.
 func (s *Server) Register(r chi.Router) {
 	strict := openapigen.NewStrictHandlerWithOptions(s, nil, openapigen.StrictHTTPServerOptions{
-		RequestErrorHandlerFunc:  fixedTransportError(http.StatusBadRequest, "invalid request"),
-		ResponseErrorHandlerFunc: fixedTransportError(http.StatusInternalServerError, "internal server error"),
+		RequestErrorHandlerFunc:   requestTransportError,
+		ResponseErrorHandlerFunc:  fixedTransportError(http.StatusInternalServerError, "internal server error"),
+		JSONBodyDecoder:           httpjson.Decode,
+		JSONResponseSizeChecker:   httpjson.CheckResponseSize,
+		RequestContentTypeMatcher: httpjson.MatchesMediaType,
+		RequestBodyAbsentChecker:  httpjson.IsBodyAbsent,
 	})
 	_ = openapigen.HandlerFromMux(strict, r)
+}
+
+func requestTransportError(w http.ResponseWriter, r *http.Request, err error) {
+	status := http.StatusBadRequest
+	message := "invalid request"
+	switch {
+	case errors.Is(err, httpjson.ErrRequestBodyTooLarge):
+		status = http.StatusRequestEntityTooLarge
+		message = "request body too large"
+	case errors.Is(err, httpjson.ErrUnsupportedMediaType), errors.Is(err, openapigen.ErrUnsupportedRequestContentType):
+		status = http.StatusUnsupportedMediaType
+		message = "unsupported media type"
+	}
+	fixedTransportError(status, message)(w, r, err)
 }
 
 // GetAPIIndex is the transport contract fixture at GET /api/v1/. It confirms

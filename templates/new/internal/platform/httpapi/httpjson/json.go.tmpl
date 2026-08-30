@@ -1,0 +1,227 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package httpjson owns the generated application's bounded JSON transport
+// primitives. OpenAPI's generated adapter and any hand-written JSON endpoint
+// use the same rules through this package.
+package httpjson
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"strconv"
+	"strings"
+	"unicode"
+)
+
+const (
+	MaxRequestBodyBytes  int64 = 1 << 20
+	MaxResponseBodyBytes int64 = 1 << 20
+	MaxJSONNestingDepth        = 100
+)
+
+var (
+	ErrRequestBodyTooLarge  = errors.New("JSON request body exceeds the byte limit")
+	ErrUnsupportedMediaType = errors.New("request Content-Type is not the declared JSON media type")
+	ErrInvalidJSON          = errors.New("request body is not one strict JSON value")
+	ErrResponseBodyTooLarge = errors.New("JSON response body exceeds the byte limit")
+)
+
+// Decode reads and validates exactly one JSON value. An empty body returns
+// io.EOF so the generated adapter can distinguish optional and required
+// request bodies without weakening any other rule.
+func Decode(w http.ResponseWriter, r *http.Request, expectedMediaType string, dst any) error {
+	if r.Body == nil {
+		return io.EOF
+	}
+
+	limited := http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
+	defer limited.Close()
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return fmt.Errorf("%w: maximum is %d bytes", ErrRequestBodyTooLarge, MaxRequestBodyBytes)
+		}
+		return fmt.Errorf("reading JSON request body: %w", err)
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return io.EOF
+	}
+
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, expectedMediaType) {
+		return fmt.Errorf("%w: expected %s", ErrUnsupportedMediaType, expectedMediaType)
+	}
+	if err := rejectDuplicateKeys(data); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("more than one JSON value")
+		}
+		return fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+	}
+	return nil
+}
+
+// Write encodes and bounds a JSON response before committing headers.
+func Write(w http.ResponseWriter, status int, value any) error {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(value); err != nil {
+		return fmt.Errorf("encoding JSON response: %w", err)
+	}
+	if err := CheckResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	w.WriteHeader(status)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+// CheckResponseSize applies the same bound to oapi-codegen's already-buffered
+// strict JSON response path.
+func CheckResponseSize(size int) error {
+	if int64(size) > MaxResponseBodyBytes {
+		return fmt.Errorf("%w: maximum is %d bytes", ErrResponseBodyTooLarge, MaxResponseBodyBytes)
+	}
+	return nil
+}
+
+// MatchesMediaType validates and compares media types while permitting
+// parameters on the actual Content-Type value.
+func MatchesMediaType(actual, expected string) bool {
+	actualType, _, err := mime.ParseMediaType(actual)
+	if err != nil {
+		return false
+	}
+	expectedType, _, err := mime.ParseMediaType(expected)
+	return err == nil && strings.EqualFold(actualType, expectedType)
+}
+
+// IsBodyAbsent reads a body through the request bound and restores it for a
+// later decoder. Only zero bytes are absent; whitespace is representation data
+// unless a JSON decoder applies JSON's whitespace rules.
+func IsBodyAbsent(w http.ResponseWriter, r *http.Request) (bool, error) {
+	if r.Body == nil {
+		return true, nil
+	}
+	limited := http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
+	data, err := io.ReadAll(limited)
+	_ = limited.Close()
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return false, fmt.Errorf("%w: maximum is %d bytes", ErrRequestBodyTooLarge, MaxRequestBodyBytes)
+		}
+		return false, fmt.Errorf("reading request body: %w", err)
+	}
+	r.Body = io.NopCloser(bytes.NewReader(data))
+	return len(data) == 0, nil
+}
+
+func rejectDuplicateKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := scanValue(decoder, 0); err != nil {
+		return err
+	}
+	if token, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("unexpected trailing token %v", token)
+	}
+	return nil
+}
+
+func scanValue(decoder *json.Decoder, depth int) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	if depth >= MaxJSONNestingDepth {
+		return fmt.Errorf("JSON nesting exceeds %d containers", MaxJSONNestingDepth)
+	}
+
+	switch delim {
+	case '{':
+		seen := make(map[string]string)
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("object key is %T, not a string", keyToken)
+			}
+			folded := foldKey(key)
+			if previous, duplicate := seen[folded]; duplicate {
+				return fmt.Errorf("duplicate object key %q (previous spelling %q)", key, previous)
+			}
+			seen[folded] = key
+			if err := scanValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim('}') {
+			return fmt.Errorf("object closed by %v", closing)
+		}
+	case '[':
+		for decoder.More() {
+			if err := scanValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim(']') {
+			return fmt.Errorf("array closed by %v", closing)
+		}
+	default:
+		return fmt.Errorf("unexpected opening delimiter %q", delim)
+	}
+	return nil
+}
+
+// foldKey maps every rune in unicode.SimpleFold's equivalence cycle to the
+// cycle's smallest rune. EqualFold-equivalent keys therefore share one stable
+// map key without pairwise attacker-controlled comparisons.
+func foldKey(key string) string {
+	var folded strings.Builder
+	folded.Grow(len(key))
+	for _, r := range key {
+		canonical := r
+		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+			if next < canonical {
+				canonical = next
+			}
+		}
+		folded.WriteRune(canonical)
+	}
+	return folded.String()
+}

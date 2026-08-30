@@ -13,6 +13,16 @@ tool writes strict chi models and server bindings to
 performs the same generation into a temporary file and fails on a byte
 difference without modifying the checked-in output; it is part of `make all`.
 
+The generation config vendors the pinned strict-server templates inline. They
+route declared JSON bodies through `internal/platform/httpapi/httpjson`: one
+value, no unknown or case-insensitively duplicated fields, an exact declared
+media type, at most 100 container levels, and a 1 MiB request limit. Optional
+zero-byte multi-content bodies remain absent, while nonempty bodies require a
+declared type. Generated buffered JSON responses and
+the package's `Write` helper share a 1 MiB pre-commit response limit. Keep the
+inline templates aligned with the pinned oapi-codegen defaults during an
+upgrade; do not replace them with remote template URLs.
+
 Run `make api-types-generate` for the checked-in frontend model and
 `make api-types-check` for its non-mutating openapi-typescript `--check` gate.
 The application-owned `frontend/src/lib/api/client.ts` wraps those path types
@@ -33,4 +43,7 @@ Implement generated operations on the application-owned `httpapi.Server` in
 `api.go`. Its compile-time `StrictServerInterface` assertion makes a changed
 contract fail the build until every operation has an implementation. Never
 edit `openapigen/`; it retains oapi-codegen's standard generated-code header
-and is replaced as a complete tool-owned output.
+and is replaced as a complete tool-owned output. The application adapter
+injects the `httpjson` decoder and size checker through generated strict-server
+options, so generated code never imports application code or creates an import
+cycle.

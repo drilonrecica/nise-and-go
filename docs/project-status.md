@@ -16,9 +16,10 @@ The V0.1 target is frozen around one golden profile:
 
 The authoritative OpenAPI document, pinned strict chi and TypeScript
 generation, explicit server adapter, lightweight browser client, and
-`/api/v1` routing boundary are implemented. Strict decoding, Problem Details,
-response shapes, pagination, and idempotency remain in progress; this is not
-yet a complete public API surface.
+`/api/v1` routing boundary are implemented. JSON request decoding and buffered
+response limits are strict and bounded. Problem Details, response shapes,
+pagination, and idempotency remain in progress; this is not yet a complete
+public API surface.
 
 V0.1 may implement and correct the documented foundation. It may not add another router, database, frontend framework, plugin system, AI integration, billing system, or deployment platform merely because it could be useful someday.
 

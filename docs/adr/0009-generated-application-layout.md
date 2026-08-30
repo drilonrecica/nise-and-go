@@ -74,7 +74,8 @@ The four compile-time modules — `organizations`, `totp`, `notifications`, `upl
 | Artifact | Path | Generator | Owner |
 |---|---|---|---|
 | OpenAPI document | `api/openapi.yaml` | hand-written | application |
-| Strict chi server bindings | `internal/platform/httpapi/openapigen/` | oapi-codegen | Nise, regenerated |
+| Strict chi server bindings | `internal/platform/httpapi/openapigen/openapi.gen.go` | oapi-codegen | Nise, regenerated |
+| Strict JSON policy | `internal/platform/httpapi/httpjson/` | written once | application |
 | Typed SQL access | `internal/features/<feature>/store/` | sqlc | Nise, regenerated |
 | SQL queries | `internal/features/<feature>/queries/` | hand-written | application |
 | TypeScript models | `frontend/src/lib/api/schema.d.ts` | openapi-typescript 7.13.0 | Nise, regenerated |

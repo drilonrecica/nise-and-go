@@ -1,0 +1,217 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpjson
+
+import (
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+func TestDecode(t *testing.T) {
+	t.Parallel()
+	type payload struct {
+		Name   string `json:"name"`
+		Nested struct {
+			Value int `json:"value"`
+		} `json:"nested"`
+	}
+
+	tests := []struct {
+		name        string
+		body        string
+		contentType string
+		want        payload
+		wantError   error
+	}{
+		{name: "valid", body: `{"name":"ok","nested":{"value":2}}`, contentType: "application/json; charset=utf-8", want: payload{Name: "ok", Nested: struct {
+			Value int `json:"value"`
+		}{Value: 2}}},
+		{name: "empty", body: " \n\t", wantError: io.EOF},
+		{name: "malformed", body: `{"name":`, contentType: "application/json", wantError: ErrInvalidJSON},
+		{name: "trailing value", body: `{"name":"ok"} {}`, contentType: "application/json", wantError: ErrInvalidJSON},
+		{name: "unknown field", body: `{"name":"ok","extra":true}`, contentType: "application/json", wantError: ErrInvalidJSON},
+		{name: "duplicate field", body: `{"name":"first","Name":"second"}`, contentType: "application/json", wantError: ErrInvalidJSON},
+		{name: "duplicate nested field", body: `{"nested":{"value":1,"value":2}}`, contentType: "application/json", wantError: ErrInvalidJSON},
+		{name: "wrong media type", body: `{"name":"ok"}`, contentType: "text/json", wantError: ErrUnsupportedMediaType},
+		{name: "missing media type", body: `{"name":"ok"}`, wantError: ErrUnsupportedMediaType},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
+			request.Header.Set("Content-Type", tc.contentType)
+			var got payload
+			err := Decode(httptest.NewRecorder(), request, "application/json", &got)
+			if !errors.Is(err, tc.wantError) {
+				t.Fatalf("Decode error = %v, want errors.Is(_, %v)", err, tc.wantError)
+			}
+			if tc.wantError == nil && got != tc.want {
+				t.Errorf("Decode value = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodeRejectsOversizedBody(t *testing.T) {
+	t.Parallel()
+	t.Run("exact limit", func(t *testing.T) {
+		t.Parallel()
+		const prefix = `{"padding":"`
+		const suffix = `"}`
+		body := prefix + strings.Repeat("x", int(MaxRequestBodyBytes)-len(prefix)-len(suffix)) + suffix
+		request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		var got struct {
+			Padding string `json:"padding"`
+		}
+		if err := Decode(httptest.NewRecorder(), request, "application/json", &got); err != nil {
+			t.Fatalf("Decode exact-limit body: %v", err)
+		}
+	})
+
+	t.Run("over limit", func(t *testing.T) {
+		t.Parallel()
+		request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(strings.Repeat(" ", int(MaxRequestBodyBytes)+1)))
+		request.Header.Set("Content-Type", "application/json")
+		if err := Decode(httptest.NewRecorder(), request, "application/json", &struct{}{}); !errors.Is(err, ErrRequestBodyTooLarge) {
+			t.Fatalf("Decode error = %v, want ErrRequestBodyTooLarge", err)
+		}
+	})
+}
+
+func TestDecodeAcceptsManyUniqueObjectKeys(t *testing.T) {
+	t.Parallel()
+	var body strings.Builder
+	body.WriteByte('{')
+	const keyCount = 20_000
+	for i := range keyCount {
+		if i > 0 {
+			body.WriteByte(',')
+		}
+		body.WriteString(strconv.Quote("k" + strconv.Itoa(i)))
+		body.WriteString(":0")
+	}
+	body.WriteByte('}')
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body.String()))
+	request.Header.Set("Content-Type", "application/json")
+	var got map[string]int
+	if err := Decode(httptest.NewRecorder(), request, "application/json", &got); err != nil {
+		t.Fatalf("Decode high-cardinality object: %v", err)
+	}
+	if len(got) != keyCount {
+		t.Fatalf("decoded keys = %d, want %d", len(got), keyCount)
+	}
+}
+
+func TestDecodeRejectsExcessiveNesting(t *testing.T) {
+	t.Parallel()
+	body := strings.Repeat("[", MaxJSONNestingDepth+1) + "0" + strings.Repeat("]", MaxJSONNestingDepth+1)
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	var got any
+	if err := Decode(httptest.NewRecorder(), request, "application/json", &got); !errors.Is(err, ErrInvalidJSON) {
+		t.Fatalf("Decode deeply nested body error = %v, want ErrInvalidJSON", err)
+	}
+}
+
+func TestFoldKeyMatchesUnicodeEqualFold(t *testing.T) {
+	t.Parallel()
+	pairs := [][2]string{
+		{"K", "\u212a"},
+		{"S", "\u017f"},
+		{"name", "NAME"},
+	}
+	for _, pair := range pairs {
+		if !strings.EqualFold(pair[0], pair[1]) {
+			t.Fatalf("test pair %q and %q is not EqualFold-equivalent", pair[0], pair[1])
+		}
+		if foldKey(pair[0]) != foldKey(pair[1]) {
+			t.Errorf("foldKey(%q) != foldKey(%q)", pair[0], pair[1])
+		}
+	}
+	if foldKey("name") == foldKey("names") {
+		t.Error("foldKey merged unrelated keys")
+	}
+}
+
+func TestMatchesMediaType(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		actual string
+		want   bool
+	}{
+		{actual: "application/json", want: true},
+		{actual: "Application/JSON; charset=utf-8", want: true},
+		{actual: "application/json-patch+json"},
+		{actual: "application/json; =broken"},
+		{actual: ""},
+	} {
+		if got := MatchesMediaType(tc.actual, "application/json"); got != tc.want {
+			t.Errorf("MatchesMediaType(%q) = %t, want %t", tc.actual, got, tc.want)
+		}
+	}
+}
+
+func TestIsBodyAbsent(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		body      string
+		want      bool
+		wantError error
+	}{
+		{name: "empty", want: true},
+		{name: "whitespace is data", body: " ", want: false},
+		{name: "nonempty", body: "data", want: false},
+		{name: "oversized", body: strings.Repeat("x", int(MaxRequestBodyBytes)+1), wantError: ErrRequestBodyTooLarge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
+			got, err := IsBodyAbsent(httptest.NewRecorder(), request)
+			if !errors.Is(err, tc.wantError) || got != tc.want {
+				t.Fatalf("IsBodyAbsent = (%t, %v), want (%t, %v)", got, err, tc.want, tc.wantError)
+			}
+			if tc.wantError == nil {
+				data, readErr := io.ReadAll(request.Body)
+				if readErr != nil || string(data) != tc.body {
+					t.Fatalf("restored body = %q, %v; want %q", data, readErr, tc.body)
+				}
+			}
+		})
+	}
+}
+
+func TestWrite(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	if err := Write(recorder, http.StatusCreated, map[string]string{"state": "ok"}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if recorder.Code != http.StatusCreated || recorder.Header().Get("Content-Type") != "application/json" || recorder.Body.String() != "{\"state\":\"ok\"}\n" {
+		t.Fatalf("response = status %d, headers %v, body %q", recorder.Code, recorder.Header(), recorder.Body.String())
+	}
+
+	oversized := httptest.NewRecorder()
+	if err := Write(oversized, http.StatusOK, strings.Repeat("x", int(MaxResponseBodyBytes))); !errors.Is(err, ErrResponseBodyTooLarge) {
+		t.Fatalf("oversized Write error = %v, want ErrResponseBodyTooLarge", err)
+	}
+	if oversized.Body.Len() != 0 || oversized.Header().Get("Content-Type") != "" {
+		t.Fatalf("oversized response was partially committed: headers %v, body bytes %d", oversized.Header(), oversized.Body.Len())
+	}
+
+	exact := httptest.NewRecorder()
+	value := strings.Repeat("x", int(MaxResponseBodyBytes)-3) // quotes plus encoder newline
+	if err := Write(exact, http.StatusOK, value); err != nil {
+		t.Fatalf("exact-limit Write: %v", err)
+	}
+	if exact.Body.Len() != int(MaxResponseBodyBytes) {
+		t.Fatalf("exact-limit response bytes = %d, want %d", exact.Body.Len(), MaxResponseBodyBytes)
+	}
+}

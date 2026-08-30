@@ -1,0 +1,174 @@
+package openapigen
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+
+	"example.com/strictjsonprobe/internal/platform/httpapi/httpjson"
+)
+
+type strictFixtureServer struct {
+	called               int
+	optionalBodyPresent  bool
+	multiJSONBodyPresent bool
+	optionalNonJSONCalls int
+}
+
+func (s *strictFixtureServer) CreateStrictFixture(_ context.Context, request CreateStrictFixtureRequestObject) (CreateStrictFixtureResponseObject, error) {
+	s.called++
+	response := CreateStrictFixture200JSONResponse(*request.Body)
+	if request.Body.Name == "oversized-response" {
+		response.Name = strings.Repeat("x", int(httpjson.MaxResponseBodyBytes))
+	}
+	return response, nil
+}
+
+func (s *strictFixtureServer) CreateOptionalStrictFixture(_ context.Context, request CreateOptionalStrictFixtureRequestObject) (CreateOptionalStrictFixtureResponseObject, error) {
+	s.called++
+	s.optionalBodyPresent = request.Body != nil
+	return CreateOptionalStrictFixture204Response{}, nil
+}
+
+func (s *strictFixtureServer) CreateMultiStrictFixture(_ context.Context, request CreateMultiStrictFixtureRequestObject) (CreateMultiStrictFixtureResponseObject, error) {
+	s.called++
+	s.multiJSONBodyPresent = request.JSONBody != nil
+	return CreateMultiStrictFixture204Response{}, nil
+}
+
+func (s *strictFixtureServer) CreateOptionalNonJSONFixture(_ context.Context, _ CreateOptionalNonJSONFixtureRequestObject) (CreateOptionalNonJSONFixtureResponseObject, error) {
+	s.called++
+	s.optionalNonJSONCalls++
+	return CreateOptionalNonJSONFixture204Response{}, nil
+}
+
+func TestStrictGeneratedJSONTransport(t *testing.T) {
+	server := &strictFixtureServer{}
+	router := chi.NewRouter()
+	handler := HandlerFromMux(NewStrictHandlerWithOptions(server, nil, StrictHTTPServerOptions{
+		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
+			status := http.StatusBadRequest
+			switch {
+			case errors.Is(err, httpjson.ErrRequestBodyTooLarge):
+				status = http.StatusRequestEntityTooLarge
+			case errors.Is(err, httpjson.ErrUnsupportedMediaType), errors.Is(err, ErrUnsupportedRequestContentType):
+				status = http.StatusUnsupportedMediaType
+			}
+			http.Error(w, http.StatusText(status), status)
+		},
+		ResponseErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
+			if !errors.Is(err, httpjson.ErrResponseBodyTooLarge) {
+				t.Errorf("response error = %v, want ErrResponseBodyTooLarge", err)
+			}
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+		},
+		JSONBodyDecoder:           httpjson.Decode,
+		JSONResponseSizeChecker:   httpjson.CheckResponseSize,
+		RequestContentTypeMatcher: httpjson.MatchesMediaType,
+		RequestBodyAbsentChecker:  httpjson.IsBodyAbsent,
+	}), router)
+
+	tests := []struct {
+		name        string
+		body        string
+		contentType string
+		wantStatus  int
+		wantCalled  bool
+	}{
+		{name: "valid", body: `{"name":"ok","nested":{"value":2}}`, contentType: "application/json; charset=utf-8", wantStatus: http.StatusOK, wantCalled: true},
+		{name: "empty required body", wantStatus: http.StatusBadRequest},
+		{name: "malformed", body: `{"name":`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "trailing value", body: `{"name":"ok","nested":{"value":2}} {}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "unknown field", body: `{"name":"ok","nested":{"value":2},"extra":true}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "duplicate case variant", body: `{"name":"first","Name":"second","nested":{"value":2}}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "duplicate nested field", body: `{"name":"ok","nested":{"value":1,"Value":2}}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "wrong media type", body: `{"name":"ok","nested":{"value":2}}`, contentType: "text/json", wantStatus: http.StatusUnsupportedMediaType},
+		{name: "oversized", body: `{"name":"` + strings.Repeat("x", int(httpjson.MaxRequestBodyBytes)) + `","nested":{"value":2}}`, contentType: "application/json", wantStatus: http.StatusRequestEntityTooLarge},
+		{name: "oversized response", body: `{"name":"oversized-response","nested":{"value":2}}`, contentType: "application/json", wantStatus: http.StatusInternalServerError, wantCalled: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			before := server.called
+			request := httptest.NewRequest(http.MethodPost, "/strict", strings.NewReader(tc.body))
+			request.Header.Set("Content-Type", tc.contentType)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body %q", response.Code, tc.wantStatus, response.Body.String())
+			}
+			if called := server.called == before+1; called != tc.wantCalled {
+				t.Errorf("handler called = %t, want %t", called, tc.wantCalled)
+			}
+		})
+	}
+
+	t.Run("empty optional body", func(t *testing.T) {
+		before := server.called
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/optional", nil))
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d; body %q", response.Code, http.StatusNoContent, response.Body.String())
+		}
+		if server.called != before+1 || server.optionalBodyPresent {
+			t.Fatalf("handler calls = %d, body present = %t", server.called-before, server.optionalBodyPresent)
+		}
+	})
+
+	t.Run("multi-content exact media selection", func(t *testing.T) {
+		before := server.called
+		request := httptest.NewRequest(http.MethodPost, "/multi", strings.NewReader(`{"name":"ok","nested":{"value":2}}`))
+		request.Header.Set("Content-Type", "Application/JSON; charset=utf-8")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d; body %q", response.Code, http.StatusNoContent, response.Body.String())
+		}
+		if server.called != before+1 || !server.multiJSONBodyPresent {
+			t.Fatalf("handler calls = %d, JSON body present = %t", server.called-before, server.multiJSONBodyPresent)
+		}
+	})
+
+	t.Run("multi-content rejects undeclared prefix", func(t *testing.T) {
+		before := server.called
+		request := httptest.NewRequest(http.MethodPost, "/multi", strings.NewReader(`{"name":"ok","nested":{"value":2}}`))
+		request.Header.Set("Content-Type", "application/json-patch+json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnsupportedMediaType {
+			t.Fatalf("status = %d, want %d; body %q", response.Code, http.StatusUnsupportedMediaType, response.Body.String())
+		}
+		if server.called != before {
+			t.Fatalf("handler calls = %d, want 0", server.called-before)
+		}
+	})
+
+	t.Run("optional non-JSON multi-content empty body remains absent", func(t *testing.T) {
+		before := server.called
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/optional-non-json", nil))
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d; body %q", response.Code, http.StatusNoContent, response.Body.String())
+		}
+		if server.called != before+1 || server.optionalNonJSONCalls != 1 {
+			t.Fatalf("handler calls = %d, optional handler calls = %d", server.called-before, server.optionalNonJSONCalls)
+		}
+	})
+
+	t.Run("optional non-JSON multi-content nonempty body needs a type", func(t *testing.T) {
+		before := server.called
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/optional-non-json", strings.NewReader("data")))
+		if response.Code != http.StatusUnsupportedMediaType {
+			t.Fatalf("status = %d, want %d; body %q", response.Code, http.StatusUnsupportedMediaType, response.Body.String())
+		}
+		if server.called != before {
+			t.Fatalf("handler calls = %d, want 0", server.called-before)
+		}
+	})
+}
