@@ -52,8 +52,8 @@ func TestGeneratedProjectDefinesStrictJSONTransport(t *testing.T) {
 			"JSONResponseSizeChecker:   httpjson.CheckResponseSize",
 			"RequestContentTypeMatcher: httpjson.MatchesMediaType",
 			"RequestBodyAbsentChecker:  httpjson.IsBodyAbsent",
-			"http.StatusRequestEntityTooLarge",
-			"http.StatusUnsupportedMediaType",
+			"problem.RequestBodyTooLarge()",
+			"problem.UnsupportedMediaType()",
 		},
 	}
 

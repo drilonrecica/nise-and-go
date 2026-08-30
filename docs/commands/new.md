@@ -326,6 +326,9 @@ myapp/
         │   │   └── json_test.go [app]   hostile-input and response-bound contracts
         │   ├── openapigen/
         │   │   └── openapi.gen.go [nise] complete strict chi bindings
+        │   ├── problem/
+        │   │   ├── problem.go   [app]   validated RFC 9457 catalog and writer
+        │   │   └── problem_test.go [app] shape and cause-isolation contracts
         │   ├── router.go        [app]   sibling API/document chains and extension slots
         │   └── router_test.go   [app]   routing and middleware-order contract
         └── webui/
@@ -334,7 +337,7 @@ myapp/
 
 ```
 
-73 files. Ownership markers are from
+75 files. Ownership markers are from
 [Generated application layout](../generated-application-layout.md): `[nise]`
 is regenerated and hand edits are lost, `[app]` is written once and never
 overwritten. Files rendered directly by Nise declare the same thing in a
@@ -404,6 +407,9 @@ files and omitted directories.
   application adapter, compile-time interface completeness, a pinned v2.8.0
   generator, byte-identical regeneration, and a non-mutating stale-output
   gate. `GET /api/v1/` is the bodyless wiring fixture.
+- **Controlled RFC 9457 API failures** for generated transport errors,
+  routing failures, and recovery, with stable codes, request/correlation IDs,
+  bounded output, and no arbitrary extension or internal-cause leakage.
 - **Generated TypeScript API paths and a lightweight client** with a pinned
   openapi-typescript drift gate, compile-time path/method restrictions,
   explicit same-origin credentials, forwarded cancellation, generic public

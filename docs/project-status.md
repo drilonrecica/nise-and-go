@@ -17,9 +17,10 @@ The V0.1 target is frozen around one golden profile:
 The authoritative OpenAPI document, pinned strict chi and TypeScript
 generation, explicit server adapter, lightweight browser client, and
 `/api/v1` routing boundary are implemented. JSON request decoding and buffered
-response limits are strict and bounded. Problem Details, response shapes,
-pagination, and idempotency remain in progress; this is not yet a complete
-public API surface.
+response limits are strict and bounded. RFC 9457 Problem Details uses a typed,
+closed extension set across generated and routing failures. Resource response
+shapes, pagination, and idempotency remain in progress; this is not yet a
+complete public API surface.
 
 V0.1 may implement and correct the documented foundation. It may not add another router, database, frontend framework, plugin system, AI integration, billing system, or deployment platform merely because it could be useful someday.
 

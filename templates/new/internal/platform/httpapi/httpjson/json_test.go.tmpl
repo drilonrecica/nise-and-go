@@ -214,4 +214,20 @@ func TestWrite(t *testing.T) {
 	if exact.Body.Len() != int(MaxResponseBodyBytes) {
 		t.Fatalf("exact-limit response bytes = %d, want %d", exact.Body.Len(), MaxResponseBodyBytes)
 	}
+
+	problem := httptest.NewRecorder()
+	if err := WriteMediaType(problem, http.StatusBadRequest, "application/problem+json", map[string]string{"title": "Invalid Request"}); err != nil {
+		t.Fatalf("WriteMediaType: %v", err)
+	}
+	if got := problem.Header().Get("Content-Type"); got != "application/problem+json" {
+		t.Fatalf("problem Content-Type = %q", got)
+	}
+
+	invalid := httptest.NewRecorder()
+	if err := WriteMediaType(invalid, http.StatusOK, "application/json\r\nX-Injected: yes", struct{}{}); err == nil {
+		t.Fatal("WriteMediaType accepted a header-injection media type")
+	}
+	if invalid.Body.Len() != 0 || invalid.Header().Get("Content-Type") != "" {
+		t.Fatalf("invalid media type committed a response: headers %v, body %q", invalid.Header(), invalid.Body.String())
+	}
 }

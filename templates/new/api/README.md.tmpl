@@ -23,6 +23,16 @@ the package's `Write` helper share a 1 MiB pre-commit response limit. Keep the
 inline templates aligned with the pinned oapi-codegen defaults during an
 upgrade; do not replace them with remote template URLs.
 
+`components.schemas.Problem` is the one RFC 9457 wire contract for server and
+frontend models. It permits only the standard members plus `code`,
+`request_id`, and `correlation_id`; add any future extension here explicitly.
+The application-owned `internal/platform/httpapi/problem` package supplies
+validated catalog definitions and the bounded `application/problem+json`
+writer. Generated request/response failures, API `404`/`405`, and API recovery
+all use it without serializing or logging arbitrary cause values. Recovery
+stages at most 1 MiB until normal return; explicit streaming remains
+passthrough, and a post-flush panic aborts rather than appending Problem JSON.
+
 Run `make api-types-generate` for the checked-in frontend model and
 `make api-types-check` for its non-mutating openapi-typescript `--check` gate.
 The application-owned `frontend/src/lib/api/client.ts` wraps those path types
