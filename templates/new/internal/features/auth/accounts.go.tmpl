@@ -1,0 +1,279 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/features/auth/store"
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// Bounds on an address, matching the column checks. They are repeated in Go so
+// a bad value is refused before it becomes a constraint violation an operator
+// has to read backwards from a log line.
+const (
+	// MinEmailBytes is the shortest address accepted.
+	MinEmailBytes = 3
+	// MaxEmailBytes is the longest address accepted. It is the maximum
+	// length of an SMTP path from RFC 5321.
+	MaxEmailBytes = 320
+)
+
+// Account statuses. Disabling is reversible and immediate; deleting an account
+// is a separate decision this feature deliberately does not offer here.
+const (
+	// StatusActive means the account may authenticate.
+	StatusActive = "active"
+	// StatusDisabled means it may not, from its sessions' next request on.
+	StatusDisabled = "disabled"
+)
+
+// Errors the account use case reports.
+var (
+	// ErrEmail reports an address that is empty, oversized, not valid UTF-8,
+	// or not shaped like an address.
+	ErrEmail = errors.New("email address is not acceptable")
+	// ErrPasswordHash reports a stored hash outside the column's bounds.
+	ErrPasswordHash = errors.New("password hash is outside the permitted bounds")
+	// ErrAccountExists reports an address that is already registered.
+	ErrAccountExists = errors.New("an account with that address already exists")
+	// ErrAccountNotFound reports an address or identifier with no account.
+	ErrAccountNotFound = errors.New("no account matches")
+	// ErrStatus reports a status outside the closed set.
+	ErrStatus = errors.New("account status is not active or disabled")
+)
+
+// Account is one identity, without its credential.
+type Account struct {
+	ID     string
+	Email  string
+	Status string
+}
+
+// Credential is an account together with its stored password hash. It is
+// returned only to the login path, which is the one caller with a reason to
+// see it.
+type Credential struct {
+	Account
+	PasswordHash string
+}
+
+// Accounts is the use case that creates and resolves identities.
+type Accounts struct {
+	transactor *database.Transactor
+	now        func() time.Time
+}
+
+// NewAccounts constructs the account use case.
+func NewAccounts(transactor *database.Transactor, options ...SessionsOption) (*Accounts, error) {
+	if transactor == nil {
+		return nil, errors.New("auth: a transactor is required")
+	}
+	accounts := &Accounts{transactor: transactor, now: time.Now}
+	// SessionsOption is reused rather than duplicated: the only option either
+	// use case has is the clock, and two identical option types would be two
+	// places to forget to wire it.
+	sessions := &Sessions{now: accounts.now}
+	for _, option := range options {
+		option(sessions)
+	}
+	accounts.now = sessions.now
+	return accounts, nil
+}
+
+// Create stores one account with an already-hashed password.
+//
+// It takes the hash rather than the password on purpose: this use case must
+// not be a second place where hashing parameters are chosen, and a plaintext
+// password that never enters it cannot be logged from it.
+func (a *Accounts) Create(ctx context.Context, email, passwordHash string) (Account, error) {
+	normalized, err := NormalizeEmail(email)
+	if err != nil {
+		return Account{}, err
+	}
+	if len(passwordHash) < 16 || len(passwordHash) > 512 {
+		return Account{}, fmt.Errorf("%w: %d bytes", ErrPasswordHash, len(passwordHash))
+	}
+	now := a.now().UTC()
+
+	var account Account
+	err = a.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := store.New(tx).CreateUser(ctx, store.CreateUserParams{
+			Email:        normalized,
+			PasswordHash: passwordHash,
+			CreatedAt:    timestamp(now),
+		})
+		if err != nil {
+			if isUniqueViolation(err) {
+				return ErrAccountExists
+			}
+			return fmt.Errorf("creating the account: %w", err)
+		}
+		account = Account{ID: uuidString(row.ID), Email: row.Email, Status: row.Status}
+		return nil
+	})
+	if err != nil {
+		return Account{}, err
+	}
+	return account, nil
+}
+
+// FindCredentialByEmail resolves an address for the login path.
+//
+// A missing account is ErrAccountNotFound. The login handler must still pay
+// the password-verification cost on that path, or response time answers
+// whether the address is registered.
+func (a *Accounts) FindCredentialByEmail(ctx context.Context, email string) (Credential, error) {
+	normalized, err := NormalizeEmail(email)
+	if err != nil {
+		return Credential{}, err
+	}
+
+	var credential Credential
+	err = a.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := store.New(tx).FindUserByEmail(ctx, store.FindUserByEmailParams{Email: normalized})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrAccountNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("resolving the account: %w", err)
+		}
+		credential = Credential{
+			Account:      Account{ID: uuidString(row.ID), Email: row.Email, Status: row.Status},
+			PasswordHash: row.PasswordHash,
+		}
+		return nil
+	})
+	if err != nil {
+		return Credential{}, err
+	}
+	return credential, nil
+}
+
+// FindByID resolves an account already identified by an authenticated session.
+func (a *Accounts) FindByID(ctx context.Context, userID string) (Account, error) {
+	id, err := parseUUID(userID)
+	if err != nil {
+		return Account{}, ErrAccountNotFound
+	}
+
+	var account Account
+	err = a.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := store.New(tx).FindUserByID(ctx, store.FindUserByIDParams{ID: id})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrAccountNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("resolving the account: %w", err)
+		}
+		account = Account{ID: uuidString(row.ID), Email: row.Email, Status: row.Status}
+		return nil
+	})
+	if err != nil {
+		return Account{}, err
+	}
+	return account, nil
+}
+
+// SetStatus enables or disables an account.
+//
+// Disabling stops the account's sessions from authenticating on their next
+// request. Ending them outright is a separate, explicit call, because the two
+// are different decisions: one is reversible, the other logs the person out of
+// every device.
+func (a *Accounts) SetStatus(ctx context.Context, userID, status string) error {
+	if status != StatusActive && status != StatusDisabled {
+		return fmt.Errorf("%w: %q", ErrStatus, status)
+	}
+	id, err := parseUUID(userID)
+	if err != nil {
+		return ErrAccountNotFound
+	}
+	now := a.now().UTC()
+
+	return a.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		updated, err := store.New(tx).SetUserStatus(ctx, store.SetUserStatusParams{
+			ID:        id,
+			Status:    status,
+			UpdatedAt: timestamp(now),
+		})
+		if err != nil {
+			return fmt.Errorf("setting the account status: %w", err)
+		}
+		if updated == 0 {
+			return ErrAccountNotFound
+		}
+		return nil
+	})
+}
+
+// UpdatePasswordHash rewrites a stored hash. It is used both by a deliberate
+// password change and by the transparent rehash a login performs when the
+// record was written under superseded parameters.
+func (a *Accounts) UpdatePasswordHash(ctx context.Context, userID, passwordHash string) error {
+	id, err := parseUUID(userID)
+	if err != nil {
+		return ErrAccountNotFound
+	}
+	if len(passwordHash) < 16 || len(passwordHash) > 512 {
+		return fmt.Errorf("%w: %d bytes", ErrPasswordHash, len(passwordHash))
+	}
+	now := a.now().UTC()
+
+	return a.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		updated, err := store.New(tx).UpdateUserPasswordHash(ctx, store.UpdateUserPasswordHashParams{
+			ID:           id,
+			PasswordHash: passwordHash,
+			UpdatedAt:    timestamp(now),
+		})
+		if err != nil {
+			return fmt.Errorf("updating the password hash: %w", err)
+		}
+		if updated == 0 {
+			return ErrAccountNotFound
+		}
+		return nil
+	})
+}
+
+// NormalizeEmail folds an address to the one form this application stores.
+//
+// Only the case is folded and surrounding space removed. Nothing else is
+// "cleaned": stripping dots or plus-addressing would merge addresses their
+// owners consider distinct, and would do it differently from whatever mail
+// server actually delivers to them.
+func NormalizeEmail(email string) (string, error) {
+	trimmed := strings.TrimSpace(email)
+	if !utf8.ValidString(trimmed) {
+		return "", fmt.Errorf("%w: not valid UTF-8", ErrEmail)
+	}
+	normalized := strings.ToLower(trimmed)
+	if len(normalized) < MinEmailBytes || len(normalized) > MaxEmailBytes {
+		return "", fmt.Errorf("%w: %d bytes, want %d..%d", ErrEmail, len(normalized), MinEmailBytes, MaxEmailBytes)
+	}
+	at := strings.IndexByte(normalized, '@')
+	if at < 1 || at == len(normalized)-1 || strings.Count(normalized, "@") != 1 {
+		return "", fmt.Errorf("%w: not one local part and one domain", ErrEmail)
+	}
+	if strings.ContainsAny(normalized, " \t\r\n") {
+		return "", fmt.Errorf("%w: contains whitespace", ErrEmail)
+	}
+	return normalized, nil
+}
+
+// isUniqueViolation reports whether err is PostgreSQL's unique-constraint
+// error. The code is matched rather than the message, which is localized.
+func isUniqueViolation(err error) bool {
+	var pgErr interface{ SQLState() string }
+	return errors.As(err, &pgErr) && pgErr.SQLState() == "23505"
+}

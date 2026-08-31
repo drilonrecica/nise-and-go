@@ -1,0 +1,40 @@
+# Generated once by nise; owned by this application. Nise will not overwrite it.
+#
+# The schema is the application's migration directory, not a copy of it. A
+# second schema file would drift from the one PostgreSQL actually runs, and
+# the drift would show up as generated code that compiles against a table
+# shape that does not exist.
+version: "2"
+sql:
+  - name: auth
+    engine: postgresql
+    schema: ../../../db/migrations
+    queries: queries
+    gen:
+      go:
+        package: store
+        out: store
+        sql_package: pgx/v5
+        emit_interface: true
+        emit_empty_slices: true
+        query_parameter_limit: 0
+        omit_unused_structs: true
+    rules:
+      - nise-no-unbounded-delete
+      - nise-no-unbounded-update
+      - nise-no-truncate
+rules:
+  - name: nise-no-unbounded-delete
+    message: "DELETE statements must contain a WHERE clause"
+    rule: |
+      query.sql.matches("(?is).*\\bDELETE\\s+FROM\\b.*") &&
+      !query.sql.matches("(?is).*\\bDELETE\\s+FROM\\b.*\\bWHERE\\b.*")
+  - name: nise-no-unbounded-update
+    message: "UPDATE statements must contain a WHERE clause"
+    rule: |
+      query.sql.matches("(?is).*\\bUPDATE\\b.*\\bSET\\b.*") &&
+      !query.sql.matches("(?is).*\\bUPDATE\\b.*\\bSET\\b.*\\bWHERE\\b.*")
+  - name: nise-no-truncate
+    message: "TRUNCATE is forbidden in application queries; use an explicit migration"
+    rule: |
+      query.sql.matches("(?is).*\\bTRUNCATE\\b.*")

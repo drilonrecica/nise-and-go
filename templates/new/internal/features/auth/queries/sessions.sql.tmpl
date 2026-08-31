@@ -1,0 +1,78 @@
+-- CreateSession stores one issued session. Only the token digest is written;
+-- the token itself never reaches this layer.
+-- name: CreateSession :one
+INSERT INTO sessions (user_id, token_digest, created_at, last_seen_at, expires_at)
+VALUES ($1, $2, $3, $3, $4)
+RETURNING id, user_id, created_at, last_seen_at, expires_at, revoked_at;
+
+-- The user's status is joined in rather than looked up separately: a disabled
+-- account must stop authenticating immediately, and a second round trip would
+-- be a window in which it did not.
+-- name: FindSessionByTokenDigest :one
+SELECT s.id,
+       s.user_id,
+       s.created_at,
+       s.last_seen_at,
+       s.expires_at,
+       s.revoked_at,
+       u.status AS user_status
+FROM sessions s
+JOIN users u ON u.id = s.user_id
+WHERE s.token_digest = $1;
+
+-- TouchSession slides the idle window. It skips revoked sessions so a
+-- concurrent revocation cannot be undone by an in-flight request.
+-- name: TouchSession :execrows
+UPDATE sessions
+SET last_seen_at = $2
+WHERE id = $1
+  AND revoked_at IS NULL;
+
+-- RevokeSession ends one session. The revoked_at guard makes it idempotent and
+-- preserves the first revocation's reason.
+-- name: RevokeSession :execrows
+UPDATE sessions
+SET revoked_at = $2,
+    revoked_reason = $3
+WHERE id = $1
+  AND revoked_at IS NULL;
+
+-- RevokeUserSessions ends every session an account holds, which is what a
+-- password change or a compromise response needs.
+-- name: RevokeUserSessions :execrows
+UPDATE sessions
+SET revoked_at = $2,
+    revoked_reason = $3
+WHERE user_id = $1
+  AND revoked_at IS NULL;
+
+-- RevokeOtherUserSessions ends every session except the one making the request,
+-- which is the "sign out everywhere else" action.
+-- name: RevokeOtherUserSessions :execrows
+UPDATE sessions
+SET revoked_at = $3,
+    revoked_reason = $4
+WHERE user_id = $1
+  AND id <> $2
+  AND revoked_at IS NULL;
+
+-- ListUserSessions is the account's own view of its sessions. It returns no
+-- digest: there is nothing a client could do with one but leak it.
+-- name: ListUserSessions :many
+SELECT id, created_at, last_seen_at, expires_at, revoked_at
+FROM sessions
+WHERE user_id = $1
+ORDER BY created_at DESC
+LIMIT $2;
+
+-- The bounded subquery keeps one sweep a predictable amount of work rather
+-- than one statement holding locks over an unbounded backlog.
+-- name: DeleteExpiredSessions :execrows
+DELETE FROM sessions
+WHERE id IN (
+    SELECT expiring.id
+    FROM sessions AS expiring
+    WHERE expiring.expires_at <= $1
+    ORDER BY expiring.expires_at
+    LIMIT $2
+);

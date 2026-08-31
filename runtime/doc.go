@@ -22,6 +22,8 @@
 //     contract
 //   - runtime/password      Argon2id hashing, versioned parameter sets,
 //     rehash detection, and parameter benchmarking
+//   - runtime/session       opaque session tokens, their stored digests, and
+//     the idle, absolute, and revoked lifecycle rules
 //
 // The name runtime/internal is reserved for shared implementation. No such
 // package exists yet: every package above compiles against the standard library

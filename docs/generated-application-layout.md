@@ -105,6 +105,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │       │   └── <feature>.sql      [app]   hand-written SQL, input to sqlc
     │       ├── store/                 [nise]  sqlc output for this feature
     │       └── <feature>_test.go      [app]
+    │   auth/                          [app]   the first feature: accounts, sessions, and their SQL
     │
     └── platform/
         ├── config/                    [app]   typed configuration over runtime/config
@@ -123,6 +124,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
         │   └── openapigen/
         │       └── openapi.gen.go     [nise]  complete strict chi types and bindings
         ├── idempotency/               [app]   transaction-owned idempotent command executor and its store
+        ├── passwords/                 [app]   this application's Argon2id parameter history
         ├── jobs/                      [app]   core: the River runner, queues, and registration
         ├── mail/
         │   ├── mail.go                [app]

@@ -1,0 +1,37 @@
+-- CreateUser stores one account. The caller normalizes the address and hashes
+-- the password; this query does neither, so neither can be skipped by writing
+-- a second insert somewhere else.
+-- name: CreateUser :one
+INSERT INTO users (email, password_hash, created_at, updated_at)
+VALUES ($1, $2, $3, $3)
+RETURNING id, email, status, created_at, updated_at;
+
+-- FindUserByEmail resolves a normalized address for the login path.
+-- name: FindUserByEmail :one
+SELECT id, email, password_hash, status
+FROM users
+WHERE email = $1;
+
+-- FindUserByID resolves an account already identified by an authenticated
+-- session.
+-- name: FindUserByID :one
+SELECT id, email, password_hash, status
+FROM users
+WHERE id = $1;
+
+-- UpdateUserPasswordHash rewrites a stored hash, which happens on a password
+-- change and on a transparent rehash at login.
+-- name: UpdateUserPasswordHash :execrows
+UPDATE users
+SET password_hash = $2,
+    updated_at = $3
+WHERE id = $1;
+
+-- SetUserStatus enables or disables an account. Disabling stops the account's
+-- sessions from authenticating on their next request; revoking them is a
+-- separate, explicit step.
+-- name: SetUserStatus :execrows
+UPDATE users
+SET status = $2,
+    updated_at = $3
+WHERE id = $1;

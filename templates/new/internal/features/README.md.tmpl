@@ -43,8 +43,17 @@ pgx round trip: one ordinary query/exec, one copy, or one whole batch. Changing
 an established count needs an explanation; batch tests also bound the queued
 statement count because batching hides statements, not PostgreSQL work.
 
-This directory is empty today. The core features — sessions and
-authentication, authorization, and the audit log — arrive with the
-authentication milestone, and custom features are written by
+`auth/` is the first feature and the worked example of every rule above: its
+queries are hand-written SQL in `queries/`, its `store/` is complete sqlc
+output, and `sessions.go` and `accounts.go` are use cases that own their
+transaction boundaries. Authorization and the audit log join it as the
+authentication milestone continues, and custom features are written by
 `nise generate feature` from the generation milestone onward. Nothing in the
 layout moves when they land.
+
+Neither `queries/` nor `store/` carries an ownership header comment, and both
+declare ownership by path instead. A comment in a query file is not inert —
+sqlc copies it into the generated Go doc comment — so a header saying "Nise
+will not overwrite it" placed there would appear inside a tool-owned file and
+contradict that file's own marker. `queries/` is yours; `store/` belongs to
+sqlc and is replaced wholesale.

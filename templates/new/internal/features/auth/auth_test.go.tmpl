@@ -1,0 +1,635 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/drilonrecica/nise-and-go/runtime/session"
+
+	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+	"{{.ModulePath}}/internal/platform/passwords"
+)
+
+const authTestTimeout = 30 * time.Second
+
+// fixedNow is the instant every deterministic lifetime test reads.
+var fixedNow = time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+
+// harness is one migrated, isolated database with the auth use cases over it
+// and a clock the test controls.
+type harness struct {
+	ctx      context.Context
+	pool     *pgxpool.Pool
+	accounts *Accounts
+	sessions *Sessions
+	advance  func(time.Duration)
+}
+
+func newHarness(t *testing.T, lifetime session.Lifetime) *harness {
+	t.Helper()
+
+	testDatabase := dbtest.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), authTestTimeout)
+	t.Cleanup(cancel)
+
+	settings, err := database.NewSettings(6, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	databaseURL := testDatabase.URL().Reveal()
+	databasePassword := testDatabase.Password().Reveal()
+	pool, err := database.Open(ctx, databaseURL, databasePassword, settings, database.OpenOptions{})
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	migrator, err := database.OpenMigrator(ctx, databaseURL, databasePassword, 5*time.Second, migrationdb.Migrations())
+	if err != nil {
+		t.Fatalf("OpenMigrator: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := migrator.Close(); err != nil {
+			t.Errorf("close migrator: %v", err)
+		}
+	})
+	if _, err := migrator.Up(ctx); err != nil {
+		t.Fatalf("migrate test database: %v", err)
+	}
+
+	transactor, err := database.NewTransactor(pool)
+	if err != nil {
+		t.Fatalf("NewTransactor: %v", err)
+	}
+
+	var (
+		mu      sync.Mutex
+		current = fixedNow
+	)
+	clock := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}
+	h := &harness{ctx: ctx, pool: pool}
+	h.advance = func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		current = current.Add(d)
+	}
+	if h.accounts, err = NewAccounts(transactor, WithClock(clock)); err != nil {
+		t.Fatalf("NewAccounts: %v", err)
+	}
+	if h.sessions, err = NewSessions(transactor, lifetime, WithClock(clock)); err != nil {
+		t.Fatalf("NewSessions: %v", err)
+	}
+	return h
+}
+
+func testLifetime(t *testing.T) session.Lifetime {
+	t.Helper()
+
+	lifetime, err := session.NewLifetime(time.Hour, 24*time.Hour, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("NewLifetime: %v", err)
+	}
+	return lifetime
+}
+
+// hashedPassword produces a real stored hash through the application's own
+// policy, so these tests exercise the column bounds the login path will.
+func hashedPassword(t *testing.T, secret string) string {
+	t.Helper()
+
+	policy, err := passwords.Policy()
+	if err != nil {
+		t.Fatalf("Policy: %v", err)
+	}
+	encoded, err := policy.Hash(secret)
+	if err != nil {
+		t.Fatalf("Hash: %v", err)
+	}
+	return encoded
+}
+
+func (h *harness) account(t *testing.T, email string) Account {
+	t.Helper()
+
+	account, err := h.accounts.Create(h.ctx, email, hashedPassword(t, "a password for "+email))
+	if err != nil {
+		t.Fatalf("Create(%q): %v", email, err)
+	}
+	return account
+}
+
+func TestNormalizeEmail(t *testing.T) {
+	t.Parallel()
+
+	accepted := map[string]string{
+		"person@example.test":     "person@example.test",
+		"  Person@Example.Test  ": "person@example.test",
+		"PERSON+tag@EXAMPLE.test": "person+tag@example.test",
+		"a@b":                     "a@b",
+		"person@example.test\n":   "person@example.test",
+	}
+	for input, want := range accepted {
+		got, err := NormalizeEmail(input)
+		if err != nil {
+			t.Errorf("NormalizeEmail(%q): %v", input, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("NormalizeEmail(%q) = %q, want %q", input, got, want)
+		}
+	}
+
+	rejected := []string{
+		"",
+		"   ",
+		"person",
+		"@example.test",
+		"person@",
+		"person@@example.test",
+		"person example@test",
+		"person@exa mple.test",
+		"per\nson@example.test",
+		strings.Repeat("a", MaxEmailBytes) + "@example.test",
+		"\xff\xfe@example.test",
+	}
+	for _, input := range rejected {
+		if _, err := NormalizeEmail(input); !errors.Is(err, ErrEmail) {
+			t.Errorf("NormalizeEmail(%q) error = %v, want ErrEmail", input, err)
+		}
+	}
+}
+
+func TestAccountsCreateAndResolve(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+
+	created := h.account(t, "Person@Example.Test")
+	if created.Email != "person@example.test" {
+		t.Fatalf("stored email = %q, want the normalized form", created.Email)
+	}
+	if created.Status != StatusActive {
+		t.Fatalf("status = %q, want active", created.Status)
+	}
+
+	// The address is matched after normalization, so the same person cannot
+	// register twice by changing the case.
+	if _, err := h.accounts.Create(h.ctx, "PERSON@example.test", hashedPassword(t, "another")); !errors.Is(err, ErrAccountExists) {
+		t.Fatalf("a case variant registered a second account: %v", err)
+	}
+
+	credential, err := h.accounts.FindCredentialByEmail(h.ctx, "  PERSON@EXAMPLE.TEST ")
+	if err != nil {
+		t.Fatalf("FindCredentialByEmail: %v", err)
+	}
+	if credential.ID != created.ID || credential.PasswordHash == "" {
+		t.Fatalf("credential = %#v", credential.Account)
+	}
+
+	byID, err := h.accounts.FindByID(h.ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID: %v", err)
+	}
+	if byID.Email != created.Email {
+		t.Fatalf("FindByID returned %q", byID.Email)
+	}
+
+	if _, err := h.accounts.FindCredentialByEmail(h.ctx, "nobody@example.test"); !errors.Is(err, ErrAccountNotFound) {
+		t.Errorf("unknown address error = %v, want ErrAccountNotFound", err)
+	}
+	if _, err := h.accounts.FindByID(h.ctx, "not-a-uuid"); !errors.Is(err, ErrAccountNotFound) {
+		t.Errorf("malformed identifier error = %v, want ErrAccountNotFound", err)
+	}
+	if _, err := h.accounts.Create(h.ctx, "other@example.test", "short"); !errors.Is(err, ErrPasswordHash) {
+		t.Errorf("an undersized hash was accepted: %v", err)
+	}
+}
+
+func TestSessionIssueStoresOnlyTheDigest(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+
+	issued, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if issued.Token.IsZero() || issued.Record.ID == "" {
+		t.Fatalf("issued = %#v", issued.Record)
+	}
+	if issued.Record.UserID != account.ID {
+		t.Fatalf("session subject = %q, want %q", issued.Record.UserID, account.ID)
+	}
+	if !issued.Record.ExpiresAt.Equal(fixedNow.Add(24 * time.Hour)) {
+		t.Fatalf("ExpiresAt = %s, want the absolute deadline fixed at issue", issued.Record.ExpiresAt)
+	}
+
+	// The token must not be anywhere in the row. This is the property a leak
+	// of the sessions table depends on.
+	var stored [][]byte
+	rows, err := h.pool.Query(h.ctx, `SELECT token_digest FROM sessions`)
+	if err != nil {
+		t.Fatalf("read stored digests: %v", err)
+	}
+	for rows.Next() {
+		var digest []byte
+		if err := rows.Scan(&digest); err != nil {
+			t.Fatalf("scan digest: %v", err)
+		}
+		stored = append(stored, digest)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read stored digests: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("stored %d sessions, want 1", len(stored))
+	}
+	if !session.EqualDigest(stored[0], issued.Token.Digest()) {
+		t.Fatal("the stored digest is not the token's digest")
+	}
+	if strings.Contains(string(stored[0]), issued.Token.Value()) {
+		t.Fatal("the stored value contains the token")
+	}
+}
+
+func TestAuthenticateAcceptsOnlyTheIssuedToken(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+	issued, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	record, err := h.sessions.Authenticate(h.ctx, issued.Token.Value())
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if record.ID != issued.Record.ID || record.UserID != account.ID {
+		t.Fatalf("record = %#v", record)
+	}
+
+	other, err := session.New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rejected := map[string]string{
+		"a well-formed token nobody issued": other.Value(),
+		"an empty credential":               "",
+		"a truncated token":                 issued.Token.Value()[:len(issued.Token.Value())-1],
+		"a token with one character changed": issued.Token.Value()[:len(issued.Token.Value())-1] +
+			flipLastCharacter(issued.Token.Value()),
+		"the digest presented as a token": string(issued.Token.Digest()),
+		"a path":                          "../../etc/passwd",
+	}
+	for name, presented := range rejected {
+		t.Run(name, func(t *testing.T) {
+			if _, err := h.sessions.Authenticate(h.ctx, presented); err == nil {
+				t.Fatal("an unissued credential authenticated")
+			}
+		})
+	}
+}
+
+func TestAuthenticateEnforcesBothClocks(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+	issued, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	// Inside the idle window: accepted, and stale enough to slide.
+	h.advance(30 * time.Minute)
+	record, err := h.sessions.Authenticate(h.ctx, issued.Token.Value())
+	if err != nil {
+		t.Fatalf("Authenticate inside the idle window: %v", err)
+	}
+	if !record.LastSeenAt.Equal(fixedNow.Add(30 * time.Minute)) {
+		t.Fatalf("LastSeenAt = %s, want the slid activity time", record.LastSeenAt)
+	}
+
+	// The slide is what keeps it alive past the original idle deadline.
+	h.advance(59 * time.Minute)
+	if _, err := h.sessions.Authenticate(h.ctx, issued.Token.Value()); err != nil {
+		t.Fatalf("Authenticate after the window slid: %v", err)
+	}
+
+	// Now go quiet for longer than the idle window.
+	h.advance(2 * time.Hour)
+	var inactive *InactiveError
+	if _, err := h.sessions.Authenticate(h.ctx, issued.Token.Value()); !errors.As(err, &inactive) || inactive.State != session.Idle {
+		t.Fatalf("error = %v, want an idle session", err)
+	}
+}
+
+func TestAuthenticateRespectsTheAbsoluteDeadline(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+	issued, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	// Stay active the whole time: the idle window keeps sliding, and the
+	// absolute deadline still ends the session.
+	// Twenty-four hours of continuous activity at 55-minute intervals: the
+	// idle window keeps sliding and never expires, so only the absolute
+	// deadline can end this session.
+	for range 30 {
+		h.advance(55 * time.Minute)
+		if _, err := h.sessions.Authenticate(h.ctx, issued.Token.Value()); err != nil {
+			var inactive *InactiveError
+			if errors.As(err, &inactive) && inactive.State == session.Expired {
+				return
+			}
+			t.Fatalf("Authenticate: %v", err)
+		}
+	}
+	t.Fatal("a continuously active session outlived its absolute deadline")
+}
+
+func TestTouchIsBoundedByTheTouchInterval(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+	issued, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	// A request inside the touch interval must not write.
+	h.advance(time.Minute)
+	if _, err := h.sessions.Authenticate(h.ctx, issued.Token.Value()); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	var lastSeen time.Time
+	if err := h.pool.QueryRow(h.ctx, `SELECT last_seen_at FROM sessions WHERE id = $1`, issued.Record.ID).Scan(&lastSeen); err != nil {
+		t.Fatalf("read last_seen_at: %v", err)
+	}
+	if !lastSeen.UTC().Equal(fixedNow) {
+		t.Fatalf("last_seen_at = %s after one minute; the touch interval did not bound the write", lastSeen.UTC())
+	}
+
+	// Past it, the write happens.
+	h.advance(5 * time.Minute)
+	if _, err := h.sessions.Authenticate(h.ctx, issued.Token.Value()); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if err := h.pool.QueryRow(h.ctx, `SELECT last_seen_at FROM sessions WHERE id = $1`, issued.Record.ID).Scan(&lastSeen); err != nil {
+		t.Fatalf("read last_seen_at: %v", err)
+	}
+	if !lastSeen.UTC().Equal(fixedNow.Add(6 * time.Minute)) {
+		t.Fatalf("last_seen_at = %s, want the slid activity time", lastSeen.UTC())
+	}
+}
+
+func TestRevocation(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+	first, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	second, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	if err := h.sessions.Revoke(h.ctx, first.Record.ID, "signed out"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	var inactive *InactiveError
+	if _, err := h.sessions.Authenticate(h.ctx, first.Token.Value()); !errors.As(err, &inactive) || inactive.State != session.Revoked {
+		t.Fatalf("error = %v, want a revoked session", err)
+	}
+	if _, err := h.sessions.Authenticate(h.ctx, second.Token.Value()); err != nil {
+		t.Fatalf("revoking one session ended another: %v", err)
+	}
+
+	// Revocation is not repeatable: the first reason stands.
+	if err := h.sessions.Revoke(h.ctx, first.Record.ID, "a different reason"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("a second revocation error = %v, want ErrSessionNotFound", err)
+	}
+	var reason string
+	if err := h.pool.QueryRow(h.ctx, `SELECT revoked_reason FROM sessions WHERE id = $1`, first.Record.ID).Scan(&reason); err != nil {
+		t.Fatalf("read revoked_reason: %v", err)
+	}
+	if reason != "signed out" {
+		t.Fatalf("revoked_reason = %q, want the first reason", reason)
+	}
+
+	for _, bad := range []string{"", strings.Repeat("x", MaxRevocationReason+1)} {
+		if err := h.sessions.Revoke(h.ctx, second.Record.ID, bad); !errors.Is(err, ErrRevocationReason) {
+			t.Errorf("Revoke(reason %d bytes) error = %v, want ErrRevocationReason", len(bad), err)
+		}
+	}
+	if err := h.sessions.Revoke(h.ctx, "not-a-uuid", "reason"); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Revoke with a malformed identifier error = %v", err)
+	}
+}
+
+func TestRevokeAllAndOthers(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+	other := h.account(t, "other@example.test")
+
+	var issued []Issued
+	for range 3 {
+		one, err := h.sessions.Issue(h.ctx, account.ID)
+		if err != nil {
+			t.Fatalf("Issue: %v", err)
+		}
+		issued = append(issued, one)
+	}
+	elsewhere, err := h.sessions.Issue(h.ctx, other.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	kept := issued[0]
+	revoked, err := h.sessions.RevokeOtherSessions(h.ctx, account.ID, kept.Record.ID, "signed out everywhere else")
+	if err != nil {
+		t.Fatalf("RevokeOtherSessions: %v", err)
+	}
+	if revoked != 2 {
+		t.Fatalf("revoked %d sessions, want 2", revoked)
+	}
+	if _, err := h.sessions.Authenticate(h.ctx, kept.Token.Value()); err != nil {
+		t.Fatalf("the current session was revoked too: %v", err)
+	}
+	for _, one := range issued[1:] {
+		if _, err := h.sessions.Authenticate(h.ctx, one.Token.Value()); err == nil {
+			t.Error("another session survived")
+		}
+	}
+	if _, err := h.sessions.Authenticate(h.ctx, elsewhere.Token.Value()); err != nil {
+		t.Fatalf("another account's session was revoked: %v", err)
+	}
+
+	all, err := h.sessions.RevokeAllForUser(h.ctx, account.ID, "password changed")
+	if err != nil {
+		t.Fatalf("RevokeAllForUser: %v", err)
+	}
+	if all != 1 {
+		t.Fatalf("revoked %d remaining sessions, want 1", all)
+	}
+	if _, err := h.sessions.Authenticate(h.ctx, kept.Token.Value()); err == nil {
+		t.Error("the last session survived a full revocation")
+	}
+}
+
+func TestDisabledAccountStopsAuthenticating(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+	issued, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if _, err := h.sessions.Authenticate(h.ctx, issued.Token.Value()); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	if err := h.accounts.SetStatus(h.ctx, account.ID, StatusDisabled); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	h.advance(10 * time.Minute)
+	if _, err := h.sessions.Authenticate(h.ctx, issued.Token.Value()); !errors.Is(err, ErrUserDisabled) {
+		t.Fatalf("error = %v, want ErrUserDisabled", err)
+	}
+
+	// Disabling must not have slid the idle window on the way to refusing.
+	var lastSeen time.Time
+	if err := h.pool.QueryRow(h.ctx, `SELECT last_seen_at FROM sessions WHERE id = $1`, issued.Record.ID).Scan(&lastSeen); err != nil {
+		t.Fatalf("read last_seen_at: %v", err)
+	}
+	if !lastSeen.UTC().Equal(fixedNow) {
+		t.Fatalf("last_seen_at = %s; a disabled account's session was touched", lastSeen.UTC())
+	}
+
+	if err := h.accounts.SetStatus(h.ctx, account.ID, StatusActive); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	if _, err := h.sessions.Authenticate(h.ctx, issued.Token.Value()); err != nil {
+		t.Fatalf("re-enabling did not restore the session: %v", err)
+	}
+	if err := h.accounts.SetStatus(h.ctx, account.ID, "deleted"); !errors.Is(err, ErrStatus) {
+		t.Errorf("an undefined status was accepted: %v", err)
+	}
+}
+
+func TestListSessionsMarksTheCurrentOne(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+
+	var issued []Issued
+	for range 3 {
+		h.advance(time.Minute)
+		one, err := h.sessions.Issue(h.ctx, account.ID)
+		if err != nil {
+			t.Fatalf("Issue: %v", err)
+		}
+		issued = append(issued, one)
+	}
+	current := issued[1]
+
+	summaries, err := h.sessions.List(h.ctx, account.ID, current.Record.ID, 0)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(summaries) != 3 {
+		t.Fatalf("listed %d sessions, want 3", len(summaries))
+	}
+	if summaries[0].ID != issued[2].Record.ID {
+		t.Errorf("the list is not newest first: %#v", summaries[0])
+	}
+	marked := 0
+	for _, summary := range summaries {
+		if summary.Current {
+			marked++
+			if summary.ID != current.Record.ID {
+				t.Errorf("the wrong session is marked current: %q", summary.ID)
+			}
+		}
+	}
+	if marked != 1 {
+		t.Errorf("%d sessions are marked current, want 1", marked)
+	}
+}
+
+func TestDeleteExpiredIsBoundedAndKeepsLiveSessions(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+
+	for range 4 {
+		if _, err := h.sessions.Issue(h.ctx, account.ID); err != nil {
+			t.Fatalf("Issue: %v", err)
+		}
+	}
+	h.advance(25 * time.Hour)
+	live, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	removed, err := h.sessions.DeleteExpired(h.ctx, 2)
+	if err != nil {
+		t.Fatalf("DeleteExpired: %v", err)
+	}
+	if removed != 2 {
+		t.Fatalf("removed %d sessions, want the batch limit of 2", removed)
+	}
+	total := removed
+	for {
+		batch, err := h.sessions.DeleteExpired(h.ctx, 2)
+		if err != nil {
+			t.Fatalf("DeleteExpired: %v", err)
+		}
+		if batch == 0 {
+			break
+		}
+		total += batch
+	}
+	if total != 4 {
+		t.Fatalf("swept %d sessions, want 4", total)
+	}
+	if _, err := h.sessions.Authenticate(h.ctx, live.Token.Value()); err != nil {
+		t.Fatalf("the sweep removed a live session: %v", err)
+	}
+	if _, err := h.sessions.DeleteExpired(h.ctx, 0); err == nil {
+		t.Error("DeleteExpired accepted an unbounded sweep")
+	}
+}
+
+func TestSessionsRequireTheirDependencies(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewSessions(nil, testLifetime(t)); err == nil {
+		t.Error("NewSessions accepted a nil transactor")
+	}
+	if _, err := NewSessions(&database.Transactor{}, session.Lifetime{}); err == nil {
+		t.Error("NewSessions accepted an unconstructed lifetime")
+	}
+	if _, err := NewAccounts(nil); err == nil {
+		t.Error("NewAccounts accepted a nil transactor")
+	}
+}
+
+// flipLastCharacter returns a base64url character different from the token's
+// last one, so a caller can build a token that differs in exactly one place.
+func flipLastCharacter(token string) string {
+	if strings.HasSuffix(token, "A") {
+		return "B"
+	}
+	return "A"
+}
