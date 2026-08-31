@@ -270,7 +270,7 @@ file's job is translating between those use cases and the wire.
 |---|---|
 | `POST /api/v1/session` | Sign in. Answers 200 with a required `status` discriminator: `signed_in` carries the session, `second_factor_required` carries the challenge. |
 | `POST /api/v1/session/second-factor` | Finish a sign-in that opened a challenge. |
-| `GET /api/v1/session` | Who is signed in. |
+| `GET /api/v1/session` | Who is signed in, and what permissions the session holds. |
 | `DELETE /api/v1/session` | Sign out. |
 | `GET /api/v1/sessions` | The account's own live sessions. |
 | `DELETE /api/v1/sessions/{sessionId}` | End one of them. |

@@ -15,7 +15,7 @@ README.md file 0644 3c2c53af13d7ab43efb23f3fedf6ec8338cc673a22fea8cf82da417ce5e4
 api dir 0755
 api/README.md file 0644 fba9f6667e73ebeef26daaf09e235bef9ac18d4f5167d838b1280d8794a49c8d
 api/oapi-codegen.yaml file 0644 d309bcb97daca34cbe295ab8deeb503f7a9081599ec52ad266360f5e7e329ae7
-api/openapi.yaml file 0644 eff3d04d73703fb649e821b2b5dfba7aafe4d04e13f25d491e01df9371357001
+api/openapi.yaml file 0644 489341e65db7a1f5c8d27f3fcc54b1d916200f300698ec233bcf4ef5980dd9d8
 cmd dir 0755
 cmd/myapp dir 0755
 cmd/myapp/main.go file 0644 d6f227794c5945329be1ca938b309b6eda1ebb6e74eb982a551b1a88749fb144
@@ -65,7 +65,7 @@ frontend/src/lib/api/client.test.ts file 0644 5165c6ea7d701eefa08e0f91a4e4186f15
 frontend/src/lib/api/client.ts file 0644 b2c2fa7761e3ec37e22ea1c8a74cacd4a45295e3292209e9111bef99c1cc014e
 frontend/src/lib/api/problem.test.ts file 0644 10d98186a29ac2fc7f3a1f734705572965124461794bb7e425adc8357383d382
 frontend/src/lib/api/problem.ts file 0644 1128ddfe426bf87e0d120851cc0bff3374ac9899878722634ec8569030965d7c
-frontend/src/lib/api/schema.d.ts file 0644 b24f13fb4fd92aa299cce14305d0948975e4c5498c85ebf35c0f471e724aeae2
+frontend/src/lib/api/schema.d.ts file 0644 560b2b94232e847fe20ebcefc24eb648f7b4b3476cb1533aefba5826b362f165
 frontend/src/lib/components dir 0755
 frontend/src/lib/components/LocaleControl.svelte file 0644 ab43b85f47d02188eb4b024dbb5b6ab11e8042fa8d8880e24c13597ef1fa249d
 frontend/src/lib/components/ThemeControl.svelte file 0644 581de32d5dbb8f9f96159fed91536b8838c56c3603434d3d9cd73b834633b452
@@ -75,7 +75,7 @@ frontend/src/lib/components/shell/AppShell.svelte file 0644 6bb78ea6a24c03614aea
 frontend/src/lib/components/shell/Breadcrumbs.svelte file 0644 00022a11aefb67ebc4364ee4e3100dc3f326fc8078fa5a64ef6ac5b815f65a57
 frontend/src/lib/components/shell/NavDrawer.svelte file 0644 3cf371590ea1388aa3b4b693310fbed008b3a6fc22da324684ab8f965d58cf95
 frontend/src/lib/components/shell/Sidebar.svelte file 0644 247b9a230194fc3103cd0b9534e2fe9190025d065ee528b9b9da95fee3f0d1f5
-frontend/src/lib/components/shell/SidebarNav.svelte file 0644 5e08c60c3e7b0730c840e7b6d357e7c077ae23ee9d9231e1c36729dac6b0cc0a
+frontend/src/lib/components/shell/SidebarNav.svelte file 0644 03af9835838eefe342d4e4474a7ea249eb7f114c14f49cb0394810b06144eccf
 frontend/src/lib/components/shell/TopBar.svelte file 0644 08d4242f8a5a31e51cb314fbab420c1e537ea2b8f2cfeaab2946072811c6730a
 frontend/src/lib/components/ui dir 0755
 frontend/src/lib/components/ui/Alert.svelte file 0644 ceaed7dbd52d958a7fee377aec7fbdc1705c35292e54589e89a78af110e43009
@@ -111,7 +111,7 @@ frontend/src/lib/forms.test.ts file 0644 799e32c8d45fa056c986a2ef0e97247f3aad66b
 frontend/src/lib/i18n.ts file 0644 dbca5ceb57ed5d1e909b2e703b3d0dc0575d92af807400808baa95df9dd00efb
 frontend/src/lib/navigation.test.ts file 0644 aa0aefb81d4bb2b73dc1c552b7461e14f7bd605c6590a8435994677cfeac5eb8
 frontend/src/lib/navigation.ts file 0644 6217362979c28c8b5e08003dba80883da036a063489676452ea39f28e5659f56
-frontend/src/lib/session.svelte.ts file 0644 48d620ecb7d2f579e6c08a92fa364953de85b8be10cf214b4d78b095255b8fb9
+frontend/src/lib/session.svelte.ts file 0644 f660130cbc1bac29655c3c00da02510876e1491498bf6054dbd1c73631760188
 frontend/src/lib/session.test.ts file 0644 3fc15d4b7ceaddcbb7a8942a00980b0f1a7a446af4e94cce1c2b74aef94ddef6
 frontend/src/lib/shell.svelte.ts file 0644 961dc9564d95fbd8e3a38ec2964ebbfd878824e73523104f49dc76efd29184a2
 frontend/src/lib/table dir 0755
@@ -251,13 +251,13 @@ internal/platform/httpapi/httpjson dir 0755
 internal/platform/httpapi/httpjson/json.go file 0644 a3044e4abe486e569be1f815539f66b6b99ce447d624469a18e9b965b8f94ac6
 internal/platform/httpapi/httpjson/json_test.go file 0644 ff605f3f45c132946f7c514cf62786d2d7f99cd1894a6c0d889f3fb29c186237
 internal/platform/httpapi/openapigen dir 0755
-internal/platform/httpapi/openapigen/openapi.gen.go file 0644 ffd8120ff0522427576cf56c74ea63da08f7ef063e80285fe2bab34dbd714bcc
+internal/platform/httpapi/openapigen/openapi.gen.go file 0644 d05a3865eb3adcd130603915e12418bc2a626b309903b2223c285b2ac7a5ac3a
 internal/platform/httpapi/problem dir 0755
 internal/platform/httpapi/problem/problem.go file 0644 ee6d8a7ecfaeb9b6ca381463f1b37ae4333d152893c16b6232f2a357d31ff408
 internal/platform/httpapi/problem/problem_test.go file 0644 58ec205b552c9bfb69ba04c2e13d263f39f27ef129023b78776f44321583be0c
 internal/platform/httpapi/router.go file 0644 2167a5c087950075c8c1e3be19cbe57e80140e3db22bf0fd98e0e0b0167c03ad
 internal/platform/httpapi/router_test.go file 0644 6504f432871bea9fe1b5a9d2a31f4de9285dafb6bf92a331ec243411da545999
-internal/platform/httpapi/session.go file 0644 eb68eb3cb96fb30fe2ee1a8e4b9679f8a7d1cdb60d68071d521277406929d708
+internal/platform/httpapi/session.go file 0644 c39c51395c1856b721427e4ac3343184df7f8d0d60499236e4b20ad21d3d5591
 internal/platform/httpapi/session_test.go file 0644 8c597199902f0910c5d9f206e71b536fc89f4b70976abcc7aa710e8443183355
 internal/platform/httpapi/system.go file 0644 a85380179f5cbc601c347db8ed88356e7a9846cec4249065d9f662195e7c1f4c
 internal/platform/httpapi/transport_test.go file 0644 882b12b5dd6407158f081bad7b800d84479d1e4bccbe7afdb57bf5f0a86473db

@@ -549,3 +549,40 @@ func TestGeneratedListPutsItsStateInTheURL(t *testing.T) {
 		t.Error("the list's empty state does not distinguish an empty collection from an empty search")
 	}
 }
+
+// TestGeneratedActionsArePermissionAwareAndConfirmDestruction pins the two
+// halves of M7-007: an action the session cannot perform is not offered, and
+// one that destroys something asks first.
+func TestGeneratedActionsArePermissionAwareAndConfirmDestruction(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, resourceOptions())
+
+	for _, path := range []string{
+		"frontend/src/routes/(app)/orders/+page.svelte",
+		"frontend/src/routes/(app)/orders/[id]/+page.svelte",
+	} {
+		body := content[path]
+		if !strings.Contains(body, "session.can('orders.manage')") {
+			t.Errorf("%s does not gate its actions on a permission", path)
+		}
+		// It has to say what it is and is not, or the next reader treats a
+		// hidden button as a security control.
+		if !strings.Contains(body, "courtesy") {
+			t.Errorf("%s does not say that hiding an action is a courtesy rather than a control", path)
+		}
+	}
+
+	detail := content["frontend/src/routes/(app)/orders/[id]/+page.svelte"]
+	for _, fragment := range []string{
+		"<ConfirmDialog",
+		"destructive",
+		// The question says what is lost. "Are you sure" tells somebody
+		// nothing they did not already believe.
+		"This removes the order permanently.",
+	} {
+		if !strings.Contains(detail, fragment) {
+			t.Errorf("the detail page lacks %q", fragment)
+		}
+	}
+}

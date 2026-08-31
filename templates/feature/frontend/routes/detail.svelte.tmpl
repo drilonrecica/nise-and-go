@@ -2,15 +2,42 @@
 <script lang="ts">
 	import { page } from '$app/state';
 
+	import { goto } from '$app/navigation';
+
 	import Button from '$lib/components/ui/Button.svelte';
+	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import ProblemAlert from '$lib/components/ui/ProblemAlert.svelte';
 	import Skeleton from '$lib/components/ui/Skeleton.svelte';
-	import { get{{.Type}}, type {{.Type}} } from '$lib/features/{{.Singular}}/api';
+	import { toaster } from '$lib/components/ui/toast.svelte';
+	import { delete{{.Type}}, get{{.Type}}, type {{.Type}} } from '$lib/features/{{.Singular}}/api';
+	import { session } from '$lib/session.svelte';
 
 	const id = $derived(page.params.id ?? '');
 
 	let record = $state<{{.Type}} | null>(null);
 	let failure = $state<unknown>(null);
+	let confirmingDelete = $state(false);
+	let deleting = $state(false);
+
+	// An action the session cannot perform is not offered. It is a courtesy —
+	// the server checks the same permission in the use case and refuses a
+	// caller who never ran this code — so never treat it as the control.
+	const mayManage = $derived(session.can('{{.PermissionManageValue}}'));
+
+	async function remove() {
+		deleting = true;
+		try {
+			await delete{{.Type}}(id);
+			confirmingDelete = false;
+			toaster.success('{{.Title}} deleted');
+			await goto('/{{.Plural}}');
+		} catch (error) {
+			confirmingDelete = false;
+			failure = error;
+		} finally {
+			deleting = false;
+		}
+	}
 
 	async function load() {
 		failure = null;
@@ -44,7 +71,10 @@
 		<div class="flex flex-wrap items-start justify-between gap-3">
 			<h1 class="text-2xl font-semibold tracking-tight text-text">{record.name}</h1>
 			<div class="flex items-center gap-2">
-				<Button href="/{{.Plural}}/{id}/edit">Edit</Button>
+				{#if mayManage}
+					<Button href="/{{.Plural}}/{id}/edit">Edit</Button>
+					<Button variant="danger" onclick={() => (confirmingDelete = true)}>Delete</Button>
+				{/if}
 			</div>
 		</div>
 
@@ -60,3 +90,18 @@
 		</dl>
 	{/if}
 </div>
+
+<!--
+	A destructive action asks first, and the question says what is lost rather
+	than "are you sure": somebody who reads "are you sure" learns nothing they
+	did not already believe.
+-->
+<ConfirmDialog
+	bind:open={confirmingDelete}
+	title="Delete this {{.Singular}}?"
+	description="This removes the {{.Singular}} permanently. Anything referring to it will stop finding it."
+	confirmLabel="Delete {{.Singular}}"
+	destructive
+	pending={deleting}
+	onconfirm={remove}
+/>

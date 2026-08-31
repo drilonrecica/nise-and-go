@@ -48,6 +48,19 @@ class Session {
 	}
 
 	/**
+	 * Whether this session holds a permission.
+	 *
+	 * Use it to hide an action the server would refuse — a courtesy, so
+	 * somebody is not offered a button that answers "no". It is never a
+	 * control: the server checks the same permission in the use case, and a
+	 * caller who never runs this code gets the same refusal. Hiding a control
+	 * is not securing it.
+	 */
+	can(permission: string): boolean {
+		return this.#current?.permissions.includes(permission) ?? false;
+	}
+
+	/**
 	 * Ask the server who is signed in.
 	 *
 	 * A 401 is an answer, not a failure: it means nobody is, and it is the

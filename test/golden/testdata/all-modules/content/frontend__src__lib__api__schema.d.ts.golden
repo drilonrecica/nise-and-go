@@ -181,6 +181,8 @@ export interface components {
         /** @description The signed-in account and the session carrying it. The session token itself is never in a body: it is written to a hardened cookie and exists nowhere else. */
         Session: {
             account: components["schemas"]["Account"];
+            /** @description Every permission this session holds, so the interface can hide an action the server would refuse. It is a courtesy and never a control: the server checks the same permissions in the use case, and a caller who ignores this list gets the same refusal. */
+            permissions: string[];
             session_id: string;
             /** Format: date-time */
             expires_at: string;
