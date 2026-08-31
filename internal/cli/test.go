@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/drilonrecica/nise-and-go/internal/cli/clierr"
 	"github.com/drilonrecica/nise-and-go/internal/cli/output"
+	"github.com/drilonrecica/nise-and-go/internal/dev"
 	"github.com/drilonrecica/nise-and-go/internal/recipe"
 )
 
@@ -190,12 +192,39 @@ func (f *lineForwarder) Flush() {
 	}
 }
 
+// suiteStopGrace is how long a suite gets to exit after the interrupt
+// before it is killed outright.
+//
+// It is deliberately shorter than `nise dev`'s six seconds. A dev server
+// stopping has real work to do — flush a log, close a database pool,
+// release a port it will need again a second later. A test suite being
+// interrupted has none of that: the developer has already decided the run
+// is over, and every extra second is a terminal that has stopped
+// responding to the key they just pressed. Two seconds is enough for `go
+// test` to tear down its own child test binaries and write the last of
+// their output, and short enough that a suite ignoring the signal
+// entirely does not read as a hang.
+const suiteStopGrace = 2 * time.Second
+
 // runSuite executes plan (if runnable) with extraArgs appended to its own
 // command, streaming its combined stdout/stderr through out one line at a
-// time as it runs. ctx governs cancellation: exec.CommandContext kills the
-// child the moment ctx is done, which is exactly the mechanism that keeps
-// a Ctrl-C from orphaning a running go test or pnpm process (see
-// testCommand's signal.NotifyContext wiring).
+// time as it runs.
+//
+// ctx governs cancellation, and the mechanism matters more than it looks.
+// The obvious spelling — exec.CommandContext, whose default cancel kills
+// the child — is not enough, because the process nise starts is rarely the
+// process doing the work: `go test` runs compiled test binaries as its own
+// children, and `pnpm test` forks a runner. Killing only the direct child
+// leaves those grandchildren running, still holding the write end of the
+// pipe this function reads, so Wait blocks until they finish on their own.
+// A Ctrl-C then appears to do nothing at all for as long as the suite would
+// have taken anyway.
+//
+// Suites are therefore started through dev.Runner, the same abstraction
+// `nise dev` uses for exactly the same reason: each child gets a process
+// group of its own, and Stop signals the group, so a suite's descendants
+// are terminated with it. Its contract — "Stop leaves nothing running" — is
+// the property this function needs.
 func runSuite(ctx context.Context, plan suitePlan, extraArgs []string, out output.Writer) suiteResult {
 	if !plan.Runnable {
 		return suiteResult{Name: plan.Name, Status: string(statusSkipped), Reason: plan.SkipReason}
@@ -205,38 +234,61 @@ func runSuite(ctx context.Context, plan suitePlan, extraArgs []string, out outpu
 	}
 
 	argv := append(append([]string{}, plan.Argv...), extraArgs...)
-	// #nosec G204 -- argv[0] is always one of this file's own fixed
-	// literals ("go" or "pnpm"); argv[1:] is this file's own fixed flags
-	// plus, for the Go suite only, args the user explicitly passed after
-	// a literal "--" on the nise command line (docs/cli-output.md's own
-	// documented `--` passthrough contract) — never unvalidated input
-	// reaching an untraced path.
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir = plan.Dir
 	stdout := &lineForwarder{out: out}
 	stderr := &lineForwarder{out: out}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+
+	result := suiteResult{
+		Name:    plan.Name,
+		Status:  string(statusFailed),
+		Command: plan.describe(extraArgs),
+	}
 
 	start := time.Now()
-	runErr := cmd.Run()
-	duration := time.Since(start)
+	// Argv[0] is always one of this file's own fixed literals ("go" or
+	// "pnpm"); Argv[1:] is this file's own fixed flags plus, for the Go
+	// suite only, args the user explicitly passed after a literal "--" on
+	// the nise command line (docs/cli-output.md's own documented `--`
+	// passthrough contract) — never unvalidated input reaching an untraced
+	// path.
+	proc, startErr := dev.OSRunner{}.Start(dev.Spec{
+		Name:   plan.Name,
+		Argv:   argv,
+		Dir:    plan.Dir,
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+	if startErr != nil {
+		result.DurationSeconds = time.Since(start).Seconds()
+		return result
+	}
+
+	waited := make(chan error, 1)
+	go func() { waited <- proc.Wait() }()
+
+	var runErr error
+	select {
+	case runErr = <-waited:
+	case <-ctx.Done():
+		// Stop returns only once Wait has observed the exit, so by the
+		// time it returns the group is gone and the pipes are closed.
+		_ = proc.Stop(suiteStopGrace)
+		runErr = <-waited
+	}
+
+	result.DurationSeconds = time.Since(start).Seconds()
 	stdout.Flush()
 	stderr.Flush()
 
-	status := statusPassed
-	if runErr != nil {
-		status = statusFailed
+	if runErr == nil {
+		result.Status = string(statusPassed)
+		zero := 0
+		result.ExitCode = &zero
+		return result
 	}
 
-	result := suiteResult{
-		Name:            plan.Name,
-		Status:          string(status),
-		Command:         plan.describe(extraArgs),
-		DurationSeconds: duration.Seconds(),
-	}
-	if cmd.ProcessState != nil {
-		ec := cmd.ProcessState.ExitCode()
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) {
+		ec := exitErr.ExitCode()
 		result.ExitCode = &ec
 	}
 	return result

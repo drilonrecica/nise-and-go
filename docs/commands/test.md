@@ -129,14 +129,26 @@ suite's result is always reported, in both modes. The overall exit code:
 ## Signal handling
 
 `nise test` installs its own `SIGINT` (Ctrl-C) handling for the duration
-of the run. A currently running suite's child process is killed
-immediately — it is never left running after `nise test` itself exits —
-and any suite that had not started yet is reported `skipped` with the
-reason "interrupted before this suite started", rather than silently
+of the run. Any suite that had not started yet is reported `skipped` with
+the reason "interrupted before this suite started", rather than silently
 omitted. A second Ctrl-C after `nise test` has already finished handling
 the first behaves normally (restores the default terminate-the-process
 disposition), so an unresponsive nise process is never a way to get stuck
 past a single Ctrl-C.
+
+A currently running suite is stopped the same way `nise dev` stops a
+child, and for the same reason: each suite runs in a process group of its
+own, and the interrupt is delivered to the **group**, not just to the
+process nise started. That distinction is the whole of it in practice —
+`go test` runs compiled test binaries as its own children and `pnpm test`
+forks a runner, so signalling only the direct child would leave the actual
+work running and `nise test` waiting on its output. The group gets
+`SIGTERM` first, and is killed outright if it has not exited two seconds
+later. Nothing nise started is left running after `nise test` exits.
+
+On Windows there is no `SIGTERM`, so — exactly as documented for
+[`nise dev`](dev.md) — the child is ended directly and the two-second
+grace period has no effect.
 
 ## Safety notes
 
