@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -51,6 +52,25 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 
+	if len(args) > 0 && args[0] == "password" {
+		request, jsonOutput, err := parsePasswordArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		result, err := app.RunPasswordBenchmark(request)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			if err := json.NewEncoder(stdout).Encode(result); err != nil {
+				return fmt.Errorf("encoding password benchmark result: %w", err)
+			}
+			return nil
+		}
+		_, err = fmt.Fprintln(stdout, result.String())
+		return err
+	}
+
 	fs := flag.NewFlagSet("{{.AppName}}", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	mode := fs.String("mode", "", `process mode: "all", "web", or "worker" (default: $APP_MODE, or "all")`)
@@ -58,9 +78,47 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("parse process flags: %w", err)
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected argument %q; use db migrate or db status for database commands", fs.Arg(0))
+		return fmt.Errorf("unexpected argument %q; use db migrate, db status, or password benchmark", fs.Arg(0))
 	}
 	return app.Run(ctx, *mode)
+}
+
+// parsePasswordArgs parses the password command surface. Only one action
+// exists; naming it anyway keeps room for later ones without changing how this
+// one is invoked.
+func parsePasswordArgs(args []string) (request app.PasswordBenchmarkRequest, jsonOutput bool, err error) {
+	if len(args) == 0 {
+		return app.PasswordBenchmarkRequest{}, false, fmt.Errorf("password action is required; use password benchmark")
+	}
+	if args[0] != "benchmark" {
+		return app.PasswordBenchmarkRequest{}, false, fmt.Errorf("unknown password action %q; use password benchmark", args[0])
+	}
+
+	fs := flag.NewFlagSet("password benchmark", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	memory := fs.Uint("memory", app.DefaultBenchmarkMemoryKiB, "argon2id memory cost in KiB, held fixed while passes are searched")
+	parallelism := fs.Uint("parallelism", app.DefaultBenchmarkParallelism, "argon2id degree of parallelism, held fixed")
+	target := fs.Duration("target", app.DefaultBenchmarkTarget, "per-login time budget the recommendation must stay inside")
+	samples := fs.Int("samples", app.DefaultBenchmarkSamples, "evaluations per measurement; the median is reported")
+	fs.BoolVar(&jsonOutput, "json", false, "write one JSON result")
+	if err := fs.Parse(args[1:]); err != nil {
+		return app.PasswordBenchmarkRequest{}, false, fmt.Errorf("parse password benchmark flags: %w", err)
+	}
+	if fs.NArg() != 0 {
+		return app.PasswordBenchmarkRequest{}, false, fmt.Errorf("password benchmark takes no positional arguments, found %q", fs.Arg(0))
+	}
+	if *memory > math.MaxUint32 {
+		return app.PasswordBenchmarkRequest{}, false, fmt.Errorf("-memory %d is larger than argon2id accepts", *memory)
+	}
+	if *parallelism > math.MaxUint8 {
+		return app.PasswordBenchmarkRequest{}, false, fmt.Errorf("-parallelism %d is larger than argon2id accepts", *parallelism)
+	}
+	return app.PasswordBenchmarkRequest{
+		MemoryKiB:   uint32(*memory),
+		Parallelism: uint8(*parallelism),
+		Target:      *target,
+		Samples:     *samples,
+	}, jsonOutput, nil
 }
 
 func parseDatabaseArgs(args []string) (action string, jsonOutput bool, err error) {

@@ -5,6 +5,9 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"{{.ModulePath}}/internal/app"
 )
 
 func TestParseDatabaseArgs(t *testing.T) {
@@ -40,5 +43,86 @@ func TestParseDatabaseArgs(t *testing.T) {
 				t.Errorf("result = %q/%v, want %q/%v", action, jsonOutput, tc.wantAction, tc.wantJSON)
 			}
 		})
+	}
+}
+
+func TestParsePasswordArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		args        []string
+		wantMemory  uint32
+		wantTarget  time.Duration
+		wantSamples int
+		wantJSON    bool
+		wantError   string
+	}{
+		{
+			name:        "defaults",
+			args:        []string{"benchmark"},
+			wantMemory:  app.DefaultBenchmarkMemoryKiB,
+			wantTarget:  app.DefaultBenchmarkTarget,
+			wantSamples: app.DefaultBenchmarkSamples,
+		},
+		{
+			name:        "explicit",
+			args:        []string{"benchmark", "--memory", "65536", "--target", "500ms", "--samples", "5", "--json"},
+			wantMemory:  65536,
+			wantTarget:  500 * time.Millisecond,
+			wantSamples: 5,
+			wantJSON:    true,
+		},
+		{name: "missing action", wantError: "password benchmark"},
+		{name: "unknown action", args: []string{"rotate"}, wantError: "unknown password action"},
+		{name: "extra argument", args: []string{"benchmark", "extra"}, wantError: "takes no positional arguments"},
+		{name: "unparseable duration", args: []string{"benchmark", "--target", "soon"}, wantError: "parse password benchmark flags"},
+		{name: "memory beyond argon2", args: []string{"benchmark", "--memory", "4294967296"}, wantError: "larger than argon2id accepts"},
+		{name: "parallelism beyond argon2", args: []string{"benchmark", "--parallelism", "256"}, wantError: "larger than argon2id accepts"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			request, jsonOutput, err := parsePasswordArgs(tc.args)
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("error = %v, want text %q", err, tc.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parsePasswordArgs: %v", err)
+			}
+			if request.MemoryKiB != tc.wantMemory || request.Target != tc.wantTarget || request.Samples != tc.wantSamples {
+				t.Errorf("request = %#v", request)
+			}
+			if jsonOutput != tc.wantJSON {
+				t.Errorf("json = %v, want %v", jsonOutput, tc.wantJSON)
+			}
+		})
+	}
+}
+
+func TestPasswordBenchmarkNeedsNoConfiguration(t *testing.T) {
+	// Not parallel: it deliberately breaks the process environment to prove
+	// the benchmark does not read it. The recommendation depends on this
+	// host's CPU and memory and on nothing else, so the command must run on
+	// a production machine without production credentials.
+	t.Setenv("DATABASE_URL", "not a connection string")
+	t.Setenv("APP_ENV", "not an environment")
+	result, err := app.RunPasswordBenchmark(app.PasswordBenchmarkRequest{
+		MemoryKiB:   app.DefaultBenchmarkMemoryKiB,
+		Parallelism: 1,
+		Target:      100 * time.Millisecond,
+		Samples:     1,
+	})
+	if err != nil {
+		t.Skipf("skipping: this machine cannot hash at the accepted floor within the budget: %v", err)
+	}
+	if result.Iterations < 1 || result.MeasuredMs > result.TargetMillis {
+		t.Fatalf("result = %#v", result)
+	}
+	if !strings.Contains(result.String(), "recommended:") || !strings.Contains(result.String(), "current policy:") {
+		t.Errorf("report lacks its recommendation or the current policy:\n%s", result.String())
 	}
 }

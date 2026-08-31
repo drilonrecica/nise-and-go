@@ -131,6 +131,7 @@ type templateData struct {
 	SQLCVersion        string
 	GooseVersion       string
 	OAPICodegenVersion string
+	XCryptoVersion     string
 	GoVersion          string
 	GoImageTag         string
 	NodeVersion        string
@@ -162,6 +163,7 @@ func newTemplateData(opts Options) templateData {
 		SQLCVersion:        SQLCVersion,
 		GooseVersion:       GooseVersion,
 		OAPICodegenVersion: OAPICodegenVersion,
+		XCryptoVersion:     XCryptoVersion,
 		GoVersion:          GoDirective,
 		GoImageTag:         GoImageTag,
 		NodeVersion:        NodeVersion,

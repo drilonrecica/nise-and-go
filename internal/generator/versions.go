@@ -37,6 +37,11 @@ const (
 	// declares the command as a Go tool for explicit operator workflows.
 	GooseVersion = "v3.27.3"
 
+	// XCryptoVersion pins golang.org/x/crypto, reached by generated
+	// applications through runtime/password's Argon2id hashing. It is the
+	// one non-standard-library dependency any runtime package has.
+	XCryptoVersion = "v0.54.0"
+
 	// OAPICodegenVersion pins the generator that turns the authoritative
 	// OpenAPI document into strict chi server bindings.
 	OAPICodegenVersion = "v2.8.0"

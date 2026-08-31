@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-27
-- **Amended by:** [ADR 0015](0015-use-case-owned-transactions.md), [ADR 0016](0016-authenticated-cursor-pagination.md)
+- **Amended by:** [ADR 0015](0015-use-case-owned-transactions.md), [ADR 0016](0016-authenticated-cursor-pagination.md), [ADR 0017](0017-security-primitives-in-runtime.md)
 
 ## Context
 
@@ -28,6 +28,7 @@ Six milestone-2 tasks create packages here at roughly the same time. They need t
 | `runtime/secure` | Security headers and Content Security Policy (ADR 0013, pending) |
 | `runtime/transaction` | Driver-independent use-case transaction lifecycle and closed transaction options (ADR 0015) |
 | `runtime/pagination` | Authenticated versioned cursor tokens, key rotation, cursor request parsing, and the separate offset reporting contract (ADR 0016) |
+| `runtime/password` | Argon2id hashing, versioned parameter sets, rehash detection, and parameter benchmarking (ADR 0017) |
 
 No other package may be added to `runtime/` without an ADR.
 
