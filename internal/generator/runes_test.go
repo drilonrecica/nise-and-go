@@ -85,7 +85,7 @@ func TestGeneratedProjectEnforcesRunesOnly(t *testing.T) {
 	pkg := content["frontend/package.json"]
 	for _, fragment := range []string{
 		`"check:runes": "node scripts/check-runes.mjs src"`,
-		`"check": "pnpm run api:check && pnpm run check:runes &&`,
+		`"check": "pnpm run api:check && pnpm run messages:compile && pnpm run check:runes &&`,
 	} {
 		if !strings.Contains(pkg, fragment) {
 			t.Errorf("frontend/package.json lacks %q", fragment)

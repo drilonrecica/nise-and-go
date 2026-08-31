@@ -110,6 +110,8 @@ Messages are compiled, not looked up. `messages/en.json` becomes real functions 
 
 Adding a language is two edits — a locale in `project.inlang/settings.json` and a `messages/<locale>.json` beside the English one — and nothing in the application changes. That is the point of compiling rather than resolving at runtime.
 
+The message-format plugin is named as a local `node_modules` path rather than the CDN URL inlang's own documentation uses. A build step that fetches an unpinned script from a content delivery network is a supply-chain surface; a lockfile entry is not. This repository's no-network conformance suite is what caught the difference.
+
 There is no locale in the URL. This is one single-page application served from one path by the Go binary; a URL strategy would mean every route existed once per language and every link had to know which one it was in. The choice is stored in the browser, falling back to what the browser asks for and then to the base locale.
 
 Choosing a language reloads the page, which is correct rather than a limitation: messages are compiled into the modules that use them, so a language change is a different bundle rather than a different value, and the reload is what makes `lang` on `<html>` right for the whole document.

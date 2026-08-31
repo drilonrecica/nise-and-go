@@ -130,6 +130,13 @@ func TestEveryGeneratedFileDeclaresItsOwnership(t *testing.T) {
 		".nise/architecture.json": true,
 		"frontend/package.json":   true,
 		"frontend/tsconfig.json":  true,
+		// JSON carries no comment syntax, so these declare ownership by path
+		// like a feature's queries/ does (ADR 0009). messages/ and
+		// project.inlang/ are the application's own translation sources; a
+		// header inside either would be read by the message-format plugin as
+		// a message or a setting.
+		"frontend/messages/en.json":             true,
+		"frontend/project.inlang/settings.json": true,
 	}
 
 	for _, f := range files {
