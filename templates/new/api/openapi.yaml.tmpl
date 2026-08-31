@@ -19,8 +19,377 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/APIRoot'
+  /session:
+    get:
+      operationId: getCurrentSession
+      summary: Describe the session making this request
+      responses:
+        "200":
+          description: The signed-in account and its session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        "401":
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: signIn
+      summary: Exchange an address and password for a session
+      description: >-
+        A correct password may finish the sign-in or open a second-factor
+        challenge. Both are the same 200 response carrying a required status
+        discriminator, so a client cannot read the body without deciding which
+        of the two happened; `session` and `challenge` are each present only
+        for their own status.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignInRequest'
+      responses:
+        "200":
+          description: The password was correct. Read status to learn what to do next.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignInResult'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "429":
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: signOut
+      summary: End the session making this request
+      responses:
+        "204":
+          description: The session is revoked and its cookies are cleared.
+        "401":
+          $ref: '#/components/responses/Problem'
+  /session/second-factor:
+    post:
+      operationId: completeSecondFactor
+      summary: Finish a sign-in that opened a second-factor challenge
+      description: >-
+        The challenge token identifies the unfinished sign-in; it is not a
+        session and authenticates nothing else. An application with no
+        second-factor module refuses this operation, which is why the
+        operation exists in every application: enabling the module is a
+        recompile rather than a change to this contract.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecondFactorRequest'
+      responses:
+        "200":
+          description: The second step verified and a session was issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "429":
+          $ref: '#/components/responses/Problem'
+  /sessions:
+    get:
+      operationId: listSessions
+      summary: List the signed-in account's own sessions
+      responses:
+        "200":
+          description: Every live session this account holds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSummaryCollection'
+        "401":
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: revokeOtherSessions
+      summary: End every session except the one making this request
+      responses:
+        "200":
+          description: How many sessions were ended.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevocationResult'
+        "401":
+          $ref: '#/components/responses/Problem'
+  /sessions/{sessionId}:
+    delete:
+      operationId: revokeSession
+      summary: End one of the signed-in account's sessions
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      responses:
+        "204":
+          description: The session is revoked.
+        "401":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+  /account/password:
+    post:
+      operationId: changePassword
+      summary: Change the signed-in account's password
+      description: >-
+        The current password is the proof, and every other session is ended so
+        that a password change is also a way to evict whoever else is holding
+        one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        "204":
+          description: The password was changed and other sessions were ended.
+        "401":
+          $ref: '#/components/responses/Problem'
+        "422":
+          $ref: '#/components/responses/Problem'
+  /invitations/accept:
+    post:
+      operationId: acceptInvitation
+      summary: Turn an invitation into an account
+      description: >-
+        The token is single-use and is spent by this call. It answers with the
+        address the account was created for, so the sign-in form that follows
+        can be filled in without the caller having to know it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcceptInvitationRequest'
+      responses:
+        "201":
+          description: The account was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptedInvitation'
+        "400":
+          $ref: '#/components/responses/Problem'
+        "422":
+          $ref: '#/components/responses/Problem'
 components:
   schemas:
+    Account:
+      type: object
+      additionalProperties: false
+      description: One identity, without its credential.
+      required:
+        - id
+        - email
+        - status
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[A-Za-z0-9-]+$'
+        email:
+          type: string
+          maxLength: 320
+        status:
+          type: string
+          enum:
+            - active
+            - disabled
+    Session:
+      type: object
+      additionalProperties: false
+      description: >-
+        The signed-in account and the session carrying it. The session token
+        itself is never in a body: it is written to a hardened cookie and
+        exists nowhere else.
+      required:
+        - account
+        - session_id
+        - expires_at
+        - proven_at
+      properties:
+        account:
+          $ref: '#/components/schemas/Account'
+        session_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[A-Za-z0-9-]+$'
+        expires_at:
+          type: string
+          format: date-time
+        proven_at:
+          type: string
+          format: date-time
+          description: When the holder last proved their identity with a password.
+    SignInResult:
+      type: object
+      additionalProperties: false
+      description: >-
+        What a correct password produced. status is required and is the only
+        member a client may read unconditionally.
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - signed_in
+            - second_factor_required
+        session:
+          $ref: '#/components/schemas/Session'
+        challenge:
+          $ref: '#/components/schemas/SecondFactorChallenge'
+    SecondFactorChallenge:
+      type: object
+      additionalProperties: false
+      description: >-
+        An unfinished sign-in. The token identifies that attempt and nothing
+        else: it is not a session, it authenticates no other request, and it is
+        spent by the first correct answer.
+      required:
+        - token
+        - expires_at
+      properties:
+        token:
+          type: string
+          maxLength: 512
+        expires_at:
+          type: string
+          format: date-time
+    SignInRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          minLength: 3
+          maxLength: 320
+        password:
+          type: string
+          minLength: 1
+          maxLength: 4096
+    SecondFactorRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - challenge_token
+        - code
+      properties:
+        challenge_token:
+          type: string
+          minLength: 1
+          maxLength: 512
+        code:
+          type: string
+          minLength: 1
+          maxLength: 64
+    SessionSummary:
+      type: object
+      additionalProperties: false
+      description: One row of the account's own session list.
+      required:
+        - id
+        - created_at
+        - last_seen_at
+        - expires_at
+        - current
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[A-Za-z0-9-]+$'
+        created_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        current:
+          type: boolean
+          description: Whether this is the session making the request.
+    SessionSummaryCollection:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - page
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionSummary'
+        page:
+          $ref: '#/components/schemas/Page'
+    RevocationResult:
+      type: object
+      additionalProperties: false
+      required:
+        - revoked
+      properties:
+        revoked:
+          type: integer
+          format: int64
+          minimum: 0
+    ChangePasswordRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - current_password
+        - new_password
+      properties:
+        current_password:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        new_password:
+          type: string
+          minLength: 1
+          maxLength: 4096
+    AcceptInvitationRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - token
+        - password
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 512
+        password:
+          type: string
+          minLength: 1
+          maxLength: 4096
+    AcceptedInvitation:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          maxLength: 320
     APIRoot:
       type: object
       additionalProperties: false

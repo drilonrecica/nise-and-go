@@ -163,11 +163,6 @@ func Run(ctx context.Context, modeOverride string) error {
 	if err != nil {
 		return fmt.Errorf("loading the known-compromised password list: %w", err)
 	}
-	// Constructed here so the object graph is complete and readable, and so a
-	// missing dependency is a startup failure rather than a nil dereference
-	// on the first login. The HTTP surface that uses them arrives with the
-	// authentication screens.
-	_, _ = credentials, compromisedPasswords
 	sessionCookies, err := httpauth.NewCookies(cfg.SessionCookie)
 	if err != nil {
 		return fmt.Errorf("building the session cookie boundary: %w", err)
@@ -223,7 +218,19 @@ func Run(ctx context.Context, modeOverride string) error {
 	if err != nil {
 		return fmt.Errorf("building the document anti-forgery guard: %w", err)
 	}
-	apiServer, err := httpapi.NewServer(cursors)
+	invitations, err := auth.NewInvitations(transactor, credentials, roles, compromisedPasswords, auth.DefaultInvitationLifetime)
+	if err != nil {
+		return fmt.Errorf("building the invitation use case: %w", err)
+	}
+	apiServer, err := httpapi.NewServer(httpapi.ServerDeps{
+		Cursors:     cursors,
+		Credentials: credentials,
+		Sessions:    sessions,
+		Accounts:    accounts,
+		Invitations: invitations,
+		Cookies:     sessionCookies,
+		Compromised: compromisedPasswords,
+	})
 	if err != nil {
 		return fmt.Errorf("building the API adapter: %w", err)
 	}

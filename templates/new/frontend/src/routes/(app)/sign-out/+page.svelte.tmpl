@@ -1,0 +1,26 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { goto } from '$app/navigation';
+
+	import Spinner from '$lib/components/ui/Spinner.svelte';
+	import { session } from '$lib/session.svelte';
+
+	// A page rather than a link that posts, because signing out is a
+	// destination the account menu can link to and a browser can bookmark. The
+	// request itself is a DELETE the client sends with the anti-forgery header,
+	// so following a link from another site cannot end anybody's session.
+	$effect(() => {
+		void (async () => {
+			await session.signOut();
+			await goto('/sign-in', { replaceState: true });
+		})();
+	});
+</script>
+
+<svelte:head>
+	<title>Signing out · {{.AppName}}</title>
+</svelte:head>
+
+<div class="flex min-h-60 items-center justify-center">
+	<Spinner label="Signing out" />
+</div>

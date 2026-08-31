@@ -1,0 +1,83 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+
+	import Button from '$lib/components/ui/Button.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import Input from '$lib/components/ui/Input.svelte';
+	import ProblemAlert from '$lib/components/ui/ProblemAlert.svelte';
+	import { safeNext, session } from '$lib/session.svelte';
+
+	// The challenge token travels in the URL because this step is a separate
+	// page and a reload must not lose it. It is not a session: it identifies
+	// one unfinished sign-in, it authenticates nothing else, and the first
+	// correct answer spends it.
+	const token = $derived(page.url.searchParams.get('token') ?? '');
+
+	let code = $state('');
+	let pending = $state(false);
+	let failure = $state<unknown>(null);
+
+	async function submit(event: SubmitEvent) {
+		event.preventDefault();
+		pending = true;
+		failure = null;
+		try {
+			await session.completeSecondFactor(token, code);
+			await goto(safeNext(page.url.searchParams.get('next')));
+		} catch (error) {
+			failure = error;
+			code = '';
+		} finally {
+			pending = false;
+		}
+	}
+</script>
+
+<svelte:head>
+	<title>Second step · {{.AppName}}</title>
+</svelte:head>
+
+<div class="rounded-lg border border-line bg-surface p-6 shadow-raised">
+	<h1 class="text-lg font-semibold tracking-tight text-text">One more step</h1>
+	<p class="mt-1 text-sm text-text-muted">
+		Enter the current code from your authenticator, or one of your recovery codes.
+	</p>
+
+	{#if !token}
+		<div class="mt-4">
+			<ProblemAlert error={new Error('missing challenge')} />
+		</div>
+		<a class="mt-4 inline-block text-sm text-primary underline underline-offset-4" href="/sign-in"
+			>Start again</a
+		>
+	{:else}
+		{#if failure}
+			<div class="mt-4">
+				<ProblemAlert error={failure} />
+			</div>
+		{/if}
+
+		<form class="mt-5 space-y-4" onsubmit={submit}>
+			<Field id="code" label="Code" required>
+				{#snippet children({ describedBy, invalid })}
+					<Input
+						id="code"
+						name="code"
+						inputmode="numeric"
+						autocomplete="one-time-code"
+						required
+						bind:value={code}
+						{describedBy}
+						{invalid}
+					/>
+				{/snippet}
+			</Field>
+
+			<Button type="submit" variant="primary" size="lg" loading={pending} loadingLabel="Checking" class="w-full">
+				Continue
+			</Button>
+		</form>
+	{/if}
+</div>

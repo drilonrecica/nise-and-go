@@ -4,6 +4,7 @@
 package problem
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -107,7 +108,62 @@ var (
 		"/problems/internal-server-error", "Internal Server Error", http.StatusInternalServerError,
 		"The server could not complete the request.", "internal_server_error",
 	)
+	authenticationRequired = mustDefinition(
+		"/problems/authentication-required", "Authentication Required", http.StatusUnauthorized,
+		"This request needs a signed-in session.", "authentication_required",
+	)
+	invalidCredentials = mustDefinition(
+		"/problems/invalid-credentials", "Invalid Credentials", http.StatusUnauthorized,
+		"The address and password do not match an enabled account.", "invalid_credentials",
+	)
+	secondFactorRequired = mustDefinition(
+		"/problems/second-factor-required", "Second Factor Required", http.StatusUnauthorized,
+		"The sign-in is not finished: answer the second-factor challenge.", "second_factor_required",
+	)
+	tooManyAttempts = mustDefinition(
+		"/problems/too-many-attempts", "Too Many Attempts", http.StatusTooManyRequests,
+		"Too many attempts. Try again later.", "too_many_attempts",
+	)
+	invitationInvalid = mustDefinition(
+		"/problems/invitation-invalid", "Invitation Invalid", http.StatusBadRequest,
+		"That invitation is not valid. Ask for a new one.", "invitation_invalid",
+	)
+	passwordRejected = mustDefinition(
+		"/problems/password-rejected", "Password Rejected", http.StatusUnprocessableEntity,
+		"That password cannot be used. Choose a longer one that is not in a known breach.", "password_rejected",
+	)
 )
+
+// AuthenticationRequired returns the missing-session refusal. It is separate
+// from PermissionDenied because the two ask the caller for different things:
+// one says sign in, the other says you have signed in and still may not.
+func AuthenticationRequired() Definition { return authenticationRequired }
+
+// InvalidCredentials returns the sign-in refusal. It is deliberately one code
+// for an address with no account, a wrong password, and a disabled account:
+// each of those is a fact an unauthenticated caller would like to learn, and a
+// sign-in form is the cheapest place to ask. Which one happened is in the
+// audit record.
+func InvalidCredentials() Definition { return invalidCredentials }
+
+// SecondFactorRequired returns the unfinished sign-in. It is not a failure the
+// caller should retry with different credentials: the password was right, and
+// the response carries the challenge to answer.
+func SecondFactorRequired() Definition { return secondFactorRequired }
+
+// TooManyAttempts returns the throttle refusal.
+func TooManyAttempts() Definition { return tooManyAttempts }
+
+// InvitationInvalid returns the enrollment refusal. Like InvalidCredentials it
+// is one code for every reason — unknown, already accepted, expired, revoked —
+// because an invitation token is a credential and telling a holder which of
+// their guesses was structurally valid is how the guessing gets cheaper.
+func InvitationInvalid() Definition { return invitationInvalid }
+
+// PasswordRejected returns the password-policy refusal. It is a 422 rather
+// than a 400 because the request is syntactically fine and semantically
+// refused, and the caller can fix it by choosing another password.
+func PasswordRejected() Definition { return passwordRejected }
 
 // InvalidRequest returns the generic request-validation failure.
 func InvalidRequest() Definition { return invalidRequest }
@@ -166,6 +222,66 @@ func UnsupportedMediaType() Definition { return unsupportedMediaType }
 
 // InternalServerError returns the generic server failure.
 func InternalServerError() Definition { return internalServerError }
+
+// Error is a failure that names the public problem to answer with.
+//
+// It exists because a strict OpenAPI handler returns (response, error) and has
+// no ResponseWriter: without it, every handler that wants to answer 401 has to
+// construct a per-operation typed response object, and the one that forgets
+// answers 500. Returning Fail(problem.AuthenticationRequired()) from anywhere
+// in a handler's call stack produces the right public response with this
+// request's own identifiers.
+//
+// The cause is kept for the server's log and is unreachable from the wire: the
+// payload is built from the Definition alone.
+type Error struct {
+	definition Definition
+	cause      error
+}
+
+// Fail returns an error that answers with definition.
+func Fail(definition Definition) error {
+	return &Error{definition: definition}
+}
+
+// Wrap returns an error that answers with definition and keeps cause for the
+// server's own record.
+func Wrap(definition Definition, cause error) error {
+	return &Error{definition: definition, cause: cause}
+}
+
+// Error implements error. It names the public code, never the cause: this
+// string reaches the server's log, and a log line quoting a wrapped internal
+// error beside a public code is how the two get confused.
+func (e *Error) Error() string {
+	return fmt.Sprintf("request failed with problem %s", e.definition.code)
+}
+
+// Unwrap exposes the cause to errors.Is and errors.As, and to nothing that
+// writes a response.
+func (e *Error) Unwrap() error { return e.cause }
+
+// Definition returns the public problem this error answers with.
+func (e *Error) Definition() Definition { return e.definition }
+
+// ResponseHandler builds the strict server's response-error handler: it
+// answers with the problem an *Error names, and with fallback for anything
+// else.
+//
+// An error that is not an *Error is a defect rather than a decision — a
+// database that went away, a nil dereference recovered upstream — and
+// answering those with the caller's own choice of status would let one leak
+// as a 404 the caller then trusts.
+func ResponseHandler(fallback Definition) func(http.ResponseWriter, *http.Request, error) {
+	return func(w http.ResponseWriter, r *http.Request, err error) {
+		var named *Error
+		if errors.As(err, &named) {
+			Handler(named.Definition())(w, r, named.cause)
+			return
+		}
+		Handler(fallback)(w, r, err)
+	}
+}
 
 // Write emits one bounded Problem Details response. The Go cause is
 // deliberately absent from this API and therefore cannot cross the wire.

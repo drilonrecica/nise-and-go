@@ -46,6 +46,13 @@ const (
 	// OpenAPI document into strict chi server bindings.
 	OAPICodegenVersion = "v2.8.0"
 
+	// OAPIRuntimeVersion pins the small runtime the generated bindings
+	// import to bind path and query parameters. It is not a framework
+	// choice: it is the library the pinned generator's own output requires,
+	// and it enters the generated go.mod for the same reason the output
+	// does.
+	OAPIRuntimeVersion = "v1.7.0"
+
 	// OAPICodegenGeneratedHeader is the exact standard ownership marker the
 	// pinned generator writes. Keeping the version in the marker is useful:
 	// it lets ownership checks distinguish reproducible tool output from a

@@ -15,7 +15,7 @@ README.md file 0644 3c2c53af13d7ab43efb23f3fedf6ec8338cc673a22fea8cf82da417ce5e4
 api dir 0755
 api/README.md file 0644 fba9f6667e73ebeef26daaf09e235bef9ac18d4f5167d838b1280d8794a49c8d
 api/oapi-codegen.yaml file 0644 d309bcb97daca34cbe295ab8deeb503f7a9081599ec52ad266360f5e7e329ae7
-api/openapi.yaml file 0644 b005f50b6ebbe5139d3efa6920ab5b00eef5e967ddf6f2b709465459dafdc765
+api/openapi.yaml file 0644 00624e6b1270f6db76c6e661f7f55cd8c5f845543151be153f22d0d60aa17f03
 cmd dir 0755
 cmd/myapp dir 0755
 cmd/myapp/main.go file 0644 d6f227794c5945329be1ca938b309b6eda1ebb6e74eb982a551b1a88749fb144
@@ -54,8 +54,8 @@ frontend/src/lib/api dir 0755
 frontend/src/lib/api/client.test.ts file 0644 36096cc0043e747e968f94fc81049c2a5ae83eda6be17459461b25285aa159a8
 frontend/src/lib/api/client.ts file 0644 c0c2aee1d64c938ed6564304226dc263ff3e5c3dae917154c485408d5b87ef48
 frontend/src/lib/api/problem.test.ts file 0644 10d98186a29ac2fc7f3a1f734705572965124461794bb7e425adc8357383d382
-frontend/src/lib/api/problem.ts file 0644 53f78ba8ddc3d95867379fd9895958c2797de466e7f8e90aca8654a227c0ba6d
-frontend/src/lib/api/schema.d.ts file 0644 e3f7af578b9bb3b00cfc5875f783af95c6c4c1203b3a8e0f784f01aaf528476f
+frontend/src/lib/api/problem.ts file 0644 1128ddfe426bf87e0d120851cc0bff3374ac9899878722634ec8569030965d7c
+frontend/src/lib/api/schema.d.ts file 0644 5102ff4af5e9046506352bd593e780f7c953ef2f87870c2677480e8f5249717d
 frontend/src/lib/components dir 0755
 frontend/src/lib/components/ThemeControl.svelte file 0644 8360f3ca2b33ccbd2ef80cdb0639eb07fa1a1ab82581dcddcb999d1dd0d1f66b
 frontend/src/lib/components/shell dir 0755
@@ -90,16 +90,32 @@ frontend/src/lib/components/ui/icons.ts file 0644 ed2440505082cb982a49aef71c5d41
 frontend/src/lib/components/ui/toast.svelte.ts file 0644 15897dca12363f4b9d2f4ce622828a204beacdb3ddea6227e8295d5e3eca1a07
 frontend/src/lib/components/ui/toast.test.ts file 0644 ba724dfd6210ff64456d2b3ac9fe5081f8b35d395d9c78969fc7cb6b28976bc8
 frontend/src/lib/navigation.test.ts file 0644 aa0aefb81d4bb2b73dc1c552b7461e14f7bd605c6590a8435994677cfeac5eb8
-frontend/src/lib/navigation.ts file 0644 72ffdbf3525339d2a2c807240d24df00b18fac9161621cf93145ebecc4c840e1
+frontend/src/lib/navigation.ts file 0644 6217362979c28c8b5e08003dba80883da036a063489676452ea39f28e5659f56
+frontend/src/lib/session.svelte.ts file 0644 48d620ecb7d2f579e6c08a92fa364953de85b8be10cf214b4d78b095255b8fb9
+frontend/src/lib/session.test.ts file 0644 3fc15d4b7ceaddcbb7a8942a00980b0f1a7a446af4e94cce1c2b74aef94ddef6
 frontend/src/lib/shell.svelte.ts file 0644 961dc9564d95fbd8e3a38ec2964ebbfd878824e73523104f49dc76efd29184a2
 frontend/src/lib/theme.svelte.ts file 0644 fb6137bd519e6b284446db250b0804c4def2eaf3e50bd281ce7d6cb472e01a75
 frontend/src/lib/theme.test.ts file 0644 bfff480428c32f68af228a2b88606dabb8d9c20e5738bc93a49879e6799e20df
 frontend/src/routes dir 0755
 frontend/src/routes/(app) dir 0755
-frontend/src/routes/(app)/+layout.svelte file 0644 b0a86054c0fe165eda4dfe73e56be414598b058778a2d73e65395429620efdb8
+frontend/src/routes/(app)/+layout.svelte file 0644 e7dc41f8644c9d5a64375f131dce0b79ab296adc55747f6ac5ba982373bdf152
+frontend/src/routes/(app)/+layout.ts file 0644 ce692313638eac5238434fc13880d64262169661ea94331c9da33d8f0fb73b71
 frontend/src/routes/(app)/+page.svelte file 0644 be93ddd8d3b96935a5da64a6e9e847712c846e56fe79a50917bf864361c7d844
+frontend/src/routes/(app)/account dir 0755
+frontend/src/routes/(app)/account/+page.svelte file 0644 b00c584d8d7ba3257244987158a0e471df6eb2e073206ac5693714e0f86a7fda
 frontend/src/routes/(app)/settings dir 0755
 frontend/src/routes/(app)/settings/+page.svelte file 0644 239330df3d0d706cd7c41e1bb9017f0969446753b4f69413dbf344cc12b368a7
+frontend/src/routes/(app)/sign-out dir 0755
+frontend/src/routes/(app)/sign-out/+page.svelte file 0644 8063cdebb7876d73a9810f71b4f624aeafdbb4da20414a5ed0fb5df7c0aee7e7
+frontend/src/routes/(public) dir 0755
+frontend/src/routes/(public)/+layout.svelte file 0644 48496d0b8eb8d0e8c28f2379b4af509b41139edfa96777d0710b0783e4201ef8
+frontend/src/routes/(public)/invitations dir 0755
+frontend/src/routes/(public)/invitations/accept dir 0755
+frontend/src/routes/(public)/invitations/accept/+page.svelte file 0644 7aab68d009e60e15cb607fc2c7283ba8b4e376409428c1c05409166eed3cd2e5
+frontend/src/routes/(public)/sign-in dir 0755
+frontend/src/routes/(public)/sign-in/+page.svelte file 0644 69d640f474f1e2c0f218b9ab92e736efbb25010c3c28781def9efa1c05936ba6
+frontend/src/routes/(public)/sign-in/second-factor dir 0755
+frontend/src/routes/(public)/sign-in/second-factor/+page.svelte file 0644 8622ee7431b2a9c5befff893d0447d19ba4a8d574396f4b65788c74be74fa3cb
 frontend/src/routes/+layout.svelte file 0644 9a5e0f8cef23d4bae8295663ce506722eb1e4d769db8cf6d41cee3f0428cdef2
 frontend/src/routes/+layout.ts file 0644 e87dac774059cbb98b215cbd26e605048b59990262f3e11898f79dd6f79f9c29
 frontend/static dir 0755
@@ -107,11 +123,11 @@ frontend/static/favicon.svg file 0644 eb78958ea23231a46ef84123653ecbeb7eda847b77
 frontend/svelte.config.js file 0644 d290c5b3e673ab33a1b79e093db8acd30dac7cc3b56c90bd5452f1da0e2d3af1
 frontend/tsconfig.json file 0644 d8a3f998af73617b07026a41adfbf33f7004647bc4a6759c00d7cc8b06c29e2a
 frontend/vite.config.ts file 0644 57a86e48dcebe27e59bcfe9d7336f5329b32df27390426ef77826c3c65c4d69d
-frontend/vitest.config.ts file 0644 72b5075578bb2e011b33618ec67a68845756911f34d9a38fc94e7b74d5235074
-go.mod file 0644 5c40be901f9f80eb2fa6a5b40125a8a4cb14bc9480e3ce0fcc22ebd7940e4dde
+frontend/vitest.config.ts file 0644 a4746c6c2e536dacf48fa3e3bdb390cdf76d60d1fd2a003224b0474d1c78af5e
+go.mod file 0644 b79a68cf369fcca7aef313df1c98499bb2b1568207193aeef6dd31aefb440ede
 internal dir 0755
 internal/app dir 0755
-internal/app/app.go file 0644 d87ba3b213dc2b2a18dc1a99b151fd132097f615c62308c60bbfb5d88512739d
+internal/app/app.go file 0644 701478089465ee4ac3e493ebfa2d937f835e21387bfcd2eb63224fb242afde2f
 internal/app/database.go file 0644 0dda4beca6185845806aafa2f0211db9b8c8c832cbf9ead38290ad78bfe98318
 internal/app/database_runtime.go file 0644 cebda86bbdf1a0094abe173b61e8785fc752dea884089bbddcaa8108598ff4d5
 internal/app/enroll.go file 0644 6850a71425dac91d0f9dbfc20c0efbf38284ab4d0607da61e5f6470fb0649268
@@ -203,19 +219,21 @@ internal/platform/database/testdata/migration-upgrades/00001_baseline.sql file 0
 internal/platform/database/transaction.go file 0644 ce4a448d06884dc199f3e5b496d96815fef57fa4ae0ab1237a6f264f2e28742b
 internal/platform/database/transaction_test.go file 0644 afd0840cc8f1c8f4a845367865af78be3875699f781d63c1a12a11e92b3bd9fd
 internal/platform/httpapi dir 0755
-internal/platform/httpapi/api.go file 0644 cca4b1de73ab3a0c57cb2d96ca6d6dfeae4a845aa2299c6cb37a9c226067442d
-internal/platform/httpapi/api_test.go file 0644 8fa37369158266026a06e3a8702d63d5aa7b55d79b483057b090305dca990dc3
+internal/platform/httpapi/api.go file 0644 a274d52840ea03af15aec71956aae357c1e5d8892e915f48f772a0f55200d490
+internal/platform/httpapi/api_test.go file 0644 0bedce52e0624e5de57c6638f48d85e928e8901741824cb17b3cf953392ad381
 internal/platform/httpapi/httpjson dir 0755
 internal/platform/httpapi/httpjson/json.go file 0644 a3044e4abe486e569be1f815539f66b6b99ce447d624469a18e9b965b8f94ac6
 internal/platform/httpapi/httpjson/json_test.go file 0644 ff605f3f45c132946f7c514cf62786d2d7f99cd1894a6c0d889f3fb29c186237
 internal/platform/httpapi/openapigen dir 0755
-internal/platform/httpapi/openapigen/openapi.gen.go file 0644 49524ea2d6dd45dac9d9716ab35af0cad0cc1d666fc77989bf9468d8b644954f
+internal/platform/httpapi/openapigen/openapi.gen.go file 0644 df2d25f90d2e28c4b1ba84a895b18773492cff893784bdbc8316781e2d56a913
 internal/platform/httpapi/problem dir 0755
-internal/platform/httpapi/problem/problem.go file 0644 6bcbeee42153cded8d0cca92bf98b2ad7fc210ac7cefdb309730da01b83d4d0e
+internal/platform/httpapi/problem/problem.go file 0644 ee6d8a7ecfaeb9b6ca381463f1b37ae4333d152893c16b6232f2a357d31ff408
 internal/platform/httpapi/problem/problem_test.go file 0644 58ec205b552c9bfb69ba04c2e13d263f39f27ef129023b78776f44321583be0c
 internal/platform/httpapi/router.go file 0644 2167a5c087950075c8c1e3be19cbe57e80140e3db22bf0fd98e0e0b0167c03ad
 internal/platform/httpapi/router_test.go file 0644 6504f432871bea9fe1b5a9d2a31f4de9285dafb6bf92a331ec243411da545999
-internal/platform/httpapi/transport_test.go file 0644 ea96038e6928d9d94704319b5c5fc2da986747b76de9b180db305379fc978bfa
+internal/platform/httpapi/session.go file 0644 eb68eb3cb96fb30fe2ee1a8e4b9679f8a7d1cdb60d68071d521277406929d708
+internal/platform/httpapi/session_test.go file 0644 8c597199902f0910c5d9f206e71b536fc89f4b70976abcc7aa710e8443183355
+internal/platform/httpapi/transport_test.go file 0644 882b12b5dd6407158f081bad7b800d84479d1e4bccbe7afdb57bf5f0a86473db
 internal/platform/httpauth dir 0755
 internal/platform/httpauth/context.go file 0644 762930651454ba19a825e4ecfd9627ea6eda5feebef62268a0319cc9978d9f5b
 internal/platform/httpauth/cookie.go file 0644 d30512721c0cda371ecca0ef24125cfc85344e3fa1fce369ee5a8bdc02e9ab48

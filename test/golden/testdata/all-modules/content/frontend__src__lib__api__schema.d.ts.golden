@@ -21,10 +21,198 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Describe the session making this request */
+        get: operations["getCurrentSession"];
+        put?: never;
+        /**
+         * Exchange an address and password for a session
+         * @description A correct password may finish the sign-in or open a second-factor challenge. Both are the same 200 response carrying a required status discriminator, so a client cannot read the body without deciding which of the two happened; `session` and `challenge` are each present only for their own status.
+         */
+        post: operations["signIn"];
+        /** End the session making this request */
+        delete: operations["signOut"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/session/second-factor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Finish a sign-in that opened a second-factor challenge
+         * @description The challenge token identifies the unfinished sign-in; it is not a session and authenticates nothing else. An application with no second-factor module refuses this operation, which is why the operation exists in every application: enabling the module is a recompile rather than a change to this contract.
+         */
+        post: operations["completeSecondFactor"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the signed-in account's own sessions */
+        get: operations["listSessions"];
+        put?: never;
+        post?: never;
+        /** End every session except the one making this request */
+        delete: operations["revokeOtherSessions"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sessions/{sessionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** End one of the signed-in account's sessions */
+        delete: operations["revokeSession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/account/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Change the signed-in account's password
+         * @description The current password is the proof, and every other session is ended so that a password change is also a way to evict whoever else is holding one.
+         */
+        post: operations["changePassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invitations/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Turn an invitation into an account
+         * @description The token is single-use and is spent by this call. It answers with the address the account was created for, so the sign-in form that follows can be filled in without the caller having to know it.
+         */
+        post: operations["acceptInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description One identity, without its credential. */
+        Account: {
+            id: string;
+            email: string;
+            /** @enum {string} */
+            status: "active" | "disabled";
+        };
+        /** @description The signed-in account and the session carrying it. The session token itself is never in a body: it is written to a hardened cookie and exists nowhere else. */
+        Session: {
+            account: components["schemas"]["Account"];
+            session_id: string;
+            /** Format: date-time */
+            expires_at: string;
+            /**
+             * Format: date-time
+             * @description When the holder last proved their identity with a password.
+             */
+            proven_at: string;
+        };
+        /** @description What a correct password produced. status is required and is the only member a client may read unconditionally. */
+        SignInResult: {
+            /** @enum {string} */
+            status: "signed_in" | "second_factor_required";
+            session?: components["schemas"]["Session"];
+            challenge?: components["schemas"]["SecondFactorChallenge"];
+        };
+        /** @description An unfinished sign-in. The token identifies that attempt and nothing else: it is not a session, it authenticates no other request, and it is spent by the first correct answer. */
+        SecondFactorChallenge: {
+            token: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        SignInRequest: {
+            email: string;
+            password: string;
+        };
+        SecondFactorRequest: {
+            challenge_token: string;
+            code: string;
+        };
+        /** @description One row of the account's own session list. */
+        SessionSummary: {
+            id: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_seen_at: string;
+            /** Format: date-time */
+            expires_at: string;
+            /** @description Whether this is the session making the request. */
+            current: boolean;
+        };
+        SessionSummaryCollection: {
+            items: components["schemas"]["SessionSummary"][];
+            page: components["schemas"]["Page"];
+        };
+        RevocationResult: {
+            /** Format: int64 */
+            revoked: number;
+        };
+        ChangePasswordRequest: {
+            current_password: string;
+            new_password: string;
+        };
+        AcceptInvitationRequest: {
+            token: string;
+            password: string;
+        };
+        AcceptedInvitation: {
+            email: string;
+        };
         /** @description The direct resource returned by the versioned API root. */
         APIRoot: {
             /** @enum {string} */
@@ -133,6 +321,212 @@ export interface operations {
                     "application/json": components["schemas"]["APIRoot"];
                 };
             };
+        };
+    };
+    getCurrentSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The signed-in account and its session. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            401: components["responses"]["Problem"];
+        };
+    };
+    signIn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignInRequest"];
+            };
+        };
+        responses: {
+            /** @description The password was correct. Read status to learn what to do next. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignInResult"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            429: components["responses"]["Problem"];
+        };
+    };
+    signOut: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The session is revoked and its cookies are cleared. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Problem"];
+        };
+    };
+    completeSecondFactor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecondFactorRequest"];
+            };
+        };
+        responses: {
+            /** @description The second step verified and a session was issued. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            401: components["responses"]["Problem"];
+            429: components["responses"]["Problem"];
+        };
+    };
+    listSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every live session this account holds. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionSummaryCollection"];
+                };
+            };
+            401: components["responses"]["Problem"];
+        };
+    };
+    revokeOtherSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description How many sessions were ended. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevocationResult"];
+                };
+            };
+            401: components["responses"]["Problem"];
+        };
+    };
+    revokeSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The session is revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Problem"];
+            404: components["responses"]["Problem"];
+        };
+    };
+    changePassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description The password was changed and other sessions were ended. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
+        };
+    };
+    acceptInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcceptInvitationRequest"];
+            };
+        };
+        responses: {
+            /** @description The account was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcceptedInvitation"];
+                };
+            };
+            400: components["responses"]["Problem"];
+            422: components["responses"]["Problem"];
         };
     };
 }

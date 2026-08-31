@@ -1,0 +1,93 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+
+	import Button from '$lib/components/ui/Button.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import Input from '$lib/components/ui/Input.svelte';
+	import ProblemAlert from '$lib/components/ui/ProblemAlert.svelte';
+	import { safeNext, session } from '$lib/session.svelte';
+
+	let email = $state(page.url.searchParams.get('email') ?? '');
+	let password = $state('');
+	let pending = $state(false);
+	let failure = $state<unknown>(null);
+
+	async function submit(event: SubmitEvent) {
+		event.preventDefault();
+		pending = true;
+		failure = null;
+		try {
+			const challenge = await session.signIn(email, password);
+			// The password is dropped either way. It is in memory for exactly
+			// as long as the request that used it, and a form that keeps it
+			// for a retry keeps it for a screenshot too.
+			password = '';
+			if (challenge) {
+				await goto(
+					`/sign-in/second-factor?token=${encodeURIComponent(challenge.token)}` +
+						`&next=${encodeURIComponent(safeNext(page.url.searchParams.get('next')))}`
+				);
+				return;
+			}
+			await goto(safeNext(page.url.searchParams.get('next')));
+		} catch (error) {
+			failure = error;
+			password = '';
+		} finally {
+			pending = false;
+		}
+	}
+</script>
+
+<svelte:head>
+	<title>Sign in · {{.AppName}}</title>
+</svelte:head>
+
+<div class="rounded-lg border border-line bg-surface p-6 shadow-raised">
+	<h1 class="text-lg font-semibold tracking-tight text-text">Sign in</h1>
+	<p class="mt-1 text-sm text-text-muted">Use the address this account was created for.</p>
+
+	{#if failure}
+		<div class="mt-4">
+			<ProblemAlert error={failure} />
+		</div>
+	{/if}
+
+	<form class="mt-5 space-y-4" onsubmit={submit}>
+		<Field id="email" label="Email" required>
+			{#snippet children({ describedBy, invalid })}
+				<Input
+					id="email"
+					type="email"
+					name="email"
+					autocomplete="username"
+					required
+					bind:value={email}
+					{describedBy}
+					{invalid}
+				/>
+			{/snippet}
+		</Field>
+
+		<Field id="password" label="Password" required>
+			{#snippet children({ describedBy, invalid })}
+				<Input
+					id="password"
+					type="password"
+					name="password"
+					autocomplete="current-password"
+					required
+					bind:value={password}
+					{describedBy}
+					{invalid}
+				/>
+			{/snippet}
+		</Field>
+
+		<Button type="submit" variant="primary" size="lg" loading={pending} loadingLabel="Signing in" class="w-full">
+			Sign in
+		</Button>
+	</form>
+</div>

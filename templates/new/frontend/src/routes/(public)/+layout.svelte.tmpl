@@ -1,0 +1,27 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import ThemeControl from '$lib/components/ThemeControl.svelte';
+	import Toaster from '$lib/components/ui/Toaster.svelte';
+
+	let { children } = $props();
+</script>
+
+<!--
+	The unauthenticated chrome: no navigation, because there is nowhere to
+	navigate to yet, and one centred card. The theme control stays, so somebody
+	who needs a dark screen does not have to sign in first to get one.
+-->
+<div class="flex min-h-dvh flex-col bg-canvas text-text">
+	<header class="flex h-14 shrink-0 items-center justify-between px-4">
+		<span class="text-sm font-semibold tracking-tight">{{.AppName}}</span>
+		<ThemeControl id="public-theme" />
+	</header>
+
+	<main id="main" class="flex flex-1 items-start justify-center px-4 py-8 sm:items-center">
+		<div class="w-full max-w-sm">
+			{@render children()}
+		</div>
+	</main>
+
+	<Toaster />
+</div>

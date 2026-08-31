@@ -1,0 +1,119 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+
+	import { api } from '$lib/api/client';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import Input from '$lib/components/ui/Input.svelte';
+	import ProblemAlert from '$lib/components/ui/ProblemAlert.svelte';
+
+	// The invitation token is in the link somebody was emailed. Nothing here
+	// looks it up before the form is submitted: an endpoint that told a holder
+	// whether a token was real would turn the link into a guessing oracle, so
+	// the first and only answer comes from spending it.
+	const token = $derived(page.url.searchParams.get('token') ?? '');
+
+	let password = $state('');
+	let confirmation = $state('');
+	let pending = $state(false);
+	let failure = $state<unknown>(null);
+
+	// Checked in the browser because it is the one rule the server cannot
+	// check for us: it never sees the second field. Everything else about a
+	// password is decided by the server.
+	const mismatch = $derived(confirmation !== '' && confirmation !== password);
+
+	async function submit(event: SubmitEvent) {
+		event.preventDefault();
+		if (mismatch) return;
+		pending = true;
+		failure = null;
+		try {
+			const accepted = await api.post('/invitations/accept', { body: { token, password } });
+			password = '';
+			confirmation = '';
+			// Straight to sign-in with the address filled in. Enrollment does
+			// not hand out a session: doing so would make the invitation token
+			// a way to obtain one without ever presenting the password that
+			// was just set.
+			await goto(`/sign-in?email=${encodeURIComponent(accepted.email)}`);
+		} catch (error) {
+			failure = error;
+			password = '';
+			confirmation = '';
+		} finally {
+			pending = false;
+		}
+	}
+</script>
+
+<svelte:head>
+	<title>Accept your invitation · {{.AppName}}</title>
+</svelte:head>
+
+<div class="rounded-lg border border-line bg-surface p-6 shadow-raised">
+	<h1 class="text-lg font-semibold tracking-tight text-text">Choose a password</h1>
+	<p class="mt-1 text-sm text-text-muted">
+		This finishes your invitation and creates your account. The link works once.
+	</p>
+
+	{#if failure}
+		<div class="mt-4">
+			<ProblemAlert error={failure} />
+		</div>
+	{/if}
+
+	<form class="mt-5 space-y-4" onsubmit={submit}>
+		<Field
+			id="new-password"
+			label="Password"
+			description="At least 12 characters, and not one that has appeared in a known breach."
+			required
+		>
+			{#snippet children({ describedBy, invalid })}
+				<Input
+					id="new-password"
+					type="password"
+					autocomplete="new-password"
+					required
+					bind:value={password}
+					{describedBy}
+					{invalid}
+				/>
+			{/snippet}
+		</Field>
+
+		<Field
+			id="confirm-password"
+			label="Confirm password"
+			error={mismatch ? 'The two passwords do not match.' : undefined}
+			required
+		>
+			{#snippet children({ describedBy, invalid })}
+				<Input
+					id="confirm-password"
+					type="password"
+					autocomplete="new-password"
+					required
+					bind:value={confirmation}
+					{describedBy}
+					{invalid}
+				/>
+			{/snippet}
+		</Field>
+
+		<Button
+			type="submit"
+			variant="primary"
+			size="lg"
+			loading={pending}
+			loadingLabel="Creating your account"
+			disabled={!token || mismatch}
+			class="w-full"
+		>
+			Create account
+		</Button>
+	</form>
+</div>

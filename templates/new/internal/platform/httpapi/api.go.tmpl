@@ -15,10 +15,13 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/drilonrecica/nise-and-go/runtime/pagination"
+	"github.com/drilonrecica/nise-and-go/runtime/password"
 
+	"{{.ModulePath}}/internal/features/auth"
 	"{{.ModulePath}}/internal/platform/httpapi/httpjson"
 	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
 	"{{.ModulePath}}/internal/platform/httpapi/problem"
+	"{{.ModulePath}}/internal/platform/httpauth"
 	"{{.ModulePath}}/internal/platform/idempotency"
 )
 
@@ -26,20 +29,101 @@ import (
 // api/openapi.yaml. Add dependencies as explicit fields when operations need
 // them; transport methods should delegate business behavior to use cases.
 type Server struct {
-	cursors *pagination.Codec
+	cursors     *pagination.Codec
+	credentials Credentials
+	sessions    SessionDirectory
+	accounts    AccountDirectory
+	invitations Enrollment
+	cookies     *httpauth.Cookies
+	compromised password.Compromised
+}
+
+// The four interfaces below are declared here, by the consumer, rather than
+// imported from the package that provides them. That is the same rule
+// internal/features/auth follows for its own Throttler and Auditor, and it
+// buys the same two things: this package names exactly the operations it uses,
+// so a reader knows the transport's whole reach into the domain from one
+// screen; and a test can build the surface without a database, which is what
+// makes "no handler touches a use case before checking for a session" a thing
+// a hermetic test can actually prove.
+
+// Credentials is the sign-in, second-factor, and password-change use case.
+type Credentials interface {
+	Authenticate(ctx context.Context, email, secret string) (auth.Login, error)
+	CompleteSecondFactor(ctx context.Context, challengeToken, code string) (auth.Login, error)
+	ChangePassword(ctx context.Context, userID, current, next string, compromised password.Compromised, keepSessionID string) (auth.Issued, error)
+}
+
+// SessionDirectory lists and ends sessions.
+type SessionDirectory interface {
+	List(ctx context.Context, userID, currentSessionID string, limit int) ([]auth.Summary, error)
+	Revoke(ctx context.Context, sessionID, reason string) error
+	RevokeOtherSessions(ctx context.Context, userID, keepSessionID, reason string) (int64, error)
+}
+
+// AccountDirectory resolves an identity already named by a session.
+type AccountDirectory interface {
+	FindByID(ctx context.Context, userID string) (auth.Account, error)
+}
+
+// Enrollment turns an invitation token into an account.
+type Enrollment interface {
+	Accept(ctx context.Context, rawToken, secret string) (auth.Account, error)
+}
+
+// ServerDeps are the use cases and boundaries the API surface delegates to.
+//
+// It is a struct rather than a parameter list because every field is required
+// and the list is long enough that positional arguments would be a source of
+// silently swapped dependencies of the same type.
+type ServerDeps struct {
+	// Cursors issues and verifies the opaque pagination tokens every
+	// cursor-paged collection uses.
+	Cursors *pagination.Codec
+	// Credentials is the sign-in, second-factor, and password use case.
+	Credentials Credentials
+	// Sessions lists and ends sessions.
+	Sessions SessionDirectory
+	// Accounts resolves identities.
+	Accounts AccountDirectory
+	// Invitations turns an enrollment token into an account.
+	Invitations Enrollment
+	// Cookies writes and clears the session and anti-forgery cookies.
+	Cookies *httpauth.Cookies
+	// Compromised is the known-breached password list a new password is
+	// checked against.
+	Compromised password.Compromised
 }
 
 // NewServer constructs the application's strict OpenAPI adapter.
 //
-// cursors issues and verifies the opaque pagination tokens every cursor-paged
-// collection uses. It is required rather than optional: a collection that
-// silently fell back to an unauthenticated position would be exactly the
-// defect the codec exists to prevent.
-func NewServer(cursors *pagination.Codec) (*Server, error) {
-	if cursors == nil {
+// Every dependency is required rather than optional. A nil here would not
+// produce a degraded surface, it would produce one that panics on the first
+// request that needs the missing piece — and for the authentication
+// dependencies it would produce one that appears to work until somebody tries
+// to sign in.
+func NewServer(deps ServerDeps) (*Server, error) {
+	switch {
+	case deps.Cursors == nil:
+		// A collection that silently fell back to an unauthenticated position
+		// would be exactly the defect the codec exists to prevent.
 		return nil, errors.New("httpapi: a cursor codec is required")
+	case deps.Credentials == nil || deps.Sessions == nil || deps.Accounts == nil || deps.Invitations == nil:
+		return nil, errors.New("httpapi: the authentication use cases are required")
+	case deps.Cookies == nil:
+		return nil, errors.New("httpapi: the session cookie boundary is required")
+	case deps.Compromised == nil:
+		return nil, errors.New("httpapi: a compromised-password source is required; pass the application's list")
 	}
-	return &Server{cursors: cursors}, nil
+	return &Server{
+		cursors:     deps.Cursors,
+		credentials: deps.Credentials,
+		sessions:    deps.Sessions,
+		accounts:    deps.Accounts,
+		invitations: deps.Invitations,
+		cookies:     deps.Cookies,
+		compromised: deps.Compromised,
+	}, nil
 }
 
 var _ openapigen.StrictServerInterface = (*Server)(nil)
@@ -49,8 +133,11 @@ var _ openapigen.StrictServerInterface = (*Server)(nil)
 // application code implements StrictServerInterface above.
 func (s *Server) Register(r chi.Router) {
 	strict := openapigen.NewStrictHandlerWithOptions(s, nil, openapigen.StrictHTTPServerOptions{
-		RequestErrorHandlerFunc:   requestTransportError,
-		ResponseErrorHandlerFunc:  problem.Handler(problem.InternalServerError()),
+		RequestErrorHandlerFunc: requestTransportError,
+		// A handler answers with a public problem by returning
+		// problem.Fail(definition); anything else is a defect and gets the
+		// generic 500 rather than a status the caller might trust.
+		ResponseErrorHandlerFunc:  problem.ResponseHandler(problem.InternalServerError()),
 		JSONBodyDecoder:           httpjson.Decode,
 		JSONResponseSizeChecker:   httpjson.CheckResponseSize,
 		RequestContentTypeMatcher: httpjson.MatchesMediaType,
