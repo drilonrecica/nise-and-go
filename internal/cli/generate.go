@@ -10,61 +10,23 @@ import (
 	"strings"
 
 	"github.com/drilonrecica/nise-and-go/internal/cli/clierr"
+	"github.com/drilonrecica/nise-and-go/internal/generator/feature"
 )
 
-// Generator is the seam the real M7 generators implement. Nise task
-// M1-014 ships no implementation of it at all — see notImplementedGenerator
-// below — because the generators themselves are milestone M7's job, not
-// this task's. `nise generate`'s own command files resolve everything
-// that does not require an actual generator: subcommand structure, help
-// text, argument parsing, and name validation. Only the one line that
-// constructs the Generator passed to generateCommand needs to change when
-// M7 lands; the flag parsing, validation, and error rendering around it do
-// not.
+// Generator is the seam the feature generators implement.
+//
+// It stayed a seam through M1-014, when `nise generate` shipped its whole
+// command surface — subcommands, help text, argument parsing, name validation
+// — with nothing behind it. M7 replaced the one line that constructs it and
+// changed nothing else, which is what the seam was for.
 type Generator interface {
 	// GenerateFeature scaffolds a new vertical-slice feature named name
 	// (already validated and canonicalized by ValidateResourceName) into
 	// the project at root.
-	GenerateFeature(ctx context.Context, root, name string) error
+	GenerateFeature(ctx context.Context, root, name string) (feature.Plan, error)
 	// GenerateResource scaffolds a full CRUD resource named name into the
 	// project at root.
-	GenerateResource(ctx context.Context, root, name string) error
-}
-
-// notImplementedMilestone names the milestone that adds a real Generator.
-// It appears verbatim in the error nise generate returns today, so a user
-// (or a script parsing --json output) is told exactly what to wait for,
-// not just that something failed.
-const notImplementedMilestone = "M7"
-
-// NotImplementedError is returned by every notImplementedGenerator method.
-// It is exported so a future M7 Generator's own tests (or this package's)
-// can assert a command surfaces it correctly with errors.As, without
-// string-matching an error message.
-type NotImplementedError struct {
-	// Milestone is the milestone that will add a real implementation.
-	Milestone string
-	// Kind is "feature" or "resource".
-	Kind string
-}
-
-// Error implements error.
-func (e *NotImplementedError) Error() string {
-	return fmt.Sprintf("nise generate %s is not implemented in this version (arrives with milestone %s)", e.Kind, e.Milestone)
-}
-
-// notImplementedGenerator is the only Generator this build wires in. Its
-// methods do no work and touch no filesystem: M1-014's brief is explicit
-// that `nise generate` must never fake success, since the M7 generators
-// this command delegates to do not exist yet.
-type notImplementedGenerator struct{}
-
-func (notImplementedGenerator) GenerateFeature(_ context.Context, _, _ string) error {
-	return &NotImplementedError{Milestone: notImplementedMilestone, Kind: "feature"}
-}
-
-func (notImplementedGenerator) GenerateResource(_ context.Context, _, _ string) error {
-	return &NotImplementedError{Milestone: notImplementedMilestone, Kind: "resource"}
+	GenerateResource(ctx context.Context, root, name string) (feature.Plan, error)
 }
 
 // resourceNameRE is the pattern a nise generate feature or resource name
@@ -149,17 +111,16 @@ func ValidateResourceName(name string) (string, error) {
 	return lower, nil
 }
 
-// generateCommand implements `nise generate` (Nise tasks M1-014): the
-// command surface for the feature and resource generators milestone M7
-// will build. See this file's Generator doc comment for the delegation
-// seam and why notImplementedGenerator is wired in today.
+// generateCommand implements `nise generate`: the feature and resource
+// generators, behind the command surface M1-014 built for them.
 func generateCommand() *Command {
+	gen := featureGenerator{}
 	return &Command{
 		Name:  "generate",
-		Short: "Generate a feature or resource in a project (not implemented until milestone M7)",
+		Short: "Generate a feature or resource in a project",
 		Subcommands: []*Command{
-			generateFeatureCommand(notImplementedGenerator{}),
-			generateResourceCommand(notImplementedGenerator{}),
+			generateFeatureCommand(gen),
+			generateResourceCommand(gen),
 		},
 	}
 }
@@ -167,7 +128,7 @@ func generateCommand() *Command {
 func generateFeatureCommand(gen Generator) *Command {
 	return &Command{
 		Name:  "feature",
-		Short: "Scaffold a new vertical-slice feature (not implemented until milestone M7)",
+		Short: "Scaffold a new vertical-slice feature",
 		Args:  "<name>",
 		NewFlagSet: func() *flag.FlagSet {
 			return flag.NewFlagSet("feature", flag.ContinueOnError)
@@ -179,7 +140,7 @@ func generateFeatureCommand(gen Generator) *Command {
 func generateResourceCommand(gen Generator) *Command {
 	return &Command{
 		Name:  "resource",
-		Short: "Scaffold a full CRUD resource within a feature (not implemented until milestone M7)",
+		Short: "Scaffold a full CRUD resource within a feature",
 		Args:  "<name>",
 		NewFlagSet: func() *flag.FlagSet {
 			return flag.NewFlagSet("resource", flag.ContinueOnError)
@@ -188,12 +149,10 @@ func generateResourceCommand(gen Generator) *Command {
 	}
 }
 
-// generateRun builds the shared Run body for both `generate feature` and
-// `generate resource`: exactly one positional argument (the name),
-// validated genuinely before any delegation happens, then delegated to
-// do, which is always doomed to fail today (see Generator) but need not
-// stay that way — do is the only thing M7 replaces.
-func generateRun(kind string, do func(ctx context.Context, root, name string) error) func(ctx context.Context, env *Env) error {
+// generateRun builds the shared Run body for both subcommands: exactly one
+// positional argument, validated before any delegation happens, then delegated
+// to do.
+func generateRun(kind string, do func(ctx context.Context, root, name string) (feature.Plan, error)) func(ctx context.Context, env *Env) error {
 	return func(ctx context.Context, env *Env) error {
 		if len(env.Args) != 1 {
 			return clierr.Usage(
@@ -209,13 +168,6 @@ func generateRun(kind string, do func(ctx context.Context, root, name string) er
 			).WithCode("generate.invalid_name").WithDocs("docs/commands/generate.md#naming-rules")
 		}
 
-		// root is passed through for the real M7 Generator's future use.
-		// It deliberately does not require an existing nise.json project
-		// here: nothing in this build actually reads or writes anything
-		// under it yet (notImplementedGenerator ignores it entirely), so
-		// adding that requirement now would only add a failure mode with
-		// no corresponding capability behind it. M7's real Generator is
-		// expected to validate root itself before doing any work.
 		root, err := os.Getwd()
 		if err != nil {
 			return clierr.Wrap(err, clierr.ExitError,
@@ -224,29 +176,41 @@ func generateRun(kind string, do func(ctx context.Context, root, name string) er
 			)
 		}
 
-		if genErr := do(ctx, root, name); genErr != nil {
+		plan, genErr := do(ctx, root, name)
+		if genErr != nil {
 			return renderGenerateError(kind, name, genErr)
 		}
 
-		env.Out.Success(fmt.Sprintf("generated %s %q", kind, name))
+		env.Out.Result(generateResult{Kind: kind, Name: name, Plan: plan})
 		return nil
 	}
 }
 
-// renderGenerateError turns a Generator error into the command's returned
-// *clierr.Error. A *NotImplementedError becomes the honest, milestone-naming
-// failure the brief requires — never a faked success — in both human and
-// --json mode alike, since both go through the same clierr.Error renderer.
+// renderGenerateError turns a Generator failure into the command's own error.
+//
+// A collision is the one failure with a recovery that is not "try again": the
+// feature is already there, and the command refused rather than writing over
+// it, so the answer is to pick another name or remove what is there.
 func renderGenerateError(kind, name string, err error) error {
-	var nie *NotImplementedError
-	if errors.As(err, &nie) {
+	if errors.Is(err, feature.ErrExists) {
+		var existing *feature.ExistsError
+		paths := ""
+		if errors.As(err, &existing) {
+			paths = strings.Join(existing.Paths, "\n  ")
+		}
 		return clierr.New(clierr.ExitError,
-			nie.Error(),
-			fmt.Sprintf("Write %s %q by hand for now, following docs/generated-application-layout.md, or track milestone %s in the project roadmap.", kind, name, nie.Milestone),
-		).WithCode("generate.not_implemented").WithDocs("docs/commands/generate.md")
+			fmt.Sprintf("%s %q already exists; nothing was written", kind, name),
+			fmt.Sprintf("These paths are already there:\n  %s\n\nChoose another name, or remove them if they are no longer wanted. A generated slice is yours from the moment it is written, so nise will not replace one.", paths),
+		).WithCode("generate.exists").WithDocs("docs/commands/generate.md")
+	}
+	if errors.Is(err, feature.ErrNotAProject) {
+		return clierr.Wrap(err, clierr.ExitError,
+			"this directory is not the root of a Go project: no readable go.mod",
+			"Run this from the root of a generated application — the directory holding go.mod.",
+		).WithCode("generate.not_a_project").WithDocs("docs/commands/generate.md")
 	}
 	return clierr.Wrap(err, clierr.ExitError,
 		fmt.Sprintf("could not generate %s %q", kind, name),
-		"Check filesystem permissions and retry.",
+		"Check that you can write to this project, then retry.",
 	).WithDocs("docs/commands/generate.md")
 }

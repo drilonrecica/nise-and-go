@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
 	"github.com/drilonrecica/nise-and-go/internal/cli/clierr"
+	"github.com/drilonrecica/nise-and-go/internal/generator/feature"
 )
 
 func TestValidateResourceNameAccepts(t *testing.T) {
@@ -96,23 +96,23 @@ func TestValidateResourceNameNonASCIIIsRejected(t *testing.T) {
 	}
 }
 
-// fakeGenerator lets tests observe exactly what a Generator method
-// received, and control what it returns, without depending on
-// notImplementedGenerator's fixed behavior.
+// fakeGenerator lets tests observe exactly what a Generator method received,
+// and control what it returns, without touching a filesystem.
 type fakeGenerator struct {
 	featureCalls  []string
 	resourceCalls []string
+	plan          feature.Plan
 	err           error
 }
 
-func (f *fakeGenerator) GenerateFeature(_ context.Context, _, name string) error {
+func (f *fakeGenerator) GenerateFeature(_ context.Context, _, name string) (feature.Plan, error) {
 	f.featureCalls = append(f.featureCalls, name)
-	return f.err
+	return f.plan, f.err
 }
 
-func (f *fakeGenerator) GenerateResource(_ context.Context, _, name string) error {
+func (f *fakeGenerator) GenerateResource(_ context.Context, _, name string) (feature.Plan, error) {
 	f.resourceCalls = append(f.resourceCalls, name)
-	return f.err
+	return f.plan, f.err
 }
 
 func runGenerateFixture(t *testing.T, tree []*Command, args []string) (code int, stdout, stderr string) {
@@ -172,46 +172,50 @@ func TestGenerateFeatureRejectsReservedName(t *testing.T) {
 	}
 }
 
-func TestGenerateFeatureValidNameDelegatesAndSurfacesNotImplemented(t *testing.T) {
+func TestGenerateFeatureValidNameDelegatesCanonicalized(t *testing.T) {
 	t.Parallel()
-	gen := &fakeGenerator{err: &NotImplementedError{Milestone: "M7", Kind: "feature"}}
+	gen := &fakeGenerator{}
 	tree := []*Command{{Name: "generate", Subcommands: []*Command{generateFeatureCommand(gen)}}}
 
 	code, stdout, stderr := runGenerateFixture(t, tree, []string{"generate", "feature", "Invoice"})
+	if code != int(clierr.ExitOK) {
+		t.Errorf("exit code = %d, want 0; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Created feature") {
+		t.Errorf("stdout = %q, want it to report what was created", stdout)
+	}
+	// The name reaches the generator canonicalized, so a leading capital is
+	// accepted and the directory it becomes is still lowercase.
+	if len(gen.featureCalls) != 1 || gen.featureCalls[0] != "invoice" {
+		t.Errorf("featureCalls = %v, want exactly one call with %q", gen.featureCalls, "invoice")
+	}
+}
+
+func TestGenerateRefusesToWriteOverAnExistingSlice(t *testing.T) {
+	t.Parallel()
+	gen := &fakeGenerator{err: &feature.ExistsError{Paths: []string{"internal/features/order/domain.go"}}}
+	tree := []*Command{{Name: "generate", Subcommands: []*Command{generateResourceCommand(gen)}}}
+
+	code, stdout, stderr := runGenerateFixture(t, tree, []string{"generate", "resource", "Order"})
 	if code != int(clierr.ExitError) {
-		t.Errorf("exit code = %d, want %d (ExitError)", code, clierr.ExitError)
+		t.Errorf("exit code = %d, want %d (ExitError); stderr=%s", code, clierr.ExitError, stderr)
 	}
 	if stdout != "" {
 		t.Errorf("stdout = %q, want empty on failure in human mode", stdout)
 	}
-	if !strings.Contains(stderr, "not implemented") || !strings.Contains(stderr, "M7") {
-		t.Errorf("stderr = %q, want an honest not-implemented message naming M7", stderr)
+	// A generated slice is application-owned from the moment it is written, so
+	// the command refuses rather than replacing it — and names what is there.
+	if !strings.Contains(stderr, "already exists") || !strings.Contains(stderr, "domain.go") {
+		t.Errorf("stderr = %q, want it to say the slice exists and name the path", stderr)
 	}
-	if len(gen.featureCalls) != 1 || gen.featureCalls[0] != "invoice" {
-		t.Errorf("featureCalls = %v, want exactly one call with the canonicalized name %q", gen.featureCalls, "invoice")
-	}
-}
-
-func TestGenerateResourceValidNameDelegatesAndSurfacesNotImplemented(t *testing.T) {
-	t.Parallel()
-	gen := &fakeGenerator{err: &NotImplementedError{Milestone: "M7", Kind: "resource"}}
-	tree := []*Command{{Name: "generate", Subcommands: []*Command{generateResourceCommand(gen)}}}
-
-	code, _, stderr := runGenerateFixture(t, tree, []string{"generate", "resource", "Order"})
-	if code != int(clierr.ExitError) {
-		t.Errorf("exit code = %d, want %d (ExitError); stderr=%s", code, clierr.ExitError, stderr)
-	}
-	if !strings.Contains(stderr, "resource") || !strings.Contains(stderr, "M7") {
-		t.Errorf("stderr = %q, want it to name the resource kind and milestone M7", stderr)
-	}
-	if len(gen.resourceCalls) != 1 || gen.resourceCalls[0] != "order" {
-		t.Errorf("resourceCalls = %v, want exactly one call with %q", gen.resourceCalls, "order")
+	if !strings.Contains(stderr, "nothing was written") {
+		t.Errorf("stderr = %q, want it to say nothing was written", stderr)
 	}
 }
 
-func TestGenerateResourceJSONModeNeverFakesSuccess(t *testing.T) {
+func TestGenerateResourceJSONModeReportsARefusalAsAnError(t *testing.T) {
 	t.Parallel()
-	gen := &fakeGenerator{err: &NotImplementedError{Milestone: "M7", Kind: "resource"}}
+	gen := &fakeGenerator{err: &feature.ExistsError{Paths: []string{"internal/features/order/domain.go"}}}
 	tree := []*Command{{Name: "generate", Subcommands: []*Command{generateResourceCommand(gen)}}}
 
 	code, stdout, stderr := runGenerateFixture(t, tree, []string{"generate", "resource", "Order", "--json"})
@@ -230,31 +234,29 @@ func TestGenerateResourceJSONModeNeverFakesSuccess(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &env); err != nil {
 		t.Fatalf("stdout is not a valid JSON error envelope: %v\nstdout=%s", err, stdout)
 	}
-	if env.Error.Code != "generate.not_implemented" {
-		t.Errorf("error.code = %q, want %q", env.Error.Code, "generate.not_implemented")
-	}
-	if !strings.Contains(env.Error.Message, "M7") {
-		t.Errorf("error.message = %q, want it to name milestone M7", env.Error.Message)
+	if env.Error.Code != "generate.exists" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "generate.exists")
 	}
 }
 
-func TestGenerateCommandRealRegistryHonestlyFails(t *testing.T) {
-	// Exercises the actual production wiring (generateCommand(), which
-	// wires in notImplementedGenerator{}), not a fake, to prove the real
-	// registry entry never fakes success end to end.
-	t.Parallel()
+func TestGenerateCommandRealRegistryRefusesOutsideAProject(t *testing.T) {
+	// Exercises the actual production wiring rather than a fake. The working
+	// directory of a test run is this repository, which has a go.mod but is
+	// not a generated application; what matters is that the command reports a
+	// failure rather than writing into whatever it was pointed at.
 	tree := []*Command{generateCommand()}
+	t.Chdir(t.TempDir())
 
 	for _, kind := range []string{"feature", "resource"} {
 		code, stdout, stderr := runGenerateFixture(t, tree, []string{"generate", kind, "invoice"})
 		if code == int(clierr.ExitOK) {
-			t.Errorf("generate %s: exit code = 0, want non-zero (never fake success)", kind)
+			t.Errorf("generate %s in an empty directory: exit code = 0, want non-zero", kind)
 		}
 		if stdout != "" {
-			t.Errorf("generate %s: stdout = %q, want empty (no success output on failure)", kind, stdout)
+			t.Errorf("generate %s: stdout = %q, want empty on failure", kind, stdout)
 		}
-		if !strings.Contains(stderr, "not implemented") {
-			t.Errorf("generate %s: stderr = %q, want an honest not-implemented message", kind, stderr)
+		if !strings.Contains(stderr, "go.mod") {
+			t.Errorf("generate %s: stderr = %q, want it to say this is not a Go project", kind, stderr)
 		}
 	}
 }
@@ -271,16 +273,4 @@ func TestGenerateBareCommandShowsHelpNotAnError(t *testing.T) {
 func TestGenerateCommandHasNoReservedFlagCollisions(t *testing.T) {
 	t.Parallel()
 	checkNoReservedFlagCollisions(t, nil, []*Command{generateCommand()})
-}
-
-func TestNotImplementedErrorMessage(t *testing.T) {
-	t.Parallel()
-	err := &NotImplementedError{Milestone: "M7", Kind: "feature"}
-	var target *NotImplementedError
-	if !errors.As(error(err), &target) {
-		t.Fatal("errors.As failed on *NotImplementedError itself")
-	}
-	if !strings.Contains(err.Error(), "M7") || !strings.Contains(err.Error(), "feature") {
-		t.Errorf("Error() = %q, want it to mention the milestone and kind", err.Error())
-	}
 }

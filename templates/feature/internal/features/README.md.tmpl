@@ -1,0 +1,27 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+
+# {{.Title}}
+
+Nise generated this feature's shape and none of its rules. What is here is a
+package, a use case with its transaction boundary and its permission check, and
+a place for everything else.
+
+## What Nise did not do
+
+It did not edit a single file it had not just written ([ADR
+0026](../../../docs/adr/0026-feature-generation-writes-only-new-files.md)). The
+lines to add to `internal/app/app.go` and the rest were printed by the command;
+apply them yourself, so every change to a file you own is a change in your own
+diff.
+
+It also invented no domain rules. Every `TODO` in this package is a decision
+waiting for somebody who knows what a {{.Title}} is.
+
+## The two rules this package must keep
+
+- **The permission check lives in the use case.** A check in a handler is a
+  check the next caller — a job, a CLI command, another use case — does not
+  perform.
+- **The use case owns the transaction.** The store never begins one, and
+  everything a single business change touches belongs inside a single `Within`
+  call, so it either all happened or none of it did.

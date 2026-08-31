@@ -1,0 +1,70 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package {{.Singular}}
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// {{.TitlePlural}} is this feature's use case: it owns the transaction
+// boundary, checks authority, and is the only thing here that reaches the
+// database.
+//
+// It takes its dependencies as constructor parameters and holds no package
+// state, because that is the whole of Nise's wiring model: the object graph is
+// readable top to bottom in internal/app, and a dependency that is not in this
+// struct cannot be reached from any method on it. Add a field when a method
+// needs one; do not reach for a package-level variable, a registry, or a
+// context value.
+type {{.TitlePlural}} struct {
+	transactor *database.Transactor
+}
+
+// New{{.TitlePlural}} constructs the use case.
+//
+// `nise generate` printed the line to add to internal/app/app.go and
+// deliberately did not write it: app.go is yours, and a generator that edited
+// it would be a generator that could discard what you put there (ADR 0026).
+func New{{.TitlePlural}}(transactor *database.Transactor) (*{{.TitlePlural}}, error) {
+	if transactor == nil {
+		return nil, errors.New("{{.Singular}}: a transactor is required")
+	}
+	return &{{.TitlePlural}}{transactor: transactor}, nil
+}
+
+// Do is the worked example, and the only method Nise wrote. Replace it.
+//
+// It is here because the two things it shows are the two things this
+// codebase's use cases are required to do, and both are easier to copy than
+// to remember:
+//
+//   - The permission check is in the use case, not in a handler. A check in a
+//     handler is a check the next caller — a job, a CLI command, another use
+//     case — does not perform, and authorization defaults to deny, so a caller
+//     with no resolved grants is refused rather than admitted.
+//
+//   - The transaction is owned here. The store never begins one, a caller
+//     already inside one is refused by the runner rather than silently nested,
+//     and everything a single business change touches belongs inside a single
+//     Within call, so it either all happened or none of it did.
+func (u *{{.TitlePlural}}) Do(ctx context.Context) error {
+	if err := authorization.Require(ctx, authorization.{{.PermissionManage}}); err != nil {
+		return err
+	}
+
+	// TODO: replace this with what this feature actually does. Read the
+	// transaction's isolation and access mode from what the work needs:
+	// transaction.Options{Access: transaction.ReadOnly} for a query, the zero
+	// value for a change.
+	return u.transactor.Within(ctx, transaction.Options{}, func(_ context.Context, _ pgx.Tx) error {
+		return nil
+	})
+}

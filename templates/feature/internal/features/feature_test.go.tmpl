@@ -1,0 +1,48 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package {{.Singular}}_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"{{.ModulePath}}/internal/features/{{.Singular}}"
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// The two tests Nise wrote are the two that fail closed. Everything else here
+// is yours: test the rules you write and their failure paths, against real
+// PostgreSQL through internal/platform/database/dbtest.
+
+// A use case that can be constructed without its dependencies is one that will
+// be, and the failure then arrives as a nil dereference on the first real
+// request rather than at startup.
+func TestNew{{.TitlePlural}}RequiresATransactor(t *testing.T) {
+	t.Parallel()
+
+	if _, err := {{.Singular}}.New{{.TitlePlural}}(nil); err == nil {
+		t.Fatal("New{{.TitlePlural}} accepted a nil transactor")
+	}
+}
+
+// Default deny: a context carrying no resolved grants is refused, and refused
+// before anything reaches the database.
+//
+// The transactor is a zero value on purpose. The authorization check runs
+// first, so a passing test never uses it — and if that check is ever deleted
+// in a refactor, the call falls through to an unusable transactor and this
+// test fails with a different error instead of quietly succeeding.
+func TestDoRefusesACallerWithNoGrants(t *testing.T) {
+	t.Parallel()
+
+	use, err := {{.Singular}}.New{{.TitlePlural}}(&database.Transactor{})
+	if err != nil {
+		t.Fatalf("New{{.TitlePlural}}: %v", err)
+	}
+
+	if err := use.Do(context.Background()); !errors.Is(err, authorization.ErrDenied) {
+		t.Fatalf("Do without grants = %v, want authorization.ErrDenied", err)
+	}
+}
