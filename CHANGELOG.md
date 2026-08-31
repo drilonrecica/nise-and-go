@@ -70,6 +70,12 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   the logger would redact are refused rather than redacted.
 - Add `logging.IsSensitiveKey`, so a second store of structured data can refuse
   what the logger would redact using that rule rather than a copy of it.
+- Add the public `runtime/authz` package: permissions, role bundles, and a
+  closed catalog that refuses a role bundling an undeclared permission. There
+  are no wildcards, nothing lets a check ask about a role, and an account with
+  no roles holds nothing. Generated applications gain an application-owned
+  permission catalog, a `user_roles` migration, and grant, revoke, resolve, and
+  role-holder use cases.
 
 ### Fixed
 

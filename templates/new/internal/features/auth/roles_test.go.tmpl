@@ -1,0 +1,240 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"errors"
+	"testing"
+
+	"github.com/drilonrecica/nise-and-go/runtime/authz"
+
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+func testRoles(t *testing.T, h *harness) *Roles {
+	t.Helper()
+
+	catalog, err := authorization.Catalog()
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+	roles, err := NewRoles(h.transactor(t), catalog)
+	if err != nil {
+		t.Fatalf("NewRoles: %v", err)
+	}
+	return roles
+}
+
+func TestGrantAndRevokeRoles(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	roles := testRoles(t, h)
+	account := h.account(t, "person@example.test")
+	granter := h.account(t, "admin@example.test")
+
+	if err := roles.Grant(h.ctx, account.ID, authorization.RoleAuditor, granter.ID); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	grants, err := roles.Grants(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 1 || grants[0].Role != authorization.RoleAuditor || grants[0].GrantedBy != granter.ID {
+		t.Fatalf("grants = %#v", grants)
+	}
+
+	// Re-granting keeps the original record of who first gave the privilege.
+	if err := roles.Grant(h.ctx, account.ID, authorization.RoleAuditor, account.ID); err != nil {
+		t.Fatalf("re-Grant: %v", err)
+	}
+	grants, err = roles.Grants(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 1 || grants[0].GrantedBy != granter.ID {
+		t.Fatalf("re-granting rewrote the record: %#v", grants)
+	}
+
+	if err := roles.Revoke(h.ctx, account.ID, authorization.RoleAuditor); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if err := roles.Revoke(h.ctx, account.ID, authorization.RoleAuditor); !errors.Is(err, ErrGrantNotFound) {
+		t.Fatalf("a second revocation error = %v, want ErrGrantNotFound", err)
+	}
+	grants, err = roles.Grants(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 0 {
+		t.Fatalf("grants remain after revocation: %#v", grants)
+	}
+}
+
+func TestGrantRefusesUndeclaredRolesAndUnknownAccounts(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	roles := testRoles(t, h)
+	account := h.account(t, "person@example.test")
+
+	// A grant of a role the catalog does not declare would create a row that
+	// authorizes nothing, and nobody would notice until the permission it was
+	// meant to carry was checked.
+	if err := roles.Grant(h.ctx, account.ID, "superuser", ""); !errors.Is(err, ErrUnknownRole) {
+		t.Errorf("error = %v, want ErrUnknownRole", err)
+	}
+	if err := roles.Grant(h.ctx, account.ID, "", ""); !errors.Is(err, ErrUnknownRole) {
+		t.Errorf("an empty role was accepted: %v", err)
+	}
+	if err := roles.Grant(h.ctx, "not-a-uuid", authorization.RoleAuditor, ""); !errors.Is(err, ErrAccountNotFound) {
+		t.Errorf("error = %v, want ErrAccountNotFound", err)
+	}
+	if err := roles.Grant(h.ctx, "3f2504e0-4f89-11d3-9a0c-0305e82c3301", authorization.RoleAuditor, ""); !errors.Is(err, ErrAccountNotFound) {
+		t.Errorf("granting to a nonexistent account: error = %v, want ErrAccountNotFound", err)
+	}
+	if _, err := roles.Holders(h.ctx, "superuser", 10); !errors.Is(err, ErrUnknownRole) {
+		t.Errorf("Holders of an undeclared role: error = %v", err)
+	}
+}
+
+func TestPermissionsResolveThroughTheCatalog(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	roles := testRoles(t, h)
+	account := h.account(t, "person@example.test")
+
+	// An account with no roles holds nothing. Default deny is the shape of
+	// the empty case, not a rule applied on top of it.
+	granted, unknown, err := roles.Permissions(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Permissions: %v", err)
+	}
+	if granted.Len() != 0 || len(unknown) != 0 {
+		t.Fatalf("an account with no roles holds %v", granted.All())
+	}
+
+	if err := roles.Grant(h.ctx, account.ID, authorization.RoleAuditor, ""); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	granted, unknown, err = roles.Permissions(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Permissions: %v", err)
+	}
+	if len(unknown) != 0 {
+		t.Fatalf("unknown roles: %v", unknown)
+	}
+	if !granted.Has(authorization.AuditRead) {
+		t.Errorf("the auditor cannot read the audit log: %v", granted.All())
+	}
+	if granted.Has(authorization.RolesManage) {
+		t.Errorf("the auditor can manage roles: %v", granted.All())
+	}
+
+	// Two roles combine into the union of their permissions.
+	if err := roles.Grant(h.ctx, account.ID, authorization.RoleAdministrator, ""); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	granted, _, err = roles.Permissions(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Permissions: %v", err)
+	}
+	if !granted.HasAll(authorization.AuditRead, authorization.RolesManage) {
+		t.Errorf("combined grants = %v", granted.All())
+	}
+}
+
+func TestAStaleGrantContributesNothingAndIsReported(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+
+	// A catalog that declares a role the database does not, and a database
+	// row naming a role this catalog no longer declares: the second is what
+	// happens after somebody removes a role definition.
+	if _, err := h.pool.Exec(h.ctx,
+		`INSERT INTO user_roles (user_id, role, granted_at) VALUES ($1, 'retired_role', now())`,
+		account.ID); err != nil {
+		t.Fatalf("insert a stale grant: %v", err)
+	}
+	roles := testRoles(t, h)
+	if err := roles.Grant(h.ctx, account.ID, authorization.RoleAuditor, ""); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+
+	granted, unknown, err := roles.Permissions(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Permissions: %v", err)
+	}
+	// Refusing would lock the account out over a role definition somebody
+	// removed; ignoring silently would hide the removal.
+	if !granted.Has(authorization.AuditRead) {
+		t.Errorf("a stale grant discarded the valid ones: %v", granted.All())
+	}
+	if len(unknown) != 1 || unknown[0] != "retired_role" {
+		t.Errorf("unknown = %v, want the stale role reported", unknown)
+	}
+
+	// It must still be removable, or the row would be permanent.
+	if err := roles.Revoke(h.ctx, account.ID, "retired_role"); err != nil {
+		t.Errorf("a stale grant could not be revoked: %v", err)
+	}
+}
+
+func TestHoldersAnswersWhoCanDoThis(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	roles := testRoles(t, h)
+	first := h.account(t, "a@example.test")
+	second := h.account(t, "b@example.test")
+	other := h.account(t, "c@example.test")
+
+	for _, account := range []Account{first, second} {
+		if err := roles.Grant(h.ctx, account.ID, authorization.RoleAdministrator, ""); err != nil {
+			t.Fatalf("Grant: %v", err)
+		}
+	}
+	if err := roles.Grant(h.ctx, other.ID, authorization.RoleAuditor, ""); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+
+	holders, err := roles.Holders(h.ctx, authorization.RoleAdministrator, 10)
+	if err != nil {
+		t.Fatalf("Holders: %v", err)
+	}
+	if len(holders) != 2 {
+		t.Fatalf("listed %d administrators, want 2", len(holders))
+	}
+	if holders[0].Email != "a@example.test" || holders[1].Email != "b@example.test" {
+		t.Errorf("holders are not in a stable order: %#v", holders)
+	}
+	if holders[0].Status != StatusActive || holders[0].UserID != first.ID {
+		t.Errorf("holder = %#v", holders[0])
+	}
+
+	// Deleting the account removes its grants with it: a privilege held by
+	// nobody is not a privilege.
+	if _, err := h.pool.Exec(h.ctx, `DELETE FROM users WHERE id = $1`, first.ID); err != nil {
+		t.Fatalf("delete an account: %v", err)
+	}
+	holders, err = roles.Holders(h.ctx, authorization.RoleAdministrator, 10)
+	if err != nil {
+		t.Fatalf("Holders: %v", err)
+	}
+	if len(holders) != 1 || holders[0].Email != "b@example.test" {
+		t.Fatalf("holders after deletion = %#v", holders)
+	}
+}
+
+func TestRolesRequireTheirDependencies(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := authorization.Catalog()
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+	if _, err := NewRoles(nil, catalog); err == nil {
+		t.Error("NewRoles accepted a nil transactor")
+	}
+	if _, err := NewRoles(&database.Transactor{}, nil); err == nil {
+		t.Error("NewRoles accepted a nil catalog")
+	}
+	var zero authz.Set
+	if zero.Len() != 0 {
+		t.Error("the zero permission set is not empty")
+	}
+}

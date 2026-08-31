@@ -1,0 +1,102 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package authorization
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/drilonrecica/nise-and-go/runtime/authz"
+)
+
+func TestCatalogIsConstructible(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := Catalog()
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+	if len(catalog.Permissions()) == 0 || len(catalog.RoleNames()) == 0 {
+		t.Fatal("the catalog declares nothing")
+	}
+}
+
+func TestEveryDeclaredPermissionIsBundledBySomeRole(t *testing.T) {
+	t.Parallel()
+
+	// A permission no role grants can never be held, so a use case checking
+	// it denies everyone forever. That is occasionally intended — a
+	// permission reserved for a role not written yet — but it is worth
+	// noticing rather than discovering from a support ticket.
+	catalog, err := Catalog()
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+	granted, unknown := catalog.Grants(catalog.RoleNames()...)
+	if len(unknown) != 0 {
+		t.Fatalf("the catalog names roles it does not declare: %v", unknown)
+	}
+	for _, permission := range catalog.Permissions() {
+		if !granted.Has(permission) {
+			t.Errorf("no role bundles %q, so nobody can ever hold it", permission)
+		}
+	}
+}
+
+func TestAuditorCanSeeButNotChange(t *testing.T) {
+	t.Parallel()
+
+	// "Look, do not touch" is what makes an audit role safe to grant widely,
+	// so it is worth a test rather than a comment.
+	catalog, err := Catalog()
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+	auditor, unknown := catalog.Grants(RoleAuditor)
+	if len(unknown) != 0 {
+		t.Fatalf("unknown roles: %v", unknown)
+	}
+	if !auditor.HasAll(AuditRead, UsersRead, RolesRead) {
+		t.Fatalf("the auditor cannot read: %v", auditor.All())
+	}
+	for _, permission := range []authz.Permission{UsersManage, RolesManage, SessionsRevoke} {
+		if auditor.Has(permission) {
+			t.Errorf("the auditor holds %q, which changes something", permission)
+		}
+	}
+	for _, permission := range auditor.All() {
+		if !strings.HasSuffix(permission.String(), ".read") {
+			t.Errorf("the auditor holds %q, which is not a read", permission)
+		}
+	}
+}
+
+func TestAdministratorHoldsEverything(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := Catalog()
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+	administrator, _ := catalog.Grants(RoleAdministrator)
+	for _, permission := range catalog.Permissions() {
+		if !administrator.Has(permission) {
+			t.Errorf("the administrator does not hold %q", permission)
+		}
+	}
+}
+
+func TestGrantingNoRolesGrantsNothing(t *testing.T) {
+	t.Parallel()
+
+	// Default deny is the shape of the empty case, not a rule applied on top
+	// of it: an account with no roles holds no permissions.
+	catalog, err := Catalog()
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+	granted, unknown := catalog.Grants()
+	if granted.Len() != 0 || len(unknown) != 0 {
+		t.Fatalf("granting no roles produced %v", granted.All())
+	}
+}

@@ -28,12 +28,23 @@ type Querier interface {
 	// FindUserByID resolves an account already identified by an authenticated
 	// session.
 	FindUserByID(ctx context.Context, arg FindUserByIDParams) (FindUserByIDRow, error)
+	// GrantRole assigns one role. Re-granting is a no-op rather than an error, so
+	// an administrator repeating themselves does not need a special case, and the
+	// original grant's time and granter are preserved.
+	GrantRole(ctx context.Context, arg GrantRoleParams) (int64, error)
+	// ListRoleHolders answers "who can do this", which is the question an audit or
+	// an offboarding review actually asks.
+	ListRoleHolders(ctx context.Context, arg ListRoleHoldersParams) ([]ListRoleHoldersRow, error)
+	// ListUserRoles returns the roles one account holds, in a stable order.
+	ListUserRoles(ctx context.Context, arg ListUserRolesParams) ([]ListUserRolesRow, error)
 	// ListUserSessions is the account's own view of its sessions. It returns no
 	// digest: there is nothing a client could do with one but leak it.
 	ListUserSessions(ctx context.Context, arg ListUserSessionsParams) ([]ListUserSessionsRow, error)
 	// RevokeOtherUserSessions ends every session except the one making the request,
 	// which is the "sign out everywhere else" action.
 	RevokeOtherUserSessions(ctx context.Context, arg RevokeOtherUserSessionsParams) (int64, error)
+	// RevokeRole removes one assignment.
+	RevokeRole(ctx context.Context, arg RevokeRoleParams) (int64, error)
 	// RevokeSession ends one session. The revoked_at guard makes it idempotent and
 	// preserves the first revocation's reason.
 	RevokeSession(ctx context.Context, arg RevokeSessionParams) (int64, error)

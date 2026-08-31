@@ -31,6 +31,7 @@ Six milestone-2 tasks create packages here at roughly the same time. They need t
 | `runtime/password` | Argon2id hashing, versioned parameter sets, rehash detection, and parameter benchmarking (ADR 0017) |
 | `runtime/session` | Opaque session tokens, stored digests, the driver-independent session lifecycle, and the browser cookie policy (ADR 0017, ADR 0018) |
 | `runtime/forwarded` | Trusted-proxy policy and the resolution of a request's real client address, scheme, and host (ADR 0019) |
+| `runtime/authz` | Permissions, role bundles, and the closed catalog that declares them (ADR 0017) |
 
 No other package may be added to `runtime/` without an ADR.
 

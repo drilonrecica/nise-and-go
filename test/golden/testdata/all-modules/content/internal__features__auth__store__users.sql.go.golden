@@ -108,6 +108,141 @@ func (q *Queries) FindUserByID(ctx context.Context, arg FindUserByIDParams) (Fin
 	return i, err
 }
 
+const grantRole = `-- name: GrantRole :execrows
+INSERT INTO user_roles (user_id, role, granted_at, granted_by)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (user_id, role) DO NOTHING
+`
+
+type GrantRoleParams struct {
+	UserID    pgtype.UUID
+	Role      string
+	GrantedAt pgtype.Timestamptz
+	GrantedBy pgtype.UUID
+}
+
+// GrantRole assigns one role. Re-granting is a no-op rather than an error, so
+// an administrator repeating themselves does not need a special case, and the
+// original grant's time and granter are preserved.
+func (q *Queries) GrantRole(ctx context.Context, arg GrantRoleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, grantRole,
+		arg.UserID,
+		arg.Role,
+		arg.GrantedAt,
+		arg.GrantedBy,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const listRoleHolders = `-- name: ListRoleHolders :many
+SELECT u.id, u.email, u.status, r.granted_at
+FROM user_roles r
+JOIN users u ON u.id = r.user_id
+WHERE r.role = $1
+ORDER BY u.email
+LIMIT $2
+`
+
+type ListRoleHoldersParams struct {
+	Role  string
+	Limit int32
+}
+
+type ListRoleHoldersRow struct {
+	ID        pgtype.UUID
+	Email     string
+	Status    string
+	GrantedAt pgtype.Timestamptz
+}
+
+// ListRoleHolders answers "who can do this", which is the question an audit or
+// an offboarding review actually asks.
+func (q *Queries) ListRoleHolders(ctx context.Context, arg ListRoleHoldersParams) ([]ListRoleHoldersRow, error) {
+	rows, err := q.db.Query(ctx, listRoleHolders, arg.Role, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRoleHoldersRow{}
+	for rows.Next() {
+		var i ListRoleHoldersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.Status,
+			&i.GrantedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserRoles = `-- name: ListUserRoles :many
+SELECT role, granted_at, granted_by
+FROM user_roles
+WHERE user_id = $1
+ORDER BY role
+`
+
+type ListUserRolesParams struct {
+	UserID pgtype.UUID
+}
+
+type ListUserRolesRow struct {
+	Role      string
+	GrantedAt pgtype.Timestamptz
+	GrantedBy pgtype.UUID
+}
+
+// ListUserRoles returns the roles one account holds, in a stable order.
+func (q *Queries) ListUserRoles(ctx context.Context, arg ListUserRolesParams) ([]ListUserRolesRow, error) {
+	rows, err := q.db.Query(ctx, listUserRoles, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserRolesRow{}
+	for rows.Next() {
+		var i ListUserRolesRow
+		if err := rows.Scan(&i.Role, &i.GrantedAt, &i.GrantedBy); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const revokeRole = `-- name: RevokeRole :execrows
+DELETE FROM user_roles
+WHERE user_id = $1
+  AND role = $2
+`
+
+type RevokeRoleParams struct {
+	UserID pgtype.UUID
+	Role   string
+}
+
+// RevokeRole removes one assignment.
+func (q *Queries) RevokeRole(ctx context.Context, arg RevokeRoleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeRole, arg.UserID, arg.Role)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setUserStatus = `-- name: SetUserStatus :execrows
 UPDATE users
 SET status = $2,

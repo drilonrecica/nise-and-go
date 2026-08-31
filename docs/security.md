@@ -15,7 +15,7 @@ This document records the planned baseline, not an audit or guarantee.
 
 ## Authorization
 
-- Granular permissions are the primitive.
+- Granular permissions are the primitive. Implemented; see [authorization](authorization.md). The catalog is closed, roles may only bundle declared permissions, there are no wildcards, and nothing lets a check ask about a role.
 - Roles are named permission bundles.
 - Policies default to deny.
 - Use cases enforce authorization; hidden buttons are not security controls.

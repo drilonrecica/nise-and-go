@@ -1,0 +1,235 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/drilonrecica/nise-and-go/runtime/authz"
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/features/auth/store"
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// MaxRoleHolders bounds one page of "who holds this role".
+const MaxRoleHolders = 500
+
+// Errors the role use case reports.
+var (
+	// ErrUnknownRole reports a role the catalog does not declare. Granting
+	// one would create a row that authorizes nothing and that nobody would
+	// notice until the permission it was meant to carry was checked.
+	ErrUnknownRole = errors.New("the permission catalog does not declare that role")
+	// ErrGrantNotFound reports a revocation of a role the account does not
+	// hold.
+	ErrGrantNotFound = errors.New("that account does not hold that role")
+)
+
+// Grant is one role assignment.
+type Grant struct {
+	Role      string
+	GrantedAt time.Time
+	// GrantedBy is empty when the application granted the role itself,
+	// during enrollment or a migration.
+	GrantedBy string
+}
+
+// Holder is one account holding a role.
+type Holder struct {
+	UserID    string
+	Email     string
+	Status    string
+	GrantedAt time.Time
+}
+
+// Roles assigns and resolves role membership.
+//
+// It holds the catalog because every operation it offers has to be checked
+// against it: a grant of an undeclared role, or a resolution that silently
+// dropped one, would both be failures nobody sees until a permission check
+// gives the wrong answer.
+type Roles struct {
+	transactor *database.Transactor
+	catalog    *authz.Catalog
+	now        func() time.Time
+}
+
+// NewRoles constructs the role use case.
+func NewRoles(transactor *database.Transactor, catalog *authz.Catalog, options ...SessionsOption) (*Roles, error) {
+	if transactor == nil {
+		return nil, errors.New("auth: a transactor is required")
+	}
+	if catalog == nil {
+		return nil, errors.New("auth: a permission catalog is required")
+	}
+	roles := &Roles{transactor: transactor, catalog: catalog, now: time.Now}
+	clock := &Sessions{now: roles.now}
+	for _, option := range options {
+		option(clock)
+	}
+	roles.now = clock.now
+	return roles, nil
+}
+
+// Catalog returns the catalog this use case checks against.
+func (r *Roles) Catalog() *authz.Catalog { return r.catalog }
+
+// Grant assigns a role to an account.
+//
+// grantedBy is the account making the change, or empty when the application
+// itself is. Re-granting is not an error: an administrator repeating themselves
+// needs no special case, and the original grant's time and granter are kept, so
+// the record still says who first gave the privilege.
+func (r *Roles) Grant(ctx context.Context, userID, role, grantedBy string) error {
+	user, err := parseUUID(userID)
+	if err != nil {
+		return ErrAccountNotFound
+	}
+	if _, declared := r.catalog.Role(role); !declared {
+		return fmt.Errorf("%w: %q", ErrUnknownRole, role)
+	}
+	var granter pgtype.UUID
+	if grantedBy != "" {
+		granter, err = parseUUID(grantedBy)
+		if err != nil {
+			return ErrAccountNotFound
+		}
+	}
+	now := r.now().UTC()
+
+	return r.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := store.New(tx).GrantRole(ctx, store.GrantRoleParams{
+			UserID:    user,
+			Role:      role,
+			GrantedAt: timestamp(now),
+			GrantedBy: granter,
+		}); err != nil {
+			if isForeignKeyViolation(err) {
+				return ErrAccountNotFound
+			}
+			return fmt.Errorf("granting the role: %w", err)
+		}
+		return nil
+	})
+}
+
+// Revoke removes a role assignment.
+func (r *Roles) Revoke(ctx context.Context, userID, role string) error {
+	user, err := parseUUID(userID)
+	if err != nil {
+		return ErrAccountNotFound
+	}
+
+	return r.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		// A role the catalog no longer declares is still revocable: refusing
+		// would leave a stale row nobody could remove.
+		revoked, err := store.New(tx).RevokeRole(ctx, store.RevokeRoleParams{UserID: user, Role: role})
+		if err != nil {
+			return fmt.Errorf("revoking the role: %w", err)
+		}
+		if revoked == 0 {
+			return ErrGrantNotFound
+		}
+		return nil
+	})
+}
+
+// Grants returns the roles an account holds, whether or not the catalog still
+// declares them.
+func (r *Roles) Grants(ctx context.Context, userID string) ([]Grant, error) {
+	user, err := parseUUID(userID)
+	if err != nil {
+		return nil, ErrAccountNotFound
+	}
+
+	var grants []Grant
+	err = r.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := store.New(tx).ListUserRoles(ctx, store.ListUserRolesParams{UserID: user})
+		if err != nil {
+			return fmt.Errorf("listing role grants: %w", err)
+		}
+		grants = make([]Grant, 0, len(rows))
+		for _, row := range rows {
+			grants = append(grants, Grant{
+				Role:      row.Role,
+				GrantedAt: row.GrantedAt.Time.UTC(),
+				GrantedBy: uuidString(row.GrantedBy),
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return grants, nil
+}
+
+// Permissions resolves what an account may do, and reports any grants naming a
+// role the catalog no longer declares.
+//
+// A stale grant contributes nothing and does not fail the request. Refusing
+// would lock an account out because of a role definition somebody removed;
+// silently ignoring it would hide the removal. Reporting it lets the caller log
+// it and move on.
+func (r *Roles) Permissions(ctx context.Context, userID string) (authz.Set, []string, error) {
+	grants, err := r.Grants(ctx, userID)
+	if err != nil {
+		return authz.Set{}, nil, err
+	}
+	names := make([]string, 0, len(grants))
+	for _, grant := range grants {
+		names = append(names, grant.Role)
+	}
+	granted, unknown := r.catalog.Grants(names...)
+	return granted, unknown, nil
+}
+
+// Holders answers "who can do this", which is the question an audit or an
+// offboarding review actually asks.
+func (r *Roles) Holders(ctx context.Context, role string, limit int) ([]Holder, error) {
+	if _, declared := r.catalog.Role(role); !declared {
+		return nil, fmt.Errorf("%w: %q", ErrUnknownRole, role)
+	}
+	if limit < 1 || limit > MaxRoleHolders {
+		limit = MaxRoleHolders
+	}
+
+	var holders []Holder
+	err := r.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := store.New(tx).ListRoleHolders(ctx, store.ListRoleHoldersParams{
+			Role:  role,
+			Limit: int32(limit),
+		})
+		if err != nil {
+			return fmt.Errorf("listing role holders: %w", err)
+		}
+		holders = make([]Holder, 0, len(rows))
+		for _, row := range rows {
+			holders = append(holders, Holder{
+				UserID:    uuidString(row.ID),
+				Email:     row.Email,
+				Status:    row.Status,
+				GrantedAt: row.GrantedAt.Time.UTC(),
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return holders, nil
+}
+
+// isForeignKeyViolation reports whether err is PostgreSQL's foreign-key error,
+// which here means the account does not exist.
+func isForeignKeyViolation(err error) bool {
+	var pgErr interface{ SQLState() string }
+	return errors.As(err, &pgErr) && pgErr.SQLState() == "23503"
+}
