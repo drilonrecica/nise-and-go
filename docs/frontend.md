@@ -77,6 +77,8 @@ Navigation is **data**, in `src/lib/navigation.ts`: a list of sections, each wit
 
 A `permission` on an item hides it from a session that cannot use it. That is a courtesy and never a control: the server refuses the request regardless, and hiding a link the caller could still reach by typing its URL would be the only thing that changed.
 
+The permissions come from `GET /api/v1/session`, which lists what the request's own resolved grants hold, and `session.can(permission)` is how a component asks. Generated resource pages use it the same way — the create, edit, and delete controls are absent for a session that cannot use them — and every one of those places says in a comment that hiding a control is not securing it, because the next reader has to know which of the two it is.
+
 Breadcrumbs label known paths from the navigation list and unknown segments from the segment itself, so a generated resource's detail page or a bare identifier still produces a readable trail rather than an empty one. A malformed percent escape in the URL is rendered as-is rather than throwing.
 
 The current-section rule is a path-boundary match, not a string prefix: `/settings` claims `/settings/roles` and does not claim `/settings-archive`. An item marked `exact` — the dashboard at `/` — claims only itself, or it would be current on every page in the application.

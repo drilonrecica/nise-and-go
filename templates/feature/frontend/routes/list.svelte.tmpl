@@ -11,7 +11,12 @@
 	import Skeleton from '$lib/components/ui/Skeleton.svelte';
 	import Table from '$lib/components/ui/Table.svelte';
 	import { list{{.TitlePlural}}, type {{.Type}}Page } from '$lib/features/{{.Singular}}/api';
+	import { session } from '$lib/session.svelte';
 	import { listHref, listQuery, readListState } from '$lib/table/list-state';
+
+	// An action the session cannot perform is not offered. A courtesy, never a
+	// control: the server refuses the request either way.
+	const mayManage = $derived(session.can('{{.PermissionManageValue}}'));
 
 	// The filters this list understands. Naming them is what keeps an
 	// unrelated parameter — a tracking tag somebody pasted — out of the
@@ -81,7 +86,9 @@
 <div class="mx-auto max-w-5xl px-4 py-8 sm:px-6">
 	<div class="flex flex-wrap items-center justify-between gap-3">
 		<h1 class="text-2xl font-semibold tracking-tight text-text">{{.TitlePlural}}</h1>
-		<Button variant="primary" href="/{{.Plural}}/new">New {{.Singular}}</Button>
+		{#if mayManage}
+			<Button variant="primary" href="/{{.Plural}}/new">New {{.Singular}}</Button>
+		{/if}
 	</div>
 
 	<form class="mt-5 flex max-w-md items-end gap-2" onsubmit={submitSearch} role="search">
@@ -135,7 +142,7 @@
 				{#snippet action()}
 					{#if listState.search}
 						<Button href={listHref(page.url, { search: '' }, filters)}>Clear search</Button>
-					{:else}
+					{:else if mayManage}
 						<Button variant="primary" href="/{{.Plural}}/new">New {{.Singular}}</Button>
 					{/if}
 				{/snippet}
@@ -162,7 +169,9 @@
 							</td>
 							<td class="px-4 py-2 text-text-muted">{when(item.created_at)}</td>
 							<td class="px-4 py-2 text-right">
-								<Button size="sm" variant="ghost" href="/{{.Plural}}/{item.id}/edit">Edit</Button>
+								{#if mayManage}
+									<Button size="sm" variant="ghost" href="/{{.Plural}}/{item.id}/edit">Edit</Button>
+								{/if}
 							</td>
 						</tr>
 					{/each}

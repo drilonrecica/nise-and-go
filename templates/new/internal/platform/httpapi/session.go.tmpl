@@ -6,9 +6,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sort"
 	"time"
 
 	"{{.ModulePath}}/internal/features/auth"
+	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
 	"{{.ModulePath}}/internal/platform/httpapi/problem"
 	"{{.ModulePath}}/internal/platform/httpauth"
@@ -70,7 +72,7 @@ func (s *Server) GetCurrentSession(ctx context.Context, _ openapigen.GetCurrentS
 		// anything, so it reads as unauthenticated.
 		return nil, problem.Wrap(problem.AuthenticationRequired(), err)
 	}
-	return openapigen.GetCurrentSession200JSONResponse(sessionResource(account, current)), nil
+	return openapigen.GetCurrentSession200JSONResponse(sessionResource(ctx, account, current)), nil
 }
 
 // SignIn exchanges an address and password for a session, or for a second-factor
@@ -89,7 +91,7 @@ func (s *Server) SignIn(ctx context.Context, request openapigen.SignInRequestObj
 		// ask; the audit record holds which one it was.
 		return nil, problem.Wrap(problem.InvalidCredentials(), err)
 	}
-	return s.signedIn(login), nil
+	return s.signedIn(ctx, login), nil
 }
 
 // CompleteSecondFactor finishes a sign-in that opened a challenge.
@@ -113,7 +115,7 @@ func (s *Server) CompleteSecondFactor(ctx context.Context, request openapigen.Co
 		cookies: s.cookies,
 		issued:  login.Session,
 		inner: openapigen.CompleteSecondFactor200JSONResponse(
-			sessionResource(account, recordOf(login.Session)),
+			sessionResource(ctx, account, recordOf(login.Session)),
 		),
 	}, nil
 }
@@ -276,10 +278,32 @@ func isPasswordRefusal(err error) bool {
 		errors.Is(err, passwords.ErrDerivedFromAddress)
 }
 
+// sessionPermissions lists what the request's own grants hold.
+//
+// It is what lets the interface hide an action the server would refuse. That
+// is a courtesy and never a control — the use case checks the same permissions
+// and refuses a caller who ignores the list — so the answer is read from the
+// grants this request already resolved rather than from a second lookup that
+// could disagree with them.
+func sessionPermissions(ctx context.Context) []string {
+	grants, ok := authorization.GrantsFrom(ctx)
+	if !ok {
+		return []string{}
+	}
+	held := grants.Permissions.All()
+	names := make([]string, 0, len(held))
+	for _, permission := range held {
+		names = append(names, permission.String())
+	}
+	sort.Strings(names)
+	return names
+}
+
 // sessionResource builds the public view of an account and its session. The
 // token is deliberately absent: it exists in the cookie and nowhere else.
-func sessionResource(account auth.Account, current sessionRecord) openapigen.Session {
+func sessionResource(ctx context.Context, account auth.Account, current sessionRecord) openapigen.Session {
 	return openapigen.Session{
+		Permissions: sessionPermissions(ctx),
 		Account: openapigen.Account{
 			Id:     account.ID,
 			Email:  account.Email,
@@ -310,8 +334,8 @@ func ownsSession(summaries []auth.Summary, id string) bool {
 }
 
 // signedIn builds the finished-sign-in response, including its cookies.
-func (s *Server) signedIn(login auth.Login) openapigen.SignInResponseObject {
-	resource := sessionResource(login.Account, recordOf(login.Session))
+func (s *Server) signedIn(ctx context.Context, login auth.Login) openapigen.SignInResponseObject {
+	resource := sessionResource(ctx, login.Account, recordOf(login.Session))
 	return withSignInCookies{
 		cookies: s.cookies,
 		issued:  login.Session,

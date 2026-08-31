@@ -4,6 +4,7 @@
 
 	import Icon from '$lib/components/ui/Icon.svelte';
 	import { isCurrent, navigation } from '$lib/navigation';
+	import { session } from '$lib/session.svelte';
 
 	let {
 		collapsed = false,
@@ -32,7 +33,13 @@
 				</h2>
 			{/if}
 			<ul class="space-y-0.5">
-				{#each section.items as item (item.href)}
+				<!--
+					An item the session cannot use is not shown. That is a
+					courtesy and never a control: the server refuses the request
+					either way, and somebody who types the URL reaches the same
+					refusal. Hiding a control is not securing it.
+				-->
+				{#each section.items.filter((item) => !item.permission || session.can(item.permission)) as item (item.href)}
 					{@const current = isCurrent(item, page.url.pathname)}
 					<li>
 						<a

@@ -189,6 +189,9 @@ type Session struct {
 	Account   Account   `json:"account"`
 	ExpiresAt time.Time `json:"expires_at"`
 
+	// Permissions Every permission this session holds, so the interface can hide an action the server would refuse. It is a courtesy and never a control: the server checks the same permissions in the use case, and a caller who ignores this list gets the same refusal.
+	Permissions []string `json:"permissions"`
+
 	// ProvenAt When the holder last proved their identity with a password.
 	ProvenAt  time.Time `json:"proven_at"`
 	SessionId string    `json:"session_id"`

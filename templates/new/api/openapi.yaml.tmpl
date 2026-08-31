@@ -269,9 +269,20 @@ components:
         - session_id
         - expires_at
         - proven_at
+        - permissions
       properties:
         account:
           $ref: '#/components/schemas/Account'
+        permissions:
+          type: array
+          description: >-
+            Every permission this session holds, so the interface can hide an
+            action the server would refuse. It is a courtesy and never a
+            control: the server checks the same permissions in the use case,
+            and a caller who ignores this list gets the same refusal.
+          items:
+            type: string
+            maxLength: 64
         session_id:
           type: string
           minLength: 1
