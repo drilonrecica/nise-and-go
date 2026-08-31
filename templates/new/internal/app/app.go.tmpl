@@ -25,6 +25,7 @@ import (
 
 	migrationdb "{{.ModulePath}}/db"
 	"{{.ModulePath}}/internal/features/auth"
+	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/config"
 	"{{.ModulePath}}/internal/platform/database"
 	"{{.ModulePath}}/internal/platform/httpapi"
@@ -131,6 +132,25 @@ func Run(ctx context.Context, modeOverride string) error {
 	if err != nil {
 		return fmt.Errorf("building the session resolver: %w", err)
 	}
+	permissionCatalog, err := authorization.Catalog()
+	if err != nil {
+		return fmt.Errorf("building the permission catalog: %w", err)
+	}
+	roles, err := auth.NewRoles(transactor, permissionCatalog)
+	if err != nil {
+		return fmt.Errorf("building the role use case: %w", err)
+	}
+	// The session source is injected rather than imported, so the
+	// authorization and session packages do not become mutually dependent the
+	// moment one wants something from the other.
+	authorizationResolver, err := authorization.NewResolver(roles, permissionCatalog, func(ctx context.Context) (string, bool) {
+		record, ok := httpauth.FromContext(ctx)
+		return record.UserID, ok
+	})
+	if err != nil {
+		return fmt.Errorf("building the authorization resolver: %w", err)
+	}
+
 	originPolicy, err := httpauth.NewOriginPolicy(cfg.AllowedOrigins)
 	if err != nil {
 		return fmt.Errorf("building the allowed-origin policy: %w", err)
@@ -170,8 +190,11 @@ func Run(ctx context.Context, modeOverride string) error {
 			// The anti-forgery guard runs inside the resolver, so the
 			// session it checks the token against is the one already
 			// resolved for this request.
-			API:      []httpapi.Middleware{sessionResolver.Middleware, apiGuard.Middleware},
-			Document: []httpapi.Middleware{sessionResolver.Middleware, documentGuard.Middleware},
+			// Authority is resolved after the session it belongs to and
+			// before the guard, so one request resolves it once and every
+			// use case behind the handler sees the same answer.
+			API:      []httpapi.Middleware{sessionResolver.Middleware, authorizationResolver.Middleware, apiGuard.Middleware},
+			Document: []httpapi.Middleware{sessionResolver.Middleware, authorizationResolver.Middleware, documentGuard.Middleware},
 		},
 	})
 	if err != nil {

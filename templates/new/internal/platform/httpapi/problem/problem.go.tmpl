@@ -91,6 +91,10 @@ var (
 		"/problems/idempotency-key-reuse", "Idempotency Key Reuse", http.StatusUnprocessableEntity,
 		"This idempotency key was already used for a different request.", "idempotency_key_reuse",
 	)
+	permissionDenied = mustDefinition(
+		"/problems/permission-denied", "Permission Denied", http.StatusForbidden,
+		"The account does not have permission to do that.", "permission_denied",
+	)
 	crossSiteRequest = mustDefinition(
 		"/problems/cross-site-request", "Cross-Site Request", http.StatusForbidden,
 		"This state-changing request did not come from this application.", "cross_site_request",
@@ -145,6 +149,12 @@ func IdempotencyConflict() Definition { return idempotencyConflict }
 // failure. It is a 422 because the request is syntactically fine and
 // semantically wrong, and no retry of it will ever succeed.
 func IdempotencyKeyReuse() Definition { return idempotencyKeyReuse }
+
+// PermissionDenied returns the authorization refusal. It names no permission
+// and no reason: "you are not allowed, and by the way that record exists" is
+// the leak a 403 was supposed to prevent, and which permission was missing is
+// something the server's log and the audit record hold.
+func PermissionDenied() Definition { return permissionDenied }
 
 // CrossSiteRequest returns the anti-forgery refusal. It is deliberately one
 // public code for every reason the check failed: which of a caller's guesses

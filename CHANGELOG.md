@@ -76,6 +76,12 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   no roles holds nothing. Generated applications gain an application-owned
   permission catalog, a `user_roles` migration, and grant, revoke, resolve, and
   role-holder use cases.
+- Add default-deny use-case authorization: `authorization.Require` takes a
+  request context rather than a permission set, denies on every unresolved path,
+  and a resolution failure produces empty authority rather than an error.
+  Authority is resolved once per request by middleware that never rejects.
+  Role changes, account status changes, and reading the audit log are now
+  enforced in their use cases. Adds the `permission_denied` Problem type.
 
 ### Fixed
 

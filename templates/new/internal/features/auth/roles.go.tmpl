@@ -15,6 +15,7 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/transaction"
 
 	"{{.ModulePath}}/internal/features/auth/store"
+	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/database"
 )
 
@@ -81,13 +82,34 @@ func NewRoles(transactor *database.Transactor, catalog *authz.Catalog, options .
 // Catalog returns the catalog this use case checks against.
 func (r *Roles) Catalog() *authz.Catalog { return r.catalog }
 
-// Grant assigns a role to an account.
+// Grant assigns a role to an account, on behalf of the authenticated caller.
 //
-// grantedBy is the account making the change, or empty when the application
-// itself is. Re-granting is not an error: an administrator repeating themselves
-// needs no special case, and the original grant's time and granter are kept, so
-// the record still says who first gave the privilege.
+// The caller must hold roles.manage — the permission that leads to every other
+// one, which is why it is checked here in the use case rather than left to
+// whatever route happens to reach it.
+//
+// Re-granting is not an error: an administrator repeating themselves needs no
+// special case, and the original grant's time and granter are kept, so the
+// record still says who first gave the privilege.
 func (r *Roles) Grant(ctx context.Context, userID, role, grantedBy string) error {
+	if err := authorization.Require(ctx, authorization.RolesManage); err != nil {
+		return err
+	}
+	return r.grant(ctx, userID, role, grantedBy)
+}
+
+// GrantAsSystem assigns a role without an authorization check.
+//
+// It exists for the two moments where there is no authenticated caller to
+// check: enrolling the first administrator, and a migration that assigns a role
+// the application has just introduced. It is named this way so that it is
+// obvious in a review and greppable in an audit, and every use of it should be
+// accompanied by an audit record naming the system as the actor.
+func (r *Roles) GrantAsSystem(ctx context.Context, userID, role string) error {
+	return r.grant(ctx, userID, role, "")
+}
+
+func (r *Roles) grant(ctx context.Context, userID, role, grantedBy string) error {
 	user, err := parseUUID(userID)
 	if err != nil {
 		return ErrAccountNotFound
@@ -120,8 +142,11 @@ func (r *Roles) Grant(ctx context.Context, userID, role, grantedBy string) error
 	})
 }
 
-// Revoke removes a role assignment.
+// Revoke removes a role assignment. The caller must hold roles.manage.
 func (r *Roles) Revoke(ctx context.Context, userID, role string) error {
+	if err := authorization.Require(ctx, authorization.RolesManage); err != nil {
+		return err
+	}
 	user, err := parseUUID(userID)
 	if err != nil {
 		return ErrAccountNotFound
@@ -143,6 +168,11 @@ func (r *Roles) Revoke(ctx context.Context, userID, role string) error {
 
 // Grants returns the roles an account holds, whether or not the catalog still
 // declares them.
+//
+// It is deliberately unchecked: it is what the authorization resolver calls to
+// find out what the caller may do, so requiring a permission here would need a
+// permission to be resolved first. Reading another account's roles through an
+// HTTP surface is Holders, which is checked.
 func (r *Roles) Grants(ctx context.Context, userID string) ([]Grant, error) {
 	user, err := parseUUID(userID)
 	if err != nil {
@@ -192,8 +222,11 @@ func (r *Roles) Permissions(ctx context.Context, userID string) (authz.Set, []st
 }
 
 // Holders answers "who can do this", which is the question an audit or an
-// offboarding review actually asks.
+// offboarding review actually asks. The caller must hold roles.read.
 func (r *Roles) Holders(ctx context.Context, role string, limit int) ([]Holder, error) {
+	if err := authorization.Require(ctx, authorization.RolesRead); err != nil {
+		return nil, err
+	}
 	if _, declared := r.catalog.Role(role); !declared {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownRole, role)
 	}

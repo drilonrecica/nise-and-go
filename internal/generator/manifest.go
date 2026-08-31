@@ -217,6 +217,8 @@ var templateFiles = []templateFile{
 	{Template: "internal/platform/httpapi/router.go.tmpl", Output: "internal/platform/httpapi/router.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/router_test.go.tmpl", Output: "internal/platform/httpapi/router_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/transport_test.go.tmpl", Output: "internal/platform/httpapi/transport_test.go", Owner: OwnerApp},
+	{Template: "internal/platform/authorization/authorizer.go.tmpl", Output: "internal/platform/authorization/authorizer.go", Owner: OwnerApp},
+	{Template: "internal/platform/authorization/authorizer_test.go.tmpl", Output: "internal/platform/authorization/authorizer_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/authorization/catalog.go.tmpl", Output: "internal/platform/authorization/catalog.go", Owner: OwnerApp},
 	{Template: "internal/platform/authorization/catalog_test.go.tmpl", Output: "internal/platform/authorization/catalog_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpauth/context.go.tmpl", Output: "internal/platform/httpauth/context.go", Owner: OwnerApp},

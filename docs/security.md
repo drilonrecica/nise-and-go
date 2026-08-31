@@ -17,8 +17,8 @@ This document records the planned baseline, not an audit or guarantee.
 
 - Granular permissions are the primitive. Implemented; see [authorization](authorization.md). The catalog is closed, roles may only bundle declared permissions, there are no wildcards, and nothing lets a check ask about a role.
 - Roles are named permission bundles.
-- Policies default to deny.
-- Use cases enforce authorization; hidden buttons are not security controls.
+- Policies default to deny. Implemented: the zero permission set holds nothing, an unresolved request holds nothing, and requiring an empty permission list is a denial.
+- Use cases enforce authorization; hidden buttons are not security controls. Implemented; see [authorization](authorization.md). `Require` takes a context rather than a permission set, denies on every unresolved path, and a resolution failure denies rather than erroring.
 - Sensitive actions may require recent reauthentication and an audited reason.
 
 ## Tenant isolation

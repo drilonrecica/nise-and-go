@@ -1,0 +1,321 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package authorization
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/drilonrecica/nise-and-go/runtime/authz"
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+)
+
+const callerID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+
+// stubSource returns a fixed answer, so these tests exercise the authorization
+// rules rather than a database.
+type stubSource struct {
+	granted authz.Set
+	stale   []string
+	err     error
+	calls   int
+}
+
+func (s *stubSource) Permissions(context.Context, string) (authz.Set, []string, error) {
+	s.calls++
+	return s.granted, s.stale, s.err
+}
+
+func testResolver(t *testing.T, source *stubSource, userID string) *Resolver {
+	t.Helper()
+
+	catalog, err := Catalog()
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+	resolver, err := NewResolver(source, catalog, func(context.Context) (string, bool) {
+		return userID, userID != ""
+	})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	return resolver
+}
+
+// serve runs one request through the resolver and returns the context the
+// handler saw.
+func serve(t *testing.T, resolver *Resolver) (context.Context, string) {
+	t.Helper()
+
+	var seen context.Context
+	logs := &strings.Builder{}
+	handler := resolver.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		seen = r.Context()
+	}))
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := logging.WithLogger(request.Context(), slog.New(slog.NewTextHandler(logs, nil)))
+	handler.ServeHTTP(httptest.NewRecorder(), request.WithContext(ctx))
+	return seen, logs.String()
+}
+
+func grantedSet(t *testing.T, permissions ...authz.Permission) authz.Set {
+	t.Helper()
+
+	set, err := authz.NewSet(permissions...)
+	if err != nil {
+		t.Fatalf("NewSet: %v", err)
+	}
+	return set
+}
+
+func TestRequireDeniesEveryUnresolvedShape(t *testing.T) {
+	t.Parallel()
+
+	// Default deny is not a rule applied on top of a lookup; it is what every
+	// path that did not find the permission returns.
+	tests := []struct {
+		name   string
+		ctx    context.Context
+		reason string
+	}{
+		{
+			name:   "no authority resolved at all",
+			ctx:    context.Background(),
+			reason: ReasonUnresolved,
+		},
+		{
+			name:   "authority resolved for nobody",
+			ctx:    WithGrants(context.Background(), Grants{}),
+			reason: ReasonNoSession,
+		},
+		{
+			name:   "an authenticated caller holding nothing",
+			ctx:    WithGrants(context.Background(), Grants{UserID: callerID}),
+			reason: ReasonNotGranted,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := Require(tc.ctx, AuditRead)
+			if !errors.Is(err, ErrDenied) {
+				t.Fatalf("error = %v, want ErrDenied", err)
+			}
+			var denied *DeniedError
+			if !errors.As(err, &denied) || denied.Reason != tc.reason {
+				t.Fatalf("denial = %v, want reason %q", err, tc.reason)
+			}
+			if denied.Permission != AuditRead {
+				t.Errorf("denial names %q, want the required permission", denied.Permission)
+			}
+		})
+	}
+}
+
+func TestRequireAllowsOnlyWhatWasResolved(t *testing.T) {
+	t.Parallel()
+
+	ctx := WithGrants(context.Background(), Grants{
+		UserID:      callerID,
+		Permissions: grantedSet(t, AuditRead, UsersRead),
+	})
+
+	if err := Require(ctx, AuditRead); err != nil {
+		t.Fatalf("a held permission was denied: %v", err)
+	}
+	if err := Require(ctx, RolesManage); !errors.Is(err, ErrDenied) {
+		t.Fatalf("an unheld permission was allowed: %v", err)
+	}
+	// A permission the catalog does not declare can never be granted, so it
+	// can never be allowed either.
+	if err := Require(ctx, authz.MustPermission("invented.permission")); !errors.Is(err, ErrDenied) {
+		t.Fatalf("an undeclared permission was allowed: %v", err)
+	}
+	// The zero permission must not match anything.
+	if err := Require(ctx, ""); !errors.Is(err, ErrDenied) {
+		t.Fatalf("the zero permission was allowed: %v", err)
+	}
+}
+
+func TestRequireAllNeedsEveryPermissionAndRefusesNone(t *testing.T) {
+	t.Parallel()
+
+	ctx := WithGrants(context.Background(), Grants{
+		UserID:      callerID,
+		Permissions: grantedSet(t, AuditRead, UsersRead),
+	})
+
+	if err := RequireAll(ctx, AuditRead, UsersRead); err != nil {
+		t.Fatalf("two held permissions were denied: %v", err)
+	}
+	if err := RequireAll(ctx, AuditRead, RolesManage); !errors.Is(err, ErrDenied) {
+		t.Fatalf("a partially held list was allowed: %v", err)
+	}
+	// Requiring nothing must not be a permission everyone holds: a use case
+	// that lost its permission list must not silently become public.
+	if err := RequireAll(ctx); !errors.Is(err, ErrDenied) {
+		t.Fatalf("requiring nothing was allowed: %v", err)
+	}
+}
+
+func TestDeniedErrorNeverReachesTheCallerAsDetail(t *testing.T) {
+	t.Parallel()
+
+	err := Require(WithGrants(context.Background(), Grants{UserID: callerID}), RolesManage)
+	var denied *DeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("error = %v", err)
+	}
+	// The detail exists for the log and the audit record. What matters here
+	// is that one errors.Is check covers every reason, so a handler cannot
+	// accidentally treat one denial differently from another.
+	if !errors.Is(&DeniedError{Reason: ReasonNoSession}, ErrDenied) ||
+		!errors.Is(&DeniedError{Reason: ReasonUnresolved}, ErrDenied) ||
+		!errors.Is(&DeniedError{Reason: ReasonNotGranted}, ErrDenied) {
+		t.Fatal("not every denial matches ErrDenied")
+	}
+	if denied.UserID != callerID || denied.Permission != RolesManage {
+		t.Errorf("denial = %#v", denied)
+	}
+}
+
+func TestResolverRequiresItsDependencies(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := Catalog()
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+	source := &stubSource{}
+	session := func(context.Context) (string, bool) { return callerID, true }
+
+	if _, err := NewResolver(nil, catalog, session); err == nil {
+		t.Error("NewResolver accepted a nil permission source")
+	}
+	if _, err := NewResolver(source, nil, session); err == nil {
+		t.Error("NewResolver accepted a nil catalog")
+	}
+	if _, err := NewResolver(source, catalog, nil); err == nil {
+		t.Error("NewResolver accepted a nil session source")
+	}
+}
+
+func TestResolverAttachesAuthorityOnce(t *testing.T) {
+	t.Parallel()
+
+	source := &stubSource{granted: grantedSet(t, AuditRead)}
+	ctx, _ := serve(t, testResolver(t, source, callerID))
+
+	grants, ok := GrantsFrom(ctx)
+	if !ok {
+		t.Fatal("no authority was resolved")
+	}
+	if grants.UserID != callerID || !grants.Permissions.Has(AuditRead) {
+		t.Fatalf("grants = %#v", grants)
+	}
+	if source.calls != 1 {
+		t.Errorf("resolved %d times; two checks in one request could then disagree", source.calls)
+	}
+	if err := Require(ctx, AuditRead); err != nil {
+		t.Errorf("the resolved permission was denied: %v", err)
+	}
+	if err := Require(ctx, RolesManage); !errors.Is(err, ErrDenied) {
+		t.Errorf("an unresolved permission was allowed: %v", err)
+	}
+}
+
+func TestResolverLeavesAnAnonymousRequestWithoutAuthority(t *testing.T) {
+	t.Parallel()
+
+	source := &stubSource{granted: grantedSet(t, AuditRead)}
+	ctx, _ := serve(t, testResolver(t, source, ""))
+
+	if _, ok := GrantsFrom(ctx); ok {
+		t.Fatal("an anonymous request carried authority")
+	}
+	if source.calls != 0 {
+		t.Errorf("an anonymous request cost %d lookups", source.calls)
+	}
+	if err := Require(ctx, AuditRead); !errors.Is(err, ErrDenied) {
+		t.Errorf("an anonymous request was allowed: %v", err)
+	}
+}
+
+func TestResolutionFailureDeniesRatherThanErrors(t *testing.T) {
+	t.Parallel()
+
+	// Empty authority denies everything, which is the safe direction. Failing
+	// the request would turn a transient database problem into an error on a
+	// page that may have needed no permission at all.
+	source := &stubSource{err: errors.New("the database went away")}
+	resolver := testResolver(t, source, callerID)
+
+	var status int
+	handler := resolver.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := Require(r.Context(), AuditRead); err != nil {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	logs := &strings.Builder{}
+	ctx := logging.WithLogger(request.Context(), slog.New(slog.NewTextHandler(logs, nil)))
+	handler.ServeHTTP(response, request.WithContext(ctx))
+	status = response.Code
+
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want the handler's own denial", status)
+	}
+	if !strings.Contains(logs.String(), "resolving caller permissions") {
+		t.Errorf("the failure was not logged: %s", logs.String())
+	}
+	if strings.Contains(logs.String(), "the database went away") {
+		t.Errorf("the log recorded the underlying error's text: %s", logs.String())
+	}
+}
+
+func TestStaleRolesAreCarriedAndLogged(t *testing.T) {
+	t.Parallel()
+
+	source := &stubSource{granted: grantedSet(t, AuditRead), stale: []string{"retired_role"}}
+	ctx, logs := serve(t, testResolver(t, source, callerID))
+
+	grants, ok := GrantsFrom(ctx)
+	if !ok {
+		t.Fatal("no authority was resolved")
+	}
+	if len(grants.StaleRoles) != 1 || grants.StaleRoles[0] != "retired_role" {
+		t.Errorf("StaleRoles = %v", grants.StaleRoles)
+	}
+	// A stale grant must not change what the caller may do.
+	if err := Require(ctx, AuditRead); err != nil {
+		t.Errorf("a stale role discarded a valid permission: %v", err)
+	}
+	if !strings.Contains(logs, "retired_role") {
+		t.Errorf("the stale role was not logged: %s", logs)
+	}
+}
+
+func TestAuthorityCannotBeForged(t *testing.T) {
+	t.Parallel()
+
+	// The key is unexported, so a value under any other key is not authority.
+	type lookalike struct{}
+	forged := context.WithValue(context.Background(), lookalike{}, Grants{
+		UserID:      callerID,
+		Permissions: grantedSet(t, RolesManage),
+	})
+	if _, ok := GrantsFrom(forged); ok {
+		t.Fatal("authority placed under a foreign key was accepted")
+	}
+	if err := Require(forged, RolesManage); !errors.Is(err, ErrDenied) {
+		t.Fatal("forged authority allowed a permission")
+	}
+}
