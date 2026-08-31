@@ -1,0 +1,175 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Theme and motion preferences.
+//
+// Three preferences, two themes. A person chooses `light`, `dark`, or
+// `system`; what the page actually renders is always `light` or `dark`. The
+// resolved value is written to `<html data-theme>`, which app.css keys both
+// palettes and `color-scheme` off — so this module is the only thing in the
+// application that knows a theme can be chosen at all.
+//
+// The preference is stored, the resolution is not. Storing the resolved
+// value would freeze a `system` reader into whichever mode their machine was
+// in the day they last visited, and they would never see the switch again.
+//
+// A first-paint copy of the resolution lives in app.html, as a small inline
+// script, because a module cannot run before the browser paints the page
+// background. That duplication is deliberate and bounded: the two agree on
+// `themeStorageKey` and on the three preference names, and a test asserts
+// they still do. Do not extend the inline script — extend this module.
+
+/** The preferences a person may choose. */
+export const themePreferences = ['light', 'dark', 'system'] as const;
+
+/** A stored theme preference. */
+export type ThemePreference = (typeof themePreferences)[number];
+
+/** What a preference resolves to, and what `<html data-theme>` carries. */
+export type ResolvedTheme = 'light' | 'dark';
+
+/** The localStorage key. The inline script in app.html reads the same one. */
+export const themeStorageKey = 'theme';
+
+/** The media query that answers what `system` means right now. */
+export const darkSchemeQuery = '(prefers-color-scheme: dark)';
+
+/** The media query behind every motion decision in the application. */
+export const reducedMotionQuery = '(prefers-reduced-motion: reduce)';
+
+/**
+ * Coerce anything at all — a stale value from a previous release, a hand-
+ * edited storage entry, `null` — into a preference. Unrecognised input
+ * becomes `system` rather than throwing: a corrupt storage entry must not be
+ * able to stop the application from rendering.
+ */
+export function normalizePreference(value: unknown): ThemePreference {
+	return themePreferences.includes(value as ThemePreference)
+		? (value as ThemePreference)
+		: 'system';
+}
+
+/** What a preference renders as, given what the operating system reports. */
+export function resolveTheme(
+	preference: ThemePreference,
+	systemPrefersDark: boolean
+): ResolvedTheme {
+	if (preference === 'system') {
+		return systemPrefersDark ? 'dark' : 'light';
+	}
+	return preference;
+}
+
+/**
+ * A storage this module can survive without. Private browsing modes and
+ * "block third-party data" settings make every one of these throw, and a
+ * theme preference is not worth a blank page, so both sides swallow.
+ */
+export interface PreferenceStorage {
+	getItem(key: string): string | null;
+	setItem(key: string, value: string): void;
+}
+
+/** Read the stored preference, defaulting to `system`. */
+export function readPreference(storage: PreferenceStorage | undefined): ThemePreference {
+	try {
+		return normalizePreference(storage?.getItem(themeStorageKey));
+	} catch {
+		return 'system';
+	}
+}
+
+/** Store a preference, ignoring a storage that refuses to be written. */
+export function writePreference(
+	storage: PreferenceStorage | undefined,
+	preference: ThemePreference
+): void {
+	try {
+		storage?.setItem(themeStorageKey, preference);
+	} catch {
+		// A theme that does not persist is a smaller failure than a theme
+		// that cannot be changed.
+	}
+}
+
+/**
+ * The application's theme and motion state.
+ *
+ * One instance is exported below. It is a module-level singleton rather than
+ * a context because there is exactly one document and one operating-system
+ * preference; a second instance could only ever disagree with the first.
+ */
+class Preferences {
+	#preference = $state<ThemePreference>('system');
+	#systemPrefersDark = $state(false);
+	#reducedMotion = $state(false);
+
+	/** What the person chose. */
+	get preference(): ThemePreference {
+		return this.#preference;
+	}
+
+	/** What the page is rendering, which is what `data-theme` carries. */
+	get resolved(): ResolvedTheme {
+		return resolveTheme(this.#preference, this.#systemPrefersDark);
+	}
+
+	/**
+	 * Whether this reader asked their operating system for reduced motion.
+	 *
+	 * CSS already suppresses every transition and animation under the same
+	 * query (see app.css), so a component styled with classes needs nothing
+	 * here. This is for the cases CSS cannot reach: a scroll behavior, a
+	 * count-up, an auto-advancing element.
+	 */
+	get reducedMotion(): boolean {
+		return this.#reducedMotion;
+	}
+
+	/** Choose a preference, apply it, and remember it. */
+	set(preference: ThemePreference): void {
+		this.#preference = normalizePreference(preference);
+		writePreference(globalThis.localStorage, this.#preference);
+		this.#apply();
+	}
+
+	/**
+	 * Adopt the stored preference and follow the operating system while the
+	 * returned function has not been called. Call it from an $effect in the
+	 * root layout; the returned teardown removes both listeners.
+	 *
+	 * Calling this is what makes `system` live: without the change listener a
+	 * reader who switches their machine to dark at dusk keeps a light
+	 * application until they reload it.
+	 */
+	start(): () => void {
+		this.#preference = readPreference(globalThis.localStorage);
+
+		const dark = globalThis.matchMedia?.(darkSchemeQuery);
+		const motion = globalThis.matchMedia?.(reducedMotionQuery);
+		this.#systemPrefersDark = dark?.matches ?? false;
+		this.#reducedMotion = motion?.matches ?? false;
+		this.#apply();
+
+		const onDark = (event: MediaQueryListEvent) => {
+			this.#systemPrefersDark = event.matches;
+			this.#apply();
+		};
+		const onMotion = (event: MediaQueryListEvent) => {
+			this.#reducedMotion = event.matches;
+		};
+		dark?.addEventListener('change', onDark);
+		motion?.addEventListener('change', onMotion);
+
+		return () => {
+			dark?.removeEventListener('change', onDark);
+			motion?.removeEventListener('change', onMotion);
+		};
+	}
+
+	#apply(): void {
+		globalThis.document?.documentElement.setAttribute('data-theme', this.resolved);
+	}
+}
+
+/** The application's one theme and motion state. */
+export const preferences = new Preferences();

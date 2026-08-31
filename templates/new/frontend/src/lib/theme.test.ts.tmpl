@@ -1,0 +1,64 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { describe, expect, it } from 'vitest';
+
+import {
+	normalizePreference,
+	readPreference,
+	resolveTheme,
+	themePreferences,
+	themeStorageKey,
+	writePreference,
+	type PreferenceStorage
+} from './theme.svelte';
+
+describe('theme preferences', () => {
+	it('resolves a chosen theme regardless of what the system reports', () => {
+		expect(resolveTheme('light', true)).toBe('light');
+		expect(resolveTheme('dark', false)).toBe('dark');
+	});
+
+	it('resolves system to what the system reports', () => {
+		expect(resolveTheme('system', true)).toBe('dark');
+		expect(resolveTheme('system', false)).toBe('light');
+	});
+
+	it('treats every unrecognised stored value as system', () => {
+		for (const value of [null, undefined, '', 'Dark', 'auto', 0, {}, []]) {
+			expect(normalizePreference(value)).toBe('system');
+		}
+		for (const value of themePreferences) {
+			expect(normalizePreference(value)).toBe(value);
+		}
+	});
+
+	it('survives a storage that throws, which private browsing modes do', () => {
+		const hostile: PreferenceStorage = {
+			getItem() {
+				throw new DOMException('denied', 'SecurityError');
+			},
+			setItem() {
+				throw new DOMException('denied', 'SecurityError');
+			}
+		};
+		expect(readPreference(hostile)).toBe('system');
+		expect(() => writePreference(hostile, 'dark')).not.toThrow();
+	});
+
+	it('survives no storage at all', () => {
+		expect(readPreference(undefined)).toBe('system');
+		expect(() => writePreference(undefined, 'dark')).not.toThrow();
+	});
+
+	it('round-trips a preference through a storage under the documented key', () => {
+		const entries = new Map<string, string>();
+		const storage: PreferenceStorage = {
+			getItem: (key) => entries.get(key) ?? null,
+			setItem: (key, value) => void entries.set(key, value)
+		};
+
+		writePreference(storage, 'dark');
+		expect(entries.get(themeStorageKey)).toBe('dark');
+		expect(readPreference(storage)).toBe('dark');
+	});
+});

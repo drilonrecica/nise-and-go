@@ -1,8 +1,14 @@
 // Generated once by nise; owned by this application. Nise will not overwrite it.
 
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig } from 'vitest/config';
 
+// The Svelte plugin is here for the `.svelte.ts` modules, not for components:
+// a file whose name carries `.svelte.` is compiled, which is what makes the
+// runes inside it real signals rather than syntax errors. Component tests run
+// in a browser and arrive with their own configuration.
 export default defineConfig({
+	plugins: [svelte()],
 	test: {
 		environment: 'node',
 		include: ['src/**/*.test.ts']

@@ -1,5 +1,7 @@
 <!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
 <script lang="ts">
+	import ThemeControl from '$lib/components/ThemeControl.svelte';
+
 	type Probe = { path: string; meaning: string };
 
 	const probes: Probe[] = [
@@ -14,7 +16,10 @@
 </svelte:head>
 
 <main class="mx-auto max-w-2xl px-6 py-16">
-	<h1 class="text-2xl font-semibold tracking-tight text-text">{{.AppName}}</h1>
+	<div class="flex items-start justify-between gap-4">
+		<h1 class="text-2xl font-semibold tracking-tight text-text">{{.AppName}}</h1>
+		<ThemeControl />
+	</div>
 	<p class="mt-3 text-sm text-text-muted">
 		This page is served by the Go binary from the SvelteKit build embedded in it. Editing
 		<code class="rounded-xs bg-surface-muted px-1 font-mono text-[0.8125rem]"
@@ -48,6 +53,13 @@
 		<code class="rounded-xs bg-surface-muted px-1 font-mono text-[0.8125rem]">src/app.css</code>.
 		Rebranding is editing that file; <code class="font-mono">pnpm check</code> proves both themes still
 		meet WCAG 2.2 AA.
+	</p>
+
+	<p class="mt-4 text-sm text-text-muted">
+		The theme control above stores a preference of light, dark, or system;
+		<code class="rounded-xs bg-surface-muted px-1 font-mono text-[0.8125rem]">system</code> follows
+		the operating system live. Every transition in the application is suppressed for a reader who
+		asked for reduced motion.
 	</p>
 
 	<p class="mt-4 text-sm text-text-muted">

@@ -1,8 +1,16 @@
 <!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
 <script lang="ts">
 	import '../app.css';
+	import { preferences } from '$lib/theme.svelte';
 
 	let { children } = $props();
+
+	// Adopt the stored theme preference and follow the operating system for
+	// as long as the application is mounted. app.html has already resolved
+	// the theme once, before first paint; this is what keeps `system` live
+	// afterwards, so a reader whose machine switches to dark at dusk sees it
+	// without reloading. The returned teardown removes both media listeners.
+	$effect(() => preferences.start());
 </script>
 
 {@render children()}

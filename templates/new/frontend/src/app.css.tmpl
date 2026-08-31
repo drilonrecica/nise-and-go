@@ -264,6 +264,35 @@
 		background-color: var(--primary-soft);
 		color: var(--primary-on-soft);
 	}
+
+	/*
+	 * Reduced motion, enforced once for the whole application.
+	 *
+	 * This is a blanket rule rather than a per-component decision because a
+	 * per-component decision is one somebody forgets, and the thing they
+	 * forget is the thing that makes a reader nauseated. Every transition and
+	 * animation collapses to a single frame instead of being removed: a
+	 * transitionend or animationend listener still fires, so a component that
+	 * waits for one to unmount an element does not hang forever — which is
+	 * what `animation: none` would cause.
+	 *
+	 * Smooth scrolling goes too; it is motion the reader did not ask for and
+	 * cannot interrupt.
+	 *
+	 * Motion that CSS cannot reach — a scripted scroll, a count-up, anything
+	 * that advances on its own — reads `preferences.reducedMotion` from
+	 * src/lib/theme.svelte.ts, which watches the same query.
+	 */
+	@media (prefers-reduced-motion: reduce) {
+		*,
+		*::before,
+		*::after {
+			animation-duration: 0.01ms !important;
+			animation-iteration-count: 1 !important;
+			transition-duration: 0.01ms !important;
+			scroll-behavior: auto !important;
+		}
+	}
 }
 
 /*
