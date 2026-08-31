@@ -15,6 +15,7 @@ var curatedComponents = []string{
 	"Badge.svelte",
 	"Button.svelte",
 	"Checkbox.svelte",
+	"DataTable.svelte",
 	"ConfirmDialog.svelte",
 	"Dialog.svelte",
 	"Field.svelte",
@@ -62,7 +63,7 @@ func TestGeneratedComponentSet(t *testing.T) {
 // because every entry is a decision with an entry in docs/dependencies.md, and
 // because "what is actually in the bundle" is the number that gets away from a
 // project one convenience at a time.
-var bundledFrontendPackages = []string{"valibot"}
+var bundledFrontendPackages = []string{"@tanstack/table-core", "valibot"}
 
 // TestGeneratedFrontendShipsOnlyJustifiedPackages pins ADR 0025 and the
 // bundled-dependency list: no headless component library, and nothing in

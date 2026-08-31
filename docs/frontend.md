@@ -104,6 +104,22 @@ Branch on `code`, not on the status. The server has one catalog of problems and 
 
 Field-level validation errors are not in the contract: the `Problem` schema is `additionalProperties: false` and carries no per-field member. Client-side field validation is Valibot's job, and the server remains authoritative.
 
+### Lists: the URL is the state
+
+Search, sort, filters, and the page a person is on live in the query string and nowhere else, and `src/lib/table/list-state.ts` is the only thing that reads or writes them. That is not tidiness: it is what makes a filtered list something somebody can bookmark, send to a colleague, and reach again with the back button. State held in a component instead disappears on reload and cannot be shared.
+
+Everything in that module is a pure function over a `URL`, so a load function, a component, and a link all reach the same answer, and the whole thing is testable without a browser.
+
+Three rules in it are worth knowing:
+
+- **Changing what is being listed drops the cursor.** The API binds a cursor to the query it was issued for and refuses one presented against a different query ([ADR 0016](adr/0016-authenticated-cursor-pagination.md)), so carrying a cursor across a filter change would turn every filter change into an error somebody has to recover from. Paging is the only change that keeps one.
+- **One state has one URL.** Parameters are written in a fixed order and emptied values are removed rather than left as `?q=`, so two ways of reaching the same list produce one history entry and one cache key rather than two.
+- **Only declared filters are read.** A list names the filter parameters it understands, which keeps a tracking tag somebody pasted out of the API request — and therefore out of the cursor binding derived from it.
+
+`nextSort` cycles ascending, descending, and back to the collection's own order. The third state is the one that gets left out, and the collection's default order is often the only one that means anything.
+
+`DataTable.svelte` wraps `@tanstack/table-core` for the column model — accessors, header groups, cells — and nothing else. Every `manual*` option is on, because sorting, filtering, and paging belong to the server: the table renders the page it was given and never reorders or hides a row behind the API's back, which would make what a person sees disagree with what the URL says. A sort control is a link with a real href, not a button, for the same reason pagination is.
+
 ### Form conventions
 
 Every form goes through `createForm` in `src/lib/forms.svelte.ts`, over a Valibot schema. The rule the file exists to make cheap is that **the server is authoritative and the browser is a courtesy**: Valibot runs so somebody typing an address without an "@" is told before they wait for a round trip. It is not a security boundary, it is not a substitute for the server's strict decoding, and a schema that disagrees with the server's is a bug in the schema.

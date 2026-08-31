@@ -1,0 +1,129 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { describe, expect, it } from 'vitest';
+
+import { ariaSort, listHref, listQuery, nextSort, readListState } from './list-state';
+
+const filters = ['status', 'owner'] as const;
+
+function at(path: string): URL {
+	return new URL(path, 'https://app.test');
+}
+
+describe('readListState', () => {
+	it('reads search, sort, and only the filters this list understands', () => {
+		const state = readListState(at('/invoices?q=acme&sort=-total&status=open&utm_source=email'), filters);
+		expect(state.search).toBe('acme');
+		expect(state.sort).toEqual({ column: 'total', direction: 'desc' });
+		// An unrelated parameter must not reach the API, or the cursor the API
+		// binds to the query changes when somebody pastes a tracking tag.
+		expect(state.filters).toEqual({ status: 'open' });
+	});
+
+	it('refuses a sort that names nothing', () => {
+		expect(readListState(at('/invoices?sort=')).sort).toBeNull();
+		expect(readListState(at('/invoices?sort=-')).sort).toBeNull();
+		expect(readListState(at('/invoices?sort=drop%20table')).sort).toBeNull();
+	});
+
+	it('reads neither cursor when a hand-edited URL carries both', () => {
+		// Guessing which one was meant is worse than answering with the first
+		// page, which is what the API does with no cursor at all.
+		const state = readListState(at('/invoices?after=a&before=b'));
+		expect(state.after).toBeUndefined();
+		expect(state.before).toBeUndefined();
+	});
+
+	it('ignores a limit that is not a positive integer', () => {
+		for (const raw of ['0', '-5', 'abc', '2.5', '']) {
+			expect(readListState(at(`/invoices?limit=${raw}`)).limit).toBeUndefined();
+		}
+		expect(readListState(at('/invoices?limit=50')).limit).toBe(50);
+	});
+});
+
+describe('listHref', () => {
+	it('drops the cursor when what is being listed changes', () => {
+		// The API binds a cursor to the query it was issued for and refuses one
+		// presented against a different query, so carrying it across would turn
+		// every filter change into an error somebody has to recover from.
+		const url = at('/invoices?q=acme&after=nc1.abc');
+		expect(listHref(url, { search: 'other' }, filters)).toBe('/invoices?q=other');
+		expect(listHref(url, { sort: { column: 'total', direction: 'asc' } }, filters)).toBe(
+			'/invoices?q=acme&sort=total'
+		);
+		expect(listHref(url, { filters: { status: 'open' } }, filters)).toBe(
+			'/invoices?q=acme&status=open'
+		);
+	});
+
+	it('keeps everything else when paging', () => {
+		const url = at('/invoices?q=acme&status=open&sort=-total');
+		expect(listHref(url, { after: 'nc1.xyz' }, filters)).toBe(
+			'/invoices?q=acme&status=open&sort=-total&after=nc1.xyz'
+		);
+	});
+
+	it('removes an emptied value rather than leaving it in the URL', () => {
+		const url = at('/invoices?q=acme&status=open');
+		expect(listHref(url, { search: '' }, filters)).toBe('/invoices?status=open');
+		expect(listHref(url, { filters: { status: '' } }, filters)).toBe('/invoices?q=acme');
+		expect(listHref(at('/invoices?q=acme'), { search: '' }, filters)).toBe('/invoices');
+	});
+
+	it('writes the same URL for the same state, whatever order it was reached in', () => {
+		// Two spellings of one state are two history entries and two cache
+		// keys for the same page.
+		const first = listHref(at('/invoices?status=open&q=acme'), {}, filters);
+		const second = listHref(at('/invoices?q=acme&status=open'), {}, filters);
+		expect(first).toBe(second);
+		expect(first).toBe('/invoices?q=acme&status=open');
+	});
+
+	it('clears a sort when asked for null', () => {
+		expect(listHref(at('/invoices?sort=-total'), { sort: null }, filters)).toBe('/invoices');
+	});
+});
+
+describe('nextSort', () => {
+	it('cycles ascending, descending, and back to the collection order', () => {
+		// The third state is the one that gets left out, and the collection's
+		// own order is often the only one that means anything.
+		expect(nextSort(null, 'total')).toEqual({ column: 'total', direction: 'asc' });
+		expect(nextSort({ column: 'total', direction: 'asc' }, 'total')).toEqual({
+			column: 'total',
+			direction: 'desc'
+		});
+		expect(nextSort({ column: 'total', direction: 'desc' }, 'total')).toBeNull();
+	});
+
+	it('starts a different column ascending', () => {
+		expect(nextSort({ column: 'total', direction: 'desc' }, 'name')).toEqual({
+			column: 'name',
+			direction: 'asc'
+		});
+	});
+});
+
+describe('ariaSort', () => {
+	it('reports the sorted column and none for the rest', () => {
+		const sort = { column: 'total', direction: 'desc' } as const;
+		expect(ariaSort(sort, 'total')).toBe('descending');
+		expect(ariaSort(sort, 'name')).toBe('none');
+		expect(ariaSort(null, 'total')).toBe('none');
+	});
+});
+
+describe('listQuery', () => {
+	it('omits what is absent rather than sending it empty', () => {
+		const state = readListState(at('/invoices?q=acme&status=open&sort=-total'), filters);
+		expect(listQuery(state)).toEqual({
+			q: 'acme',
+			sort: '-total',
+			limit: undefined,
+			after: undefined,
+			before: undefined,
+			status: 'open'
+		});
+	});
+});

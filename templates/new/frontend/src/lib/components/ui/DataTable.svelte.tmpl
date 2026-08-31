@@ -1,0 +1,139 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts" generics="Row">
+	import { createTable, getCoreRowModel, type ColumnDef, type Row as TableRow } from '@tanstack/table-core';
+	import type { Snippet } from 'svelte';
+
+	import Icon from '$lib/components/ui/Icon.svelte';
+	import Skeleton from '$lib/components/ui/Skeleton.svelte';
+	import Table from '$lib/components/ui/Table.svelte';
+	import { ariaSort, listHref, nextSort, type Sort } from '$lib/table/list-state';
+
+	let {
+		caption,
+		columns,
+		rows,
+		getRowId,
+		/** The current sort, from the URL. Null means the collection's own order. */
+		sort = null,
+		/** The page URL, so a header can build the href for its own sort. */
+		url,
+		/** The filter parameter names this list understands. */
+		filters = [],
+		/** Which columns may be sorted. Sorting is the server's, so this is a list of its capabilities. */
+		sortable = [],
+		/** Rows are still loading. */
+		loading = false,
+		/** Shown instead of the table when there are no rows and none are loading. */
+		empty,
+		/** Row actions, rendered in a trailing cell when provided. */
+		actions
+	}: {
+		caption: string;
+		columns: ColumnDef<Row, unknown>[];
+		rows: Row[];
+		getRowId: (row: Row) => string;
+		sort?: Sort | null;
+		url: URL;
+		filters?: readonly string[];
+		sortable?: readonly string[];
+		loading?: boolean;
+		empty?: Snippet;
+		actions?: Snippet<[Row]>;
+	} = $props();
+
+	// TanStack owns the column model — accessors, header groups, cells — and
+	// nothing else. Every `manual*` is true because sorting, filtering, and
+	// paging are the server's: the table renders the page it was given and
+	// never reorders or hides a row behind the API's back, which would make
+	// what a person sees disagree with what the URL says.
+	const table = $derived.by(() => {
+		const instance = createTable<Row>({
+			data: rows,
+			columns,
+			state: {},
+			getRowId,
+			getCoreRowModel: getCoreRowModel(),
+			onStateChange: () => {},
+			renderFallbackValue: null,
+			manualSorting: true,
+			manualFiltering: true,
+			manualPagination: true
+		});
+		instance.setOptions((previous) => ({ ...previous, state: { ...instance.initialState } }));
+		return instance;
+	});
+
+	function headerText(column: ColumnDef<Row, unknown>): string {
+		return typeof column.header === 'string' ? column.header : (column.id ?? '');
+	}
+
+	function cellText(row: TableRow<Row>, columnId: string): string {
+		const value = row.getValue(columnId);
+		return value === null || value === undefined ? '' : String(value);
+	}
+</script>
+
+{#if loading}
+	<div class="space-y-2" aria-busy="true">
+		{#each { length: 5 } as _, index (index)}
+			<Skeleton class="h-10 w-full" />
+		{/each}
+	</div>
+{:else if rows.length === 0 && empty}
+	{@render empty()}
+{:else}
+	<Table {caption}>
+		<thead class="border-b border-line bg-surface-muted text-left">
+			{#each table.getHeaderGroups() as group (group.id)}
+				<tr>
+					{#each group.headers as header (header.id)}
+						{@const label = headerText(header.column.columnDef)}
+						{@const canSort = sortable.includes(header.column.id)}
+						<th
+							scope="col"
+							class="px-4 py-2 font-medium text-text-muted"
+							aria-sort={canSort ? ariaSort(sort, header.column.id) : undefined}
+						>
+							{#if canSort}
+								<!--
+									A sort control is a link, not a button: it changes the
+									URL, so it belongs in history and must survive being
+									opened in a new tab.
+								-->
+								<a
+									class="inline-flex items-center gap-1 rounded-xs hover:text-text"
+									href={listHref(url, { sort: nextSort(sort, header.column.id) }, filters)}
+								>
+									{label}
+									{#if sort?.column === header.column.id}
+										<Icon
+											name={sort.direction === 'asc' ? 'chevronUp' : 'chevronDown'}
+											class="size-3.5"
+										/>
+									{/if}
+								</a>
+							{:else}
+								{label}
+							{/if}
+						</th>
+					{/each}
+					{#if actions}
+						<th scope="col" class="px-4 py-2"><span class="sr-only">Actions</span></th>
+					{/if}
+				</tr>
+			{/each}
+		</thead>
+		<tbody>
+			{#each table.getRowModel().rows as row (row.id)}
+				<tr class="border-b border-line last:border-0">
+					{#each row.getVisibleCells() as cell (cell.id)}
+						<td class="px-4 py-2">{cellText(row, cell.column.id)}</td>
+					{/each}
+					{#if actions}
+						<td class="px-4 py-2 text-right">{@render actions(row.original)}</td>
+					{/if}
+				</tr>
+			{/each}
+		</tbody>
+	</Table>
+{/if}

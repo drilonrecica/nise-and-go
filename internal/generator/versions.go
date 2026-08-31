@@ -97,6 +97,13 @@ const (
 	// with in the browser. It is the generated frontend's first package that
 	// ships in the bundle rather than only building it.
 	ValibotVersion = "1.1.0"
+
+	// TableCoreVersion pins the framework-agnostic table primitive the
+	// generated DataTable wraps. It is the 8.x line rather than the newer
+	// 9.x: 9's core delegates reactivity to a per-framework adapter feature,
+	// and constructing a table without one throws, so 9 is not usable from a
+	// Nise-owned Svelte wrapper until a Svelte adapter exists.
+	TableCoreVersion = "8.21.3"
 )
 
 // Dependency is one pinned frontend package.
@@ -112,6 +119,7 @@ type Dependency struct {
 // the packages that ship in the bundle rather than only building it. The list
 // is short on purpose, and every entry is one docs/dependencies.md justifies.
 var frontendRuntimeDependencies = []Dependency{
+	{Name: "@tanstack/table-core", Version: TableCoreVersion},
 	{Name: "valibot", Version: ValibotVersion},
 }
 
