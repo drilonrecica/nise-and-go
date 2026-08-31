@@ -249,15 +249,23 @@ func TestChangePasswordEndsOtherSessions(t *testing.T) {
 	}
 
 	const nextPassword = "a different long passphrase"
-	if err := credentials.ChangePassword(h.ctx, account.ID, goodPassword, nextPassword, compromised, first.Session.Record.ID); err != nil {
+	rotated, err := credentials.ChangePassword(h.ctx, account.ID, goodPassword, nextPassword, compromised, first.Session.Record.ID)
+	if err != nil {
 		t.Fatalf("ChangePassword: %v", err)
 	}
 
-	// The session that made the change survives; every other one ends. A
-	// password change is what somebody does when they think a credential has
-	// leaked, and leaving the others alive would make the gesture do nothing.
-	if _, err := h.sessions.Authenticate(h.ctx, first.Session.Token.Value()); err != nil {
-		t.Errorf("the changing session was ended: %v", err)
+	// The session that made the change survives, with a new token; every
+	// other one ends. A password change is what somebody does when they think
+	// a credential has leaked, and leaving the others alive — or leaving the
+	// current token unchanged — would make the gesture do nothing.
+	if rotated.Token.IsZero() || rotated.Token.Value() == first.Session.Token.Value() {
+		t.Fatal("the surviving session was not rotated")
+	}
+	if _, err := h.sessions.Authenticate(h.ctx, rotated.Token.Value()); err != nil {
+		t.Errorf("the rotated session does not authenticate: %v", err)
+	}
+	if _, err := h.sessions.Authenticate(h.ctx, first.Session.Token.Value()); err == nil {
+		t.Error("the old token still works after a password change")
 	}
 	if _, err := h.sessions.Authenticate(h.ctx, elsewhere.Token.Value()); err == nil {
 		t.Error("another session survived a password change")
@@ -283,7 +291,7 @@ func TestChangePasswordRefusesWhatThePolicyRefuses(t *testing.T) {
 
 	// Proving the current password is required first, and a wrong one gives
 	// the same generic failure a login does.
-	if err := credentials.ChangePassword(h.ctx, account.ID, "not the password", "a long enough replacement", compromised, ""); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := credentials.ChangePassword(h.ctx, account.ID, "not the password", "a long enough replacement", compromised, ""); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("error = %v, want ErrInvalidCredentials", err)
 	}
 
@@ -307,7 +315,7 @@ func TestChangePasswordRefusesWhatThePolicyRefuses(t *testing.T) {
 	}
 	for _, tc := range refusals {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := credentials.ChangePassword(h.ctx, account.ID, goodPassword, tc.next, tc.compromised, ""); !errors.Is(err, tc.want) {
+			if _, err := credentials.ChangePassword(h.ctx, account.ID, goodPassword, tc.next, tc.compromised, ""); !errors.Is(err, tc.want) {
 				t.Fatalf("error = %v, want %v", err, tc.want)
 			}
 		})

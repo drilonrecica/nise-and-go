@@ -1,3 +1,14 @@
+-- RotateSession replaces one session with a new token, preserving the original
+-- absolute deadline. Copying created_at and expires_at rather than recomputing
+-- them is what stops repeated rotation from becoming an unbounded session.
+-- name: RotateSession :one
+INSERT INTO sessions (user_id, token_digest, created_at, last_seen_at, expires_at)
+SELECT previous.user_id, $2, previous.created_at, $3, previous.expires_at
+FROM sessions AS previous
+WHERE previous.id = $1
+  AND previous.revoked_at IS NULL
+RETURNING id, user_id, created_at, last_seen_at, expires_at, revoked_at;
+
 -- CreateSession stores one issued session. Only the token digest is written;
 -- the token itself never reaches this layer.
 -- name: CreateSession :one

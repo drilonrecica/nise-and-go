@@ -17,6 +17,7 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/transaction"
 
 	"{{.ModulePath}}/internal/features/auth/store"
+	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/database"
 )
 
@@ -213,6 +214,71 @@ func (s *Sessions) Authenticate(ctx context.Context, presented string) (session.
 	return record, nil
 }
 
+// Rotate replaces a session's token with a new one and ends the old session.
+//
+// It is the answer to a stolen or possibly-stolen credential at a moment the
+// server knows the holder is genuine: after a password change, after
+// reauthentication, after a privilege change. The old token stops working
+// immediately, so a copy of it taken earlier is worthless.
+//
+// The absolute deadline is copied from the old session rather than recomputed.
+// Recomputing it would make repeated rotation an unbounded session, which is
+// the exact bound the absolute deadline exists to impose.
+//
+// Periodic rotation on a timer is deliberately not offered. A browser making
+// two requests at once would rotate twice, and one of the two would be left
+// holding a token that was already replaced — logging the user out for being
+// active. Rotation belongs at moments the application chooses, not on a clock.
+func (s *Sessions) Rotate(ctx context.Context, sessionID, reason string) (Issued, error) {
+	id, err := parseUUID(sessionID)
+	if err != nil {
+		return Issued{}, ErrSessionNotFound
+	}
+	if err := checkReason(reason); err != nil {
+		return Issued{}, err
+	}
+	token, err := session.New()
+	if err != nil {
+		return Issued{}, err
+	}
+	now := s.now().UTC()
+
+	var record session.Record
+	err = s.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := store.New(tx)
+		row, err := queries.RotateSession(ctx, store.RotateSessionParams{
+			ID:          id,
+			TokenDigest: token.Digest(),
+			LastSeenAt:  timestamp(now),
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrSessionNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("rotating the session: %w", err)
+		}
+		// The old session is ended in the same transaction, so there is no
+		// instant in which both tokens work.
+		revoked, err := queries.RevokeSession(ctx, store.RevokeSessionParams{
+			ID:            id,
+			RevokedAt:     timestamp(now),
+			RevokedReason: text(reason),
+		})
+		if err != nil {
+			return fmt.Errorf("ending the rotated session: %w", err)
+		}
+		if revoked == 0 {
+			return ErrSessionNotFound
+		}
+		record = recordFrom(row.ID, row.UserID, row.CreatedAt, row.LastSeenAt, row.ExpiresAt, row.RevokedAt)
+		return nil
+	})
+	if err != nil {
+		return Issued{}, err
+	}
+	return Issued{Token: token, Record: record}, nil
+}
+
 // Revoke ends one session. Revoking an already-revoked session reports
 // ErrSessionNotFound rather than overwriting the first revocation's reason.
 func (s *Sessions) Revoke(ctx context.Context, sessionID, reason string) error {
@@ -242,8 +308,27 @@ func (s *Sessions) Revoke(ctx context.Context, sessionID, reason string) error {
 }
 
 // RevokeAllForUser ends every session an account holds and reports how many it
-// ended. It is what a password change and a compromise response both need.
+// ended.
+//
+// It is unchecked, because the paths that call it are the account acting on
+// itself — a password change, a reset — and system paths with no authenticated
+// caller. Ending *another* account's sessions is RevokeForAccount, which is
+// checked, and the two are named separately so a review can see which one a
+// call site used.
 func (s *Sessions) RevokeAllForUser(ctx context.Context, userID, reason string) (int64, error) {
+	return s.revokeForUser(ctx, userID, "", reason)
+}
+
+// RevokeForAccount ends every session another account holds. The caller must
+// hold sessions.revoke.
+//
+// This is the administrative response to a compromised account: it logs that
+// person out of every device immediately, which disabling the account alone
+// does not do until each session's next request.
+func (s *Sessions) RevokeForAccount(ctx context.Context, userID, reason string) (int64, error) {
+	if err := authorization.Require(ctx, authorization.SessionsRevoke); err != nil {
+		return 0, err
+	}
 	return s.revokeForUser(ctx, userID, "", reason)
 }
 

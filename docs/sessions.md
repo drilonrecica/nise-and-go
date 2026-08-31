@@ -54,22 +54,42 @@ bounds that cost without meaningfully changing when a session expires. The
 touch happens in the same transaction as the lookup, so a session revoked
 concurrently cannot be revived by an in-flight request.
 
+## Rotation
+
+`Rotate` replaces a session's token with a new one and ends the old session in
+the same transaction, so there is no instant in which both work. It is the
+answer to a possibly-stolen credential at a moment the server knows the holder
+is genuine: after a password change, after reauthentication, after a privilege
+change.
+
+**Rotation copies the absolute deadline; it never recomputes it.** Recomputing
+would make repeated rotation an unbounded session, which is the exact bound the
+absolute deadline exists to impose. A test rotates twenty times across a day and
+asserts the session still ends when it was always going to.
+
+**Periodic rotation on a timer is deliberately not offered.** A browser making
+two requests at once would rotate twice, and one of them would be left holding a
+token that was already replaced — logging the user out for being active.
+Rotation belongs at moments the application chooses, not on a clock.
+
 ## Revocation
 
 | Operation | What it does |
 |---|---|
 | `Revoke` | Ends one session. Repeating it fails rather than overwriting the first reason. |
 | `RevokeOtherSessions` | "Sign out everywhere else" — every session but the current one. |
-| `RevokeAllForUser` | Every session, which is what a password change and a compromise response both need. |
+| `RevokeAllForUser` | Every session the account holds. Unchecked: the callers are the account acting on itself and system paths with no authenticated caller. |
+| `RevokeForAccount` | Every session *another* account holds, requiring `sessions.revoke`. The administrative response to a compromise. |
+| `Rotate` | A new token for the same session, ending the old one. |
 | `DeleteExpired` | Removes a bounded batch of sessions past their absolute deadline. |
 
 Every revocation records a reason, bounded to 64 bytes, which is what an audit
 record and the account's own session list have to show.
 
-Disabling an account and revoking its sessions are deliberately separate. One
-is reversible; the other logs the person out of every device. A disabled
-account stops authenticating on its sessions' next request, and that refusal
-does not slide the idle window on the way past.
+Disabling an account and revoking its sessions are deliberately separate. One is
+reversible; the other logs the person out of every device *immediately*, where
+disabling takes effect on each session's next request. A disabled account's
+refusal does not slide the idle window on the way past.
 
 ## Storage
 
