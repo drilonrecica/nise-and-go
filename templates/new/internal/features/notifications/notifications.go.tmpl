@@ -1,0 +1,461 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package notifications is persistent in-app notification.
+//
+// The persistent part is the whole of it. A notification is a row, written by
+// the transaction that made it true, and it exists from that moment whether
+// or not anything was ever delivered anywhere. Everything else — an email, a
+// live update in an open browser tab — is a delivery *about* that row, with
+// its own outcome, recorded separately.
+//
+// That separation is why "delivery failure does not erase the underlying
+// notification" is a property of the schema rather than a rule somebody has
+// to remember. An SMTP server that is down produces a failed delivery row.
+// The notification is still there, still unread, and still shown the next
+// time its recipient looks — which is the behaviour a person expects and the
+// one a fire-and-forget email cannot give them.
+//
+// # Notify takes a transaction
+//
+// [Notifications.Notify] takes a pgx.Tx, not a context it could start its own
+// from. A notification that exists for a change that rolled back is a lie
+// told to a person, and one that is missing after a change committed is a
+// person not told at all. Both are avoided by writing the row in the same
+// transaction as the change it describes, and taking the transaction as a
+// parameter is what makes that the only way to call it.
+package notifications
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/features/notifications/store"
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// Bounds, matching the schema's own constraints so a violation is reported
+// by this package with a readable message rather than by PostgreSQL with a
+// constraint name.
+const (
+	MaxKindBytes  = 64
+	MaxTitleBytes = 200
+	MaxBodyBytes  = 2000
+	MaxDataBytes  = 4096
+	// DefaultPageSize is how many notifications a list returns when the
+	// caller does not say.
+	DefaultPageSize = 20
+	// MaxPageSize bounds a caller asking for more.
+	MaxPageSize = 100
+)
+
+// Errors this package returns.
+var (
+	// ErrNotFound reports a notification that does not exist, or one
+	// addressed to somebody else. The two are deliberately the same value:
+	// whether an identifier exists is itself information.
+	ErrNotFound = errors.New("notifications: no such notification")
+	// ErrInvalid reports a notification that does not satisfy the schema.
+	ErrInvalid = errors.New("notifications: invalid notification")
+	// ErrUnknownChannel reports delivery requested through a channel that
+	// was never registered.
+	ErrUnknownChannel = errors.New("notifications: unknown delivery channel")
+)
+
+// Notification is one thing a person should know about.
+type Notification struct {
+	ID          string
+	RecipientID string
+	// Kind is a stable machine name for what happened —
+	// "invitation.accepted", "report.ready". A frontend switches on it to
+	// choose an icon or a link, so it is a name the application owns and
+	// never a Go type path: renaming a type must not change what is already
+	// stored.
+	Kind string
+	// Title and Body are already rendered and already localized.
+	//
+	// Storing a template name and its arguments instead would mean every
+	// past notification re-renders when a template changes, so the record of
+	// what somebody was told would stop matching what they were actually
+	// told. That is a bad property for an audit trail and a worse one for a
+	// person asking what a message said.
+	Title string
+	Body  string
+	// Data is a structured payload for the frontend: the identifier a link
+	// needs. It should not be a second copy of the text above.
+	Data      json.RawMessage
+	CreatedAt time.Time
+	ReadAt    time.Time
+}
+
+// Read reports whether the recipient has seen it.
+func (n Notification) Read() bool { return !n.ReadAt.IsZero() }
+
+// New is the content of a notification, before it is written.
+type New struct {
+	RecipientID string
+	Kind        string
+	Title       string
+	Body        string
+	Data        json.RawMessage
+	// Channels are the additional delivery channels to attempt. In-app
+	// delivery is not among them and never needs to be: the row itself is
+	// the in-app delivery, and a delivery record that is always 'sent' the
+	// instant it is written would be bookkeeping about nothing.
+	Channels []string
+}
+
+// Delivery is one attempt to deliver one notification through one channel.
+type Delivery struct {
+	NotificationID string
+	Channel        string
+	State          string
+	Attempts       int32
+	LastError      string
+	UpdatedAt      time.Time
+}
+
+// Channel delivers a notification somewhere other than the application.
+//
+// An implementation returns an error to say the attempt failed. Whether that
+// failure is worth retrying is decided by the job that calls it, not here —
+// see the delivery worker.
+type Channel interface {
+	// Name is the stable channel name recorded in the delivery row.
+	Name() string
+	// Deliver attempts delivery. It must be safe to call twice: the job
+	// that calls it retries, and a channel that sent an email and then
+	// failed to report success will be asked again.
+	Deliver(ctx context.Context, notification Notification) error
+}
+
+// Notifications is the use case.
+type Notifications struct {
+	transactor *database.Transactor
+	channels   map[string]Channel
+}
+
+// NewNotifications builds it. Channels are registered once, at startup, in
+// application code a reader can follow.
+func NewNotifications(transactor *database.Transactor, channels ...Channel) (*Notifications, error) {
+	if transactor == nil {
+		return nil, errors.New("notifications: a transaction runner is required")
+	}
+	registered := make(map[string]Channel, len(channels))
+	for _, channel := range channels {
+		if channel == nil {
+			return nil, errors.New("notifications: a nil channel was registered")
+		}
+		name := channel.Name()
+		if !validChannelName(name) {
+			return nil, fmt.Errorf("notifications: %q is not a usable channel name", name)
+		}
+		if _, duplicate := registered[name]; duplicate {
+			return nil, fmt.Errorf("notifications: the channel %q was registered twice", name)
+		}
+		registered[name] = channel
+	}
+	return &Notifications{transactor: transactor, channels: registered}, nil
+}
+
+// Channels returns the registered channel names, sorted, for a startup line.
+func (n *Notifications) Channels() []string {
+	names := make([]string, 0, len(n.channels))
+	for name := range n.channels {
+		names = append(names, name)
+	}
+	sortStrings(names)
+	return names
+}
+
+// Notify writes one notification inside tx.
+//
+// The transaction is a parameter because a notification about a change must
+// exist exactly when that change does. Passing the caller's transaction is
+// the only way to call this, which is the point: there is no overload that
+// starts its own and could therefore commit independently.
+//
+// Delivery rows for the requested channels are written in the same
+// transaction, so a job that picks one up cannot find a delivery for a
+// notification that does not exist yet.
+func (n *Notifications) Notify(ctx context.Context, tx pgx.Tx, content New) (Notification, error) {
+	if tx == nil {
+		return Notification{}, errors.New("notifications: Notify needs the transaction that made the change it describes")
+	}
+	if err := content.validate(n.channels); err != nil {
+		return Notification{}, err
+	}
+
+	recipient, err := parseUUID(content.RecipientID)
+	if err != nil {
+		return Notification{}, fmt.Errorf("%w: %s", ErrInvalid, err)
+	}
+	data := content.Data
+	if len(data) == 0 {
+		data = json.RawMessage("{}")
+	}
+
+	queries := store.New(tx)
+	row, err := queries.CreateNotification(ctx, store.CreateNotificationParams{
+		RecipientID: recipient,
+		Kind:        content.Kind,
+		Title:       content.Title,
+		Body:        content.Body,
+		Data:        data,
+	})
+	if err != nil {
+		return Notification{}, fmt.Errorf("notifications: writing: %w", err)
+	}
+	for _, channel := range content.Channels {
+		if _, err := queries.CreateDelivery(ctx, store.CreateDeliveryParams{
+			NotificationID: row.ID,
+			Channel:        channel,
+		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			// ErrNoRows is the ON CONFLICT DO NOTHING path: the delivery
+			// already exists, which is exactly what should happen when the
+			// same channel is named twice.
+			return Notification{}, fmt.Errorf("notifications: queueing delivery through %s: %w", channel, err)
+		}
+	}
+	return toNotification(row), nil
+}
+
+// List returns a recipient's notifications, newest first.
+//
+// before is a cursor: pass the CreatedAt of the last notification on the
+// previous page. It is a timestamp rather than an offset because an offset
+// skips or repeats rows when a new notification arrives between two pages,
+// which for a notification list is the single most likely thing to happen.
+func (n *Notifications) List(ctx context.Context, recipientID string, limit int, before time.Time) ([]Notification, error) {
+	recipient, err := parseUUID(recipientID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalid, err)
+	}
+	if limit <= 0 {
+		limit = DefaultPageSize
+	}
+	if limit > MaxPageSize {
+		limit = MaxPageSize
+	}
+
+	cursor := pgtype.Timestamptz{}
+	if !before.IsZero() {
+		cursor = pgtype.Timestamptz{Time: before, Valid: true}
+	}
+
+	var rows []store.Notification
+	err = n.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		rows, txErr = store.New(tx).ListNotifications(ctx, store.ListNotificationsParams{
+			RecipientID: recipient,
+			Limit:       int32(limit),
+			Before:      cursor,
+		})
+		return txErr
+	})
+	if err != nil {
+		return nil, fmt.Errorf("notifications: listing: %w", err)
+	}
+	out := make([]Notification, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toNotification(row))
+	}
+	return out, nil
+}
+
+// Unread returns how many a recipient has not read.
+func (n *Notifications) Unread(ctx context.Context, recipientID string) (int64, error) {
+	recipient, err := parseUUID(recipientID)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s", ErrInvalid, err)
+	}
+	var count int64
+	err = n.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		count, txErr = store.New(tx).CountUnreadNotifications(ctx, store.CountUnreadNotificationsParams{RecipientID: recipient})
+		return txErr
+	})
+	if err != nil {
+		return 0, fmt.Errorf("notifications: counting unread: %w", err)
+	}
+	return count, nil
+}
+
+// MarkRead marks one notification read, for its recipient only.
+//
+// Marking one that is already read is not an error and does not move its
+// read_at: the recipient has seen it, and when they first did is the more
+// useful fact.
+func (n *Notifications) MarkRead(ctx context.Context, id, recipientID string) (Notification, error) {
+	notificationID, err := parseUUID(id)
+	if err != nil {
+		return Notification{}, ErrNotFound
+	}
+	recipient, err := parseUUID(recipientID)
+	if err != nil {
+		return Notification{}, ErrNotFound
+	}
+
+	var row store.Notification
+	err = n.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := store.New(tx)
+		updated, updateErr := queries.MarkNotificationRead(ctx, store.MarkNotificationReadParams{
+			ID:          notificationID,
+			RecipientID: recipient,
+		})
+		if updateErr == nil {
+			row = updated
+			return nil
+		}
+		if !errors.Is(updateErr, pgx.ErrNoRows) {
+			return updateErr
+		}
+		// No row updated means one of two things: it was already read, or
+		// it is not this recipient's. Reading it back distinguishes them
+		// without telling the caller which — the first is a success, and
+		// the second is indistinguishable from absence.
+		existing, readErr := queries.GetNotification(ctx, store.GetNotificationParams{ID: notificationID})
+		if readErr != nil {
+			return ErrNotFound
+		}
+		if existing.RecipientID != recipient {
+			return ErrNotFound
+		}
+		row = existing
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return Notification{}, ErrNotFound
+		}
+		return Notification{}, fmt.Errorf("notifications: marking read: %w", err)
+	}
+	return toNotification(row), nil
+}
+
+// MarkAllRead marks every unread notification read and returns how many
+// changed.
+func (n *Notifications) MarkAllRead(ctx context.Context, recipientID string) (int64, error) {
+	recipient, err := parseUUID(recipientID)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s", ErrInvalid, err)
+	}
+	var changed int64
+	err = n.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		changed, txErr = store.New(tx).MarkAllNotificationsRead(ctx, store.MarkAllNotificationsReadParams{RecipientID: recipient})
+		return txErr
+	})
+	if err != nil {
+		return 0, fmt.Errorf("notifications: marking all read: %w", err)
+	}
+	return changed, nil
+}
+
+// Deliveries returns what was attempted about one notification, for an
+// operator looking at why something did not arrive.
+func (n *Notifications) Deliveries(ctx context.Context, id string) ([]Delivery, error) {
+	notificationID, err := parseUUID(id)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	var rows []store.NotificationDelivery
+	err = n.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		rows, txErr = store.New(tx).ListDeliveries(ctx, store.ListDeliveriesParams{NotificationID: notificationID})
+		return txErr
+	})
+	if err != nil {
+		return nil, fmt.Errorf("notifications: reading deliveries: %w", err)
+	}
+	out := make([]Delivery, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toDelivery(row))
+	}
+	return out, nil
+}
+
+// validate checks content against the schema's own rules, so a violation is
+// reported here with a readable message rather than by PostgreSQL with a
+// constraint name.
+func (c New) validate(channels map[string]Channel) error {
+	if strings.TrimSpace(c.RecipientID) == "" {
+		return fmt.Errorf("%w: no recipient", ErrInvalid)
+	}
+	if !validKind(c.Kind) {
+		return fmt.Errorf("%w: %q is not a usable kind", ErrInvalid, c.Kind)
+	}
+	if c.Title == "" || len(c.Title) > MaxTitleBytes {
+		return fmt.Errorf("%w: a title is 1 to %d bytes", ErrInvalid, MaxTitleBytes)
+	}
+	if c.Body == "" || len(c.Body) > MaxBodyBytes {
+		return fmt.Errorf("%w: a body is 1 to %d bytes", ErrInvalid, MaxBodyBytes)
+	}
+	if len(c.Data) > MaxDataBytes {
+		return fmt.Errorf("%w: the payload is larger than %d bytes", ErrInvalid, MaxDataBytes)
+	}
+	if len(c.Data) > 0 && !json.Valid(c.Data) {
+		return fmt.Errorf("%w: the payload is not valid JSON", ErrInvalid)
+	}
+	for _, channel := range c.Channels {
+		if _, known := channels[channel]; !known {
+			return fmt.Errorf("%w: %q", ErrUnknownChannel, channel)
+		}
+	}
+	return nil
+}
+
+// validKind mirrors the schema's kind constraint.
+func validKind(kind string) bool {
+	if kind == "" || len(kind) > MaxKindBytes {
+		return false
+	}
+	for _, segment := range strings.Split(kind, ".") {
+		if segment == "" {
+			return false
+		}
+		for i, r := range segment {
+			switch {
+			case r >= 'a' && r <= 'z':
+			case (r >= '0' && r <= '9' || r == '_') && i > 0:
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// validChannelName mirrors the schema's channel constraint.
+func validChannelName(name string) bool {
+	if name == "" || len(name) > 32 {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case (r >= '0' && r <= '9' || r == '_') && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// sortStrings sorts in place. It is here rather than an import so this file
+// keeps one obvious reading order.
+func sortStrings(values []string) {
+	for i := 1; i < len(values); i++ {
+		for j := i; j > 0 && values[j] < values[j-1]; j-- {
+			values[j], values[j-1] = values[j-1], values[j]
+		}
+	}
+}

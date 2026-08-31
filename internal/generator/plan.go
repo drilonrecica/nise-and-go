@@ -143,13 +143,14 @@ type templateData struct {
 	// both numbers TOTP. That is correct rather than a hazard, because a
 	// migration file is application-owned and is never renumbered after the
 	// project exists.
-	TOTPMigration    string
-	UploadsMigration string
-	NiseModule       string
-	NiseVersion      string
-	ChiVersion       string
-	PgxVersion       string
-	RiverVersion     string
+	NotificationsMigration string
+	TOTPMigration          string
+	UploadsMigration       string
+	NiseModule             string
+	NiseVersion            string
+	ChiVersion             string
+	PgxVersion             string
+	RiverVersion           string
 	// RiverSchemaVersion is the River migration line version the generated
 	// job schema brings the database up to. It appears both in the
 	// migration's prose and in the row it seeds, so it is one value here
@@ -185,36 +186,37 @@ func newTemplateData(opts Options) templateData {
 		selected[m] = true
 	}
 	return templateData{
-		AppName:             opts.Name,
-		ModulePath:          opts.ModulePath,
-		Profile:             string(opts.Profile),
-		Modules:             modules,
-		HasNotifications:    selected[recipe.ModuleNotifications],
-		HasOrganizations:    selected[recipe.ModuleOrganizations],
-		HasTOTP:             selected[recipe.ModuleTOTP],
-		HasUploads:          selected[recipe.ModuleUploads],
-		TOTPMigration:       moduleMigrationVersions(selected)[recipe.ModuleTOTP],
-		UploadsMigration:    moduleMigrationVersions(selected)[recipe.ModuleUploads],
-		NiseModule:          NiseModulePath,
-		NiseVersion:         NiseModuleVersion,
-		ChiVersion:          ChiVersion,
-		PgxVersion:          PgxVersion,
-		RiverVersion:        RiverVersion,
-		RiverSchemaVersion:  RiverSchemaVersion,
-		SQLCVersion:         SQLCVersion,
-		GooseVersion:        GooseVersion,
-		OAPICodegenVersion:  OAPICodegenVersion,
-		OAPIRuntimeVersion:  OAPIRuntimeVersion,
-		XCryptoVersion:      XCryptoVersion,
-		GoVersion:           GoDirective,
-		GoImageTag:          GoImageTag,
-		NodeVersion:         NodeVersion,
-		NodeMajor:           NodeMajor,
-		PnpmVersion:         PnpmVersion,
-		PackageManager:      "pnpm@" + PnpmVersion,
-		FrontendDeps:        FrontendDependencies(),
-		FrontendRuntimeDeps: FrontendRuntimeDependencies(),
-		ReplacePlaceholder:  ReplacePathPlaceholder,
+		AppName:                opts.Name,
+		ModulePath:             opts.ModulePath,
+		Profile:                string(opts.Profile),
+		Modules:                modules,
+		HasNotifications:       selected[recipe.ModuleNotifications],
+		HasOrganizations:       selected[recipe.ModuleOrganizations],
+		HasTOTP:                selected[recipe.ModuleTOTP],
+		HasUploads:             selected[recipe.ModuleUploads],
+		NotificationsMigration: moduleMigrationVersions(selected)[recipe.ModuleNotifications],
+		TOTPMigration:          moduleMigrationVersions(selected)[recipe.ModuleTOTP],
+		UploadsMigration:       moduleMigrationVersions(selected)[recipe.ModuleUploads],
+		NiseModule:             NiseModulePath,
+		NiseVersion:            NiseModuleVersion,
+		ChiVersion:             ChiVersion,
+		PgxVersion:             PgxVersion,
+		RiverVersion:           RiverVersion,
+		RiverSchemaVersion:     RiverSchemaVersion,
+		SQLCVersion:            SQLCVersion,
+		GooseVersion:           GooseVersion,
+		OAPICodegenVersion:     OAPICodegenVersion,
+		OAPIRuntimeVersion:     OAPIRuntimeVersion,
+		XCryptoVersion:         XCryptoVersion,
+		GoVersion:              GoDirective,
+		GoImageTag:             GoImageTag,
+		NodeVersion:            NodeVersion,
+		NodeMajor:              NodeMajor,
+		PnpmVersion:            PnpmVersion,
+		PackageManager:         "pnpm@" + PnpmVersion,
+		FrontendDeps:           FrontendDependencies(),
+		FrontendRuntimeDeps:    FrontendRuntimeDependencies(),
+		ReplacePlaceholder:     ReplacePathPlaceholder,
 	}
 }
 
@@ -224,7 +226,11 @@ const coreMigrations = 9
 
 // modulesWithMigrations lists, in the order they are numbered, the modules that
 // contribute a migration. A module absent from this list adds none.
-var modulesWithMigrations = []recipe.Module{recipe.ModuleTOTP, recipe.ModuleUploads}
+var modulesWithMigrations = []recipe.Module{
+	recipe.ModuleNotifications,
+	recipe.ModuleTOTP,
+	recipe.ModuleUploads,
+}
 
 // moduleMigrationVersions assigns each selected module's migration the next
 // version after the core history.

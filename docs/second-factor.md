@@ -18,7 +18,7 @@ what each one costs.
 
 | Path | What it is |
 |---|---|
-| `db/migrations/00010_totp.sql` | `totp_secrets`, `recovery_codes`, `mfa_challenges` |
+| `db/migrations/000NN_totp.sql` | `totp_secrets`, `recovery_codes`, `mfa_challenges`. The number depends on which other modules the project selected — see [database migrations](database-migrations.md) |
 | `internal/features/mfa/` | the use case, its queries, and its sqlc output |
 | `internal/app/secondfactor.go` | the wiring — application-owned, yours to edit |
 

@@ -49,10 +49,18 @@ immutability and controlled production DDL remain operational requirements.
 
 - Use zero-padded sequential names: `00002_add_accounts.sql`. A
   [compile-time module](adr/0022-compile-time-modules.md)'s migration continues
-  the same numbering — the TOTP module's is `00010_totp.sql` — because the
-  compatibility check refuses a history with gaps, and a gap is how a missing
-  migration hides. The number is assigned at generation time from the recorded
-  selection and never changes afterwards.
+  the same numbering, because the compatibility check refuses a history with
+  gaps and a gap is how a missing migration hides.
+
+  Which number a module gets therefore depends on **which other modules were
+  selected**: modules are numbered after the core history in module order
+  (notifications, TOTP, uploads), so a project that selected only TOTP numbers
+  it `00010_totp.sql` while one that also selected notifications numbers it
+  `00011_totp.sql`. That is correct rather than a hazard — the number is
+  assigned once, at generation time, from the recorded selection, and a
+  migration file is application-owned and never renumbered afterwards. Adding
+  a module to an existing project means writing the next forward migration,
+  not renaming the ones already applied.
 - Include `-- +goose Up` and `-- +goose Down` sections. Production recovery
   normally uses a new forward migration even though Down remains valuable in
   disposable tests and deliberate rollback procedures.

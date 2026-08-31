@@ -3,9 +3,14 @@
 package app
 
 import (
-{{- if .HasUploads }}
+{{- if or .HasUploads .HasNotifications }}
 	"log/slog"
 
+{{- end }}
+{{- if .HasNotifications }}
+	"{{.ModulePath}}/internal/features/notifications"
+{{- end }}
+{{- if .HasUploads }}
 	"{{.ModulePath}}/internal/features/uploads"
 {{- end }}
 	"{{.ModulePath}}/internal/platform/jobs"
@@ -58,7 +63,18 @@ import (
 // It returns an error so that a scheduling mistake — an impossible interval,
 // a kind scheduled twice — stops the process at startup rather than being
 // discovered when the work quietly does not happen.
-func registerJobs(registry *jobs.Registry{{ if .HasUploads }}, uploadSweep *uploads.Uploads, logger *slog.Logger{{ end }}) error {
+func registerJobs(
+	registry *jobs.Registry,
+{{- if .HasUploads }}
+	uploadSweep *uploads.Uploads,
+{{- end }}
+{{- if .HasNotifications }}
+	appNotifications *notifications.Notifications,
+{{- end }}
+{{- if or .HasUploads .HasNotifications }}
+	logger *slog.Logger,
+{{- end }}
+) error {
 {{- if .HasUploads }}
 	// The uploads module's sweep: it expires staged uploads whose window
 	// elapsed and deletes the objects they were holding a key for. Without
@@ -66,7 +82,15 @@ func registerJobs(registry *jobs.Registry{{ if .HasUploads }}, uploadSweep *uplo
 	if err := uploads.RegisterSweep(registry, uploadSweep, logger); err != nil {
 		return err
 	}
-{{- else }}
+{{- end }}
+{{- if .HasNotifications }}
+	// The notifications module's delivery worker: one job per channel per
+	// notification, so two channels' failures stay independent.
+	if err := notifications.RegisterDelivery(registry, appNotifications, logger); err != nil {
+		return err
+	}
+{{- end }}
+{{- if not (or .HasUploads .HasNotifications) }}
 	// Intentionally empty. See the doc comment above.
 	_ = registry
 {{- end }}

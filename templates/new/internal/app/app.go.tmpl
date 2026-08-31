@@ -308,8 +308,15 @@ func Run(ctx context.Context, modeOverride string) error {
 	// failures, not first-message failures.
 	_, _ = mailer, mailRenderer
 
+{{- if .HasNotifications }}
+	appNotifications, err := newNotifications(transactor, mailer, mailRenderer, cfg.MailFrom, logger)
+	if err != nil {
+		return fmt.Errorf("building the notification use case: %w", err)
+	}
+{{- end }}
+
 	jobRegistry := jobs.NewRegistry()
-	if err := registerJobs(jobRegistry{{ if .HasUploads }}, uploadLifecycle, logger{{ end }}); err != nil {
+	if err := registerJobs(jobRegistry{{ if .HasUploads }}, uploadLifecycle{{ end }}{{ if .HasNotifications }}, appNotifications{{ end }}{{ if or .HasUploads .HasNotifications }}, logger{{ end }}); err != nil {
 		return fmt.Errorf("registering background jobs: %w", err)
 	}
 	jobClient, err := jobs.New(pool, jobRegistry, cfg.Jobs, logger)
@@ -336,6 +343,9 @@ func Run(ctx context.Context, modeOverride string) error {
 		slog.Any("job_kinds", jobClient.Kinds()),
 		slog.Any("periodic_job_kinds", jobClient.PeriodicKinds()),
 		slog.String("mail_transport", cfg.MailTransport),
+{{- if .HasNotifications }}
+		slog.Any("notification_channels", appNotifications.Channels()),
+{{- end }}
 {{- if .HasUploads }}
 		slog.String("storage_backend", cfg.StorageBackend),
 {{- end }}
