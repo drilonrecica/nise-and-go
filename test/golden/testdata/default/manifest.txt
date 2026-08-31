@@ -39,7 +39,7 @@ deploy/README.md file 0644 8040eed460f74fbece44b0f5bf1080bf1d821f99d6a7119947028
 deploy/compose.yaml file 0644 a993cfffeb42db237179c3663f8e22e574580ef0c7ab74a008664b961c332933
 frontend dir 0755
 frontend/.gitignore file 0644 2dd21d60d8b83062584d4be22e8b314de402773497ce0041fccdd6968fbc34aa
-frontend/README.md file 0644 88655d39d12cbad2bcf31eea8cd93ad2779c6c20dffa9a66bcbe4d3a59165c44
+frontend/README.md file 0644 c9791c9daee491ab3ac223c434611feedc4b652269653e2e234f750c440ed780
 frontend/package.json file 0644 af775389673f8b693e7cb57b57b10093e9794cde3966173be420dc6e8a247fd2
 frontend/scripts dir 0755
 frontend/scripts/check-contrast.mjs file 0644 c918f83e166cf2f7f68b13619f7f0b2a29068d5717097d8a8ec2a4f4e2c3a714
@@ -50,8 +50,10 @@ frontend/src/app.d.ts file 0644 d231593a748a2379dc8248d2a06d2d8ef723c8e8f8a4a3b1
 frontend/src/app.html file 0644 2d34de7c7e3337aa7fe687bd9c6450da3dea0731fe0222b969be642a5e088b2e
 frontend/src/lib dir 0755
 frontend/src/lib/api dir 0755
-frontend/src/lib/api/client.test.ts file 0644 5041790d4a2cbd6b159b6616147dea14380adbf8e1193bbae26e09af0c71e83c
-frontend/src/lib/api/client.ts file 0644 f117bc9d9a514bb145fe4ed8ce0433410af11c47aad45bc7a17f54da4eb3dd66
+frontend/src/lib/api/client.test.ts file 0644 36096cc0043e747e968f94fc81049c2a5ae83eda6be17459461b25285aa159a8
+frontend/src/lib/api/client.ts file 0644 c0c2aee1d64c938ed6564304226dc263ff3e5c3dae917154c485408d5b87ef48
+frontend/src/lib/api/problem.test.ts file 0644 10d98186a29ac2fc7f3a1f734705572965124461794bb7e425adc8357383d382
+frontend/src/lib/api/problem.ts file 0644 53f78ba8ddc3d95867379fd9895958c2797de466e7f8e90aca8654a227c0ba6d
 frontend/src/lib/api/schema.d.ts file 0644 e3f7af578b9bb3b00cfc5875f783af95c6c4c1203b3a8e0f784f01aaf528476f
 frontend/src/lib/components dir 0755
 frontend/src/lib/components/ThemeControl.svelte file 0644 8360f3ca2b33ccbd2ef80cdb0639eb07fa1a1ab82581dcddcb999d1dd0d1f66b
@@ -75,6 +77,7 @@ frontend/src/lib/components/ui/Icon.svelte file 0644 88175bfa382279c4ebe682d0b75
 frontend/src/lib/components/ui/Input.svelte file 0644 90fca93ab8fc1007f016be331332430aaec012ad39dd5e85c465261c3601d305
 frontend/src/lib/components/ui/Menu.svelte file 0644 5d5172030bbf7ff3314c270f7edce862841370965b3f82cc5cf891c3121506b6
 frontend/src/lib/components/ui/Pagination.svelte file 0644 b9c48e6d27981c1bedd4f8c13df10247c87238f5a09b5ea90c02e5905c47f774
+frontend/src/lib/components/ui/ProblemAlert.svelte file 0644 ba6de817d23728cc3f16fed3ed04a70de5fb8d1ad0fa39a9b7b7a5b0a59ec0f5
 frontend/src/lib/components/ui/Select.svelte file 0644 d030e1a1396645336bf4191cabf004c4d2ef198ff63f2e7aaac6e94b70219835
 frontend/src/lib/components/ui/Skeleton.svelte file 0644 b4b817038a544bb200ef4bac5ab1002e9cd857428d0dd94c06f3ee0a66664bbb
 frontend/src/lib/components/ui/Spinner.svelte file 0644 4c471c0ca08882487617a480392734c1b1577dfcbc5ad1531dea5bc1d7b221a3

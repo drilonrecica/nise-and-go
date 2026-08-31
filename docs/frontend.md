@@ -81,6 +81,29 @@ Breadcrumbs label known paths from the navigation list and unknown segments from
 
 The current-section rule is a path-boundary match, not a string prefix: `/settings` claims `/settings/roles` and does not claim `/settings-archive`. An item marked `exact` — the dashboard at `/` — claims only itself, or it would be current on every page in the application.
 
+### The API client and Problem Details
+
+`src/lib/api/client.ts` is a small wrapper over `fetch` built on the types generated from `api/openapi.yaml`. It is not a client framework, and there is deliberately only one of it: everything it does is something every call would otherwise have to remember, and a component calling `fetch` directly is how one request ends up without the anti-forgery header six months from now, in the file nobody re-reads. A Nise test enforces that no other file in `src/` calls `fetch`.
+
+Per request it supplies the versioned base path, `Accept` for both media types, same-origin credentials, forwarded cancellation, and:
+
+- **The anti-forgery header on state changes.** The `__Host-session_csrf` cookie is read and echoed as `X-CSRF-Token`. That cookie is the one thing beside the session that is not `HttpOnly`, precisely so this script can read it — a form posted from another origin cannot set a request header. The cookie name is matched **exactly**, not by suffix, because matching loosely is how a value an attacker can set gets echoed into the header the server trusts. An absent token is not a client-side refusal: the server decides, and an unauthenticated state change is covered by Origin and Fetch Metadata instead.
+- **An optional `Idempotency-Key`** for the sensitive commands that require one.
+- **Encoded path parameters**, so an identifier containing a slash cannot walk out of its own segment and address a different resource.
+- **A query serializer** that omits `undefined` and `null` rather than sending the string `"undefined"`, and repeats a parameter per array element, which is the form the strict server bindings parse.
+
+Failures arrive as one of two typed errors. `APITransportError` is a failure before a usable response existed; a cancellation is not wrapped at all, so an aborted request still rejects with the caller's own `AbortError`. `APIError` is a completed exchange with a non-success status, and it carries `problem`, `code`, `status`, and `requestID`.
+
+`src/lib/api/problem.ts` validates that body against the RFC 9457 schema before anything trusts it — every required member, the status inside the error range, and the documented length bounds. A body that fails validation leaves `problem` as `null` and is never displayed, because an unvalidated string from a response is exactly the shape of an injected message. The error's own `message` never contains the body either.
+
+Branch on `code`, not on the status. The server has one catalog of problems and `code` is a closed, documented set; a status is shared by several unrelated failures and `detail` is prose that will be reworded. `problemCodes` mirrors the catalog, and `isRetryable` is deliberately narrow — a retry that cannot succeed is a second failure and a second wasted minute — so only the server's own failures and a concurrent idempotent attempt qualify.
+
+`problemMessage` shows the server's `detail`, which is bounded and written for a reader, except for the failures whose server-side wording is deliberately uninformative: a permission denial, a refused cross-site request, and an expired cursor each get a sentence saying what the person can do instead.
+
+`ProblemAlert.svelte` is the one place that turns a thrown value into something readable, so "what does an error look like" has one answer across every list, form, and command. It shows the request id when there is one — the only thing that lets somebody reporting a problem be matched to the log line that recorded it, and not sensitive, since it identifies a request rather than a person — and offers a retry only when retrying could plausibly work.
+
+Field-level validation errors are not in the contract: the `Problem` schema is `additionalProperties: false` and carries no per-field member. Client-side field validation is Valibot's job, and the server remains authoritative.
+
 ### The component set
 
 `src/lib/components/ui/` holds the curated set, as ordinary application-owned Svelte 5 components: `Alert`, `Badge`, `Button`, `Checkbox`, `ConfirmDialog`, `Dialog`, `Field`, `Icon`, `Input`, `Menu`, `Pagination`, `Select`, `Skeleton`, `Spinner`, `Table`, `Textarea`, `Toaster`, `Tooltip`, and the `toast` module. There is no `bits-ui` and no `shadcn-svelte`: the generated `package.json` has zero runtime dependencies. [ADR 0025](adr/0025-owned-ui-primitives.md) has the reasoning — in short, [ADR 0013](adr/0013-security-headers-and-csp.md)'s policy blocks the `style` attribute that every Floating UI integration writes to position a floating element, and weakening the policy to fit a dependency was not an option.

@@ -1,0 +1,82 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import Alert from '$lib/components/ui/Alert.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import { APIError, APITransportError } from '$lib/api/client';
+	import { isRetryable, problemMessage } from '$lib/api/problem';
+
+	let {
+		error,
+		/** Offered only when retrying could plausibly work. */
+		onretry
+	}: {
+		/** Whatever the failed call threw. */
+		error: unknown;
+		onretry?: () => void;
+	} = $props();
+
+	const shown = $derived(describe(error));
+
+	function describe(value: unknown): {
+		title: string;
+		message: string;
+		requestID: string | null;
+		retryable: boolean;
+	} {
+		if (value instanceof APIError && value.problem) {
+			return {
+				title: value.problem.title,
+				message: problemMessage(value.problem),
+				requestID: value.problem.request_id,
+				retryable: isRetryable(value.problem)
+			};
+		}
+		if (value instanceof APIError) {
+			// A failure the server did not describe: a proxy's own error page,
+			// or a body that did not validate as a Problem. Nothing from that
+			// body is shown, because an unvalidated response string is exactly
+			// the shape of an injected message.
+			return {
+				title: 'Request failed',
+				message: 'The server refused the request without explaining why.',
+				requestID: value.requestID,
+				retryable: value.status >= 500
+			};
+		}
+		if (value instanceof APITransportError) {
+			return {
+				title: 'Could not reach the server',
+				message: 'Check your connection and try again.',
+				requestID: null,
+				retryable: true
+			};
+		}
+		return {
+			title: 'Something went wrong',
+			message: 'Try again, and tell an administrator if it keeps happening.',
+			requestID: null,
+			retryable: false
+		};
+	}
+</script>
+
+<!--
+	One place that turns a thrown value into something a person can read and
+	act on. Every list, form, and command surfaces failure through this, so
+	"what does an error look like" has one answer.
+
+	The request id is shown when there is one — it is the only thing that lets
+	somebody reporting a problem be matched to the log line that recorded it,
+	and it is not sensitive: it identifies a request, not a person.
+-->
+<Alert tone="danger" title={shown.title} live>
+	<p>{shown.message}</p>
+	{#if shown.requestID}
+		<p class="mt-1 font-mono text-xs opacity-80">Reference: {shown.requestID}</p>
+	{/if}
+	{#if onretry && shown.retryable}
+		<div class="mt-3">
+			<Button size="sm" onclick={onretry}>Try again</Button>
+		</div>
+	{/if}
+</Alert>
