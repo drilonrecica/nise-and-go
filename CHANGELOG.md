@@ -16,6 +16,10 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   `before` parsing. Generated applications gain the `CursorPage` OpenAPI
   contract, the `CURSOR_SIGNING_KEY`, `CURSOR_RETIRED_KEYS`, and `CURSOR_TTL`
   settings, and `invalid_pagination`/`cursor_expired` Problem types.
+- Add explicit offset reporting pagination: a separate `ReportPage`
+  page/size/total contract with overflow-safe parsing, a configurable offset
+  ceiling, and the `report_too_deep` Problem type. It cannot be combined with
+  cursor parameters.
 
 ## Release policy
 

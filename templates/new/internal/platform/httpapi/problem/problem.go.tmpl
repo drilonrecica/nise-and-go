@@ -75,6 +75,10 @@ var (
 		"/problems/cursor-expired", "Cursor Expired", http.StatusBadRequest,
 		"The pagination cursor has expired; start the listing again.", "cursor_expired",
 	)
+	reportTooDeep = mustDefinition(
+		"/problems/report-too-deep", "Report Too Deep", http.StatusBadRequest,
+		"The requested report page is beyond the supported depth; narrow the filters.", "report_too_deep",
+	)
 	unsupportedMediaType = mustDefinition(
 		"/problems/unsupported-media-type", "Unsupported Media Type", http.StatusUnsupportedMediaType,
 		"The request Content-Type is not supported for this operation.", "unsupported_media_type",
@@ -107,6 +111,11 @@ func InvalidPagination() Definition { return invalidPagination }
 // InvalidPagination because it is the one pagination failure a correct client
 // can recover from on its own, by restarting the listing.
 func CursorExpired() Definition { return cursorExpired }
+
+// ReportTooDeep returns the report-depth failure. Like CursorExpired it is
+// separate from InvalidPagination because a client can act on it: the fix is a
+// narrower filter or an export, not a retry.
+func ReportTooDeep() Definition { return reportTooDeep }
 
 // UnsupportedMediaType returns the request media-type failure.
 func UnsupportedMediaType() Definition { return unsupportedMediaType }

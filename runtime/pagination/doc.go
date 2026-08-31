@@ -30,6 +30,14 @@
 // active key while keeping the previous one retired, then drop the retired key
 // once every cursor issued under it has expired.
 //
+// # Offset reporting pagination
+//
+// [ParseReport] implements the separate page/size contract reports use, where
+// a page number is something a person quotes and a total is something they
+// need. It is deliberately not a mode of the cursor API: it has its own
+// parameters, its own limits type, its own depth ceiling, and a request that
+// mixes the two is refused.
+//
 // # Failure modes
 //
 // Decoding distinguishes its failures — [ErrCursorMalformed],

@@ -11,7 +11,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 )
 
-func TestGeneratedProjectDefinesCursorPagination(t *testing.T) {
+func TestGeneratedProjectDefinesPaginationContracts(t *testing.T) {
 	t.Parallel()
 
 	files, err := generator.Plan(defaultOptions())
@@ -26,6 +26,10 @@ func TestGeneratedProjectDefinesCursorPagination(t *testing.T) {
 	wants := map[string][]string{
 		"api/openapi.yaml": {
 			"CursorPage:",
+			"ReportPage:",
+			"APIRootReportCollection:",
+			"    ReportPageNumber:",
+			"    ReportPageSize:",
 			"APIRootCursorCollection:",
 			"    Cursor:",
 			"    CursorLimit:",
@@ -35,6 +39,8 @@ func TestGeneratedProjectDefinesCursorPagination(t *testing.T) {
 		},
 		"internal/platform/httpapi/openapigen/openapi.gen.go": {
 			"type CursorPage struct",
+			"type ReportPage struct",
+			"type APIRootReportCollection struct",
 			"type APIRootCursorCollection struct",
 			"type Cursor = string",
 			"NextCursor *Cursor `json:\"next_cursor,omitempty\"`",
@@ -47,6 +53,9 @@ func TestGeneratedProjectDefinesCursorPagination(t *testing.T) {
 			"case pagination.LimitParam, pagination.AfterParam, pagination.BeforeParam:",
 			"func issueCursorPage(",
 			"func newAPIRootCursorCollection(",
+			"func issueReportPage(totals pagination.Totals) openapigen.ReportPage",
+			"func newAPIRootReportCollection(",
+			"errors.Is(err, pagination.ErrReportTooDeep)",
 			"items = []openapigen.APIRoot{}",
 			"func paginationProblem(err error) problem.Definition",
 			"errors.Is(err, pagination.ErrCursorExpired)",
@@ -54,8 +63,10 @@ func TestGeneratedProjectDefinesCursorPagination(t *testing.T) {
 		"internal/platform/httpapi/problem/problem.go": {
 			`"invalid_pagination"`,
 			`"cursor_expired"`,
+			`"report_too_deep"`,
 			"func InvalidPagination() Definition",
 			"func CursorExpired() Definition",
+			"func ReportTooDeep() Definition",
 		},
 		"internal/platform/httpapi/api_test.go": {
 			"TestCursorCollectionResponseShape",
@@ -63,6 +74,9 @@ func TestGeneratedProjectDefinesCursorPagination(t *testing.T) {
 			"TestIssueCursorPage",
 			"TestPaginationProblemMapsEveryFailureToTheClient",
 			"TestNewServerRequiresACursorCodec",
+			"TestReportCollectionResponseShape",
+			"TestReportPageEchoesTheRequestedPage",
+			"TestReportRefusesDepthAndMixedPagination",
 		},
 		"internal/platform/config/config.go": {
 			"CursorKeys *pagination.KeyRing",
@@ -91,7 +105,9 @@ func TestGeneratedProjectDefinesCursorPagination(t *testing.T) {
 		},
 		"frontend/src/lib/api/schema.d.ts": {
 			"CursorPage:",
+			"ReportPage:",
 			"APIRootCursorCollection:",
+			"APIRootReportCollection:",
 			"Cursor: string;",
 			`next_cursor?: components["schemas"]["Cursor"];`,
 			`prev_cursor?: components["schemas"]["Cursor"];`,
@@ -99,6 +115,7 @@ func TestGeneratedProjectDefinesCursorPagination(t *testing.T) {
 		"frontend/src/lib/api/client.test.ts": {
 			"types cursor pages as opaque tokens that are absent, never null",
 			"an absent cursor is omitted, never null",
+			"types report pages as a separate page/size/total contract",
 		},
 	}
 	for path, fragments := range wants {
@@ -157,10 +174,39 @@ func TestGeneratedProjectDefinesCursorPagination(t *testing.T) {
 		t.Errorf("APIRootCursorCollection.page ref = %#v, want CursorPage", page)
 	}
 
+	reportPage := requireClosedObjectSchema(t, document, "ReportPage",
+		"page", "size", "total", "total_pages", "has_more")
+	requirePropertyType(t, reportPage, "has_more", "boolean")
+	for property, format := range map[string]string{
+		"page": "int32", "size": "int32", "total": "int64", "total_pages": "int64",
+	} {
+		schema := requirePropertyType(t, reportPage, property, "integer")
+		if schema.Format != format {
+			t.Errorf("ReportPage.%s format = %q, want %q", property, schema.Format, format)
+		}
+		if schema.Min == nil {
+			t.Errorf("ReportPage.%s has no minimum", property)
+		}
+	}
+	// The two page contracts must stay disjoint: neither may quietly grow the
+	// other's members and become interchangeable at a call site.
+	for member := range reportPage.Properties {
+		if _, shared := cursorPage.Properties[member]; shared && member != "has_more" {
+			t.Errorf("ReportPage and CursorPage share member %q", member)
+		}
+	}
+
+	reportCollection := requireClosedObjectSchema(t, document, "APIRootReportCollection", "items", "page")
+	if page := reportCollection.Properties["page"]; page == nil || page.Ref != "#/components/schemas/ReportPage" {
+		t.Errorf("APIRootReportCollection.page ref = %#v, want ReportPage", page)
+	}
+
 	wantParameters := map[string]string{
-		"CursorLimit":  "limit",
-		"CursorAfter":  "after",
-		"CursorBefore": "before",
+		"CursorLimit":      "limit",
+		"CursorAfter":      "after",
+		"CursorBefore":     "before",
+		"ReportPageNumber": "page",
+		"ReportPageSize":   "size",
 	}
 	for component, name := range wantParameters {
 		parameter := document.Components.Parameters[component]
