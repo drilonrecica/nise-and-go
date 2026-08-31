@@ -1,0 +1,51 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import Icon from '$lib/components/ui/Icon.svelte';
+	import { toaster, type ToastTone } from '$lib/components/ui/toast.svelte';
+
+	const tones: Record<ToastTone, string> = {
+		neutral: 'border-line bg-surface-raised text-text',
+		success: 'border-success-line bg-success-soft text-success-text',
+		warning: 'border-warning-line bg-warning-soft text-warning-text',
+		danger: 'border-danger-line bg-danger-soft text-danger-text'
+	};
+</script>
+
+<!--
+	One live region, mounted once in the shell and present from first paint.
+	A live region created at the moment a message arrives is a live region the
+	screen reader has not been watching, so the first message — usually the
+	only one that matters — is silently dropped.
+
+	It is polite rather than assertive: a toast reports something that already
+	happened, and interrupting whatever the person is reading to say "saved" is
+	the wrong trade. Anything that must interrupt is not a toast.
+-->
+<div
+	class="pointer-events-none fixed inset-x-0 bottom-0 z-50 flex flex-col items-center gap-2 p-4 sm:items-end"
+	role="status"
+	aria-live="polite"
+	aria-atomic="false"
+>
+	{#each toaster.toasts as toast (toast.id)}
+		<div
+			class="pointer-events-auto flex w-full max-w-sm items-start gap-3 rounded-md border p-3 text-sm shadow-floating {tones[
+				toast.tone
+			]}"
+		>
+			<div class="min-w-0 flex-1">
+				<p class="font-medium">{toast.title}</p>
+				{#if toast.description}
+					<p class="mt-0.5 opacity-90">{toast.description}</p>
+				{/if}
+			</div>
+			<button
+				type="button"
+				class="-me-1 -mt-1 rounded-md p-1 transition-colors duration-fast ease-standard hover:bg-surface-muted"
+				onclick={() => toaster.dismiss(toast.id)}
+			>
+				<Icon name="close" label="Dismiss" class="size-4" />
+			</button>
+		</div>
+	{/each}
+</div>

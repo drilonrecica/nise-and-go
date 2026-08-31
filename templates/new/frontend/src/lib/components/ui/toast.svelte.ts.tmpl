@@ -1,0 +1,83 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Transient messages.
+//
+// A toast is for something that happened and needs no response: saved,
+// copied, sent. It is deliberately not the channel for an error the person
+// must act on — that belongs beside the thing that failed, where it can still
+// be read after the toast would have gone. This module has no `error` helper
+// for that reason; `danger` exists for a failure that is genuinely just news,
+// such as a background job that stopped.
+
+/** How a toast is coloured and announced. */
+export type ToastTone = 'neutral' | 'success' | 'warning' | 'danger';
+
+/** One transient message. */
+export interface Toast {
+	id: number;
+	tone: ToastTone;
+	title: string;
+	description?: string;
+	/** Milliseconds before it removes itself. 0 keeps it until dismissed. */
+	duration: number;
+}
+
+/** How long a toast lives by default. */
+export const defaultToastDuration = 6000;
+
+class Toaster {
+	#toasts = $state<Toast[]>([]);
+	#next = 0;
+	#timers = new Map<number, ReturnType<typeof setTimeout>>();
+
+	get toasts(): Toast[] {
+		return this.#toasts;
+	}
+
+	/** Show a toast and return its id, so a caller can dismiss it early. */
+	show(
+		title: string,
+		options: { tone?: ToastTone; description?: string; duration?: number } = {}
+	): number {
+		const id = this.#next++;
+		const duration = options.duration ?? defaultToastDuration;
+		this.#toasts = [
+			...this.#toasts,
+			{ id, tone: options.tone ?? 'neutral', title, description: options.description, duration }
+		];
+		if (duration > 0) {
+			this.#timers.set(
+				id,
+				setTimeout(() => this.dismiss(id), duration)
+			);
+		}
+		return id;
+	}
+
+	success(title: string, description?: string): number {
+		return this.show(title, { tone: 'success', description });
+	}
+
+	warning(title: string, description?: string): number {
+		return this.show(title, { tone: 'warning', description });
+	}
+
+	dismiss(id: number): void {
+		const timer = this.#timers.get(id);
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			this.#timers.delete(id);
+		}
+		this.#toasts = this.#toasts.filter((toast) => toast.id !== id);
+	}
+
+	/** Drop everything, cancelling the pending timers with it. */
+	clear(): void {
+		for (const timer of this.#timers.values()) clearTimeout(timer);
+		this.#timers.clear();
+		this.#toasts = [];
+	}
+}
+
+/** The application's toaster. */
+export const toaster = new Toaster();

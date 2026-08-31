@@ -1,0 +1,55 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	let {
+		id,
+		text,
+		children
+	}: {
+		/** Stable id, so the trigger inside can be described by the tooltip. */
+		id: string;
+		text: string;
+		/** The trigger. It must be focusable, or the tooltip is mouse-only. */
+		children: Snippet<[{ describedBy: string }]>;
+	} = $props();
+
+	let visible = $state(false);
+</script>
+
+<!--
+	A tooltip supplements a control that is already labelled; it is never the
+	control's only name. That is why it is wired with aria-describedby rather
+	than aria-labelledby, and why an icon-only button gets a real accessible
+	name of its own as well.
+
+	It appears on hover and on focus, and Escape dismisses it — all three are
+	WCAG 2.2 SC 1.4.13, and the one people forget is Escape, which matters for
+	a tooltip that covers the thing underneath it.
+
+	Positioning is CSS, not a positioning library: the policy has no
+	style-src-attr 'unsafe-inline', so a library that writes a style attribute
+	to place a floating element would be blocked outright.
+-->
+<span
+	class="relative inline-flex"
+	onmouseenter={() => (visible = true)}
+	onmouseleave={() => (visible = false)}
+	onfocusin={() => (visible = true)}
+	onfocusout={() => (visible = false)}
+	onkeydown={(event) => {
+		if (event.key === 'Escape') visible = false;
+	}}
+	role="presentation"
+>
+	{@render children({ describedBy: id })}
+
+	<span
+		{id}
+		role="tooltip"
+		class="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2 rounded-md bg-surface-raised px-2 py-1 text-xs whitespace-nowrap text-text shadow-floating ring-1 ring-line transition-opacity duration-fast ease-standard"
+		class:opacity-0={!visible}
+		class:invisible={!visible}
+		class:opacity-100={visible}>{text}</span
+	>
+</span>

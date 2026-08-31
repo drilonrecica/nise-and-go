@@ -40,6 +40,30 @@ empty `items` as `[]`, never `null`, and do not add a client-side envelope.
 suite is Node-only and covers the fetch wrapper. Browser component and
 Playwright coverage arrive with the application-shell milestone.
 
+## The component set
+
+`src/lib/components/ui/` holds this application's UI primitives. They are
+yours: edit them, replace them, delete the ones you do not use.
+
+There is no `bits-ui` and no `shadcn-svelte` — `package.json` has **no runtime
+dependencies at all**. The reason is the Content Security Policy: it has no
+`style-src-attr 'unsafe-inline'`, and a floating element positioned through a
+`style` attribute, which is what every Floating UI integration writes, is
+blocked by it. Weakening the policy to fit a dependency was not an option.
+
+Three rules keep an owned set affordable, and are worth keeping as you extend
+it:
+
+- **Use the platform where the platform is better.** Modal surfaces are
+  `<dialog>` with `showModal()`, which gives you the focus trap, the inert
+  background, Escape, and the top layer. Selects are `<select>`. Checkboxes are
+  real checkboxes coloured with `accent-color`.
+- **Position with CSS.** Anchor a floating element to its trigger with absolute
+  positioning. If one genuinely needs collision detection, build that one with
+  `style:` directives rather than reaching for a library for all of them.
+- **Write the keyboard model out** where it has to be written. `Menu.svelte` is
+  the worked example.
+
 ## Design tokens
 
 Every color, radius, shadow, duration, and control height lives in

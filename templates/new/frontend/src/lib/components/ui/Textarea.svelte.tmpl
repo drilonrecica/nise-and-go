@@ -1,0 +1,30 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import type { HTMLTextareaAttributes } from 'svelte/elements';
+
+	let {
+		value = $bindable(''),
+		invalid = false,
+		describedBy,
+		rows = 4,
+		class: className = '',
+		...rest
+	}: {
+		value?: string;
+		invalid?: boolean;
+		describedBy?: string;
+		rows?: number;
+		class?: string;
+	} & Omit<HTMLTextareaAttributes, 'value' | 'rows'> = $props();
+</script>
+
+<textarea
+	bind:value
+	{rows}
+	aria-invalid={invalid || undefined}
+	aria-describedby={describedBy}
+	class="w-full rounded-md border bg-surface px-3 py-2 text-sm text-text transition-colors duration-fast ease-standard disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-text-subtle {invalid
+		? 'border-danger'
+		: 'border-control-line'} {className}"
+	{...rest}
+></textarea>

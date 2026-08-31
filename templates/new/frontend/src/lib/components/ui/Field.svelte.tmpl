@@ -1,0 +1,66 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	let {
+		id,
+		label,
+		description,
+		error,
+		required = false,
+		children
+	}: {
+		/** The control's id. Everything here is wired to it. */
+		id: string;
+		label: string;
+		/** Help text, shown under the label and referenced by the control. */
+		description?: string;
+		/** The current validation message, or undefined when the field is valid. */
+		error?: string;
+		required?: boolean;
+		/**
+		 * The control. It receives the ids to put in aria-describedby and the
+		 * value for aria-invalid, so the wiring is this component's job rather
+		 * than something each form remembers.
+		 */
+		children: Snippet<[{ describedBy: string | undefined; invalid: boolean }]>;
+	} = $props();
+
+	const descriptionId = $derived(description ? `${id}-description` : undefined);
+	const errorId = $derived(error ? `${id}-error` : undefined);
+	const describedBy = $derived([descriptionId, errorId].filter(Boolean).join(' ') || undefined);
+</script>
+
+<!--
+	A field is a label, a control, its help text, and its error, wired together
+	by id. Doing that wiring per form is how a form ends up with an error
+	message that is visible and unannounced — a sighted user sees red text, a
+	screen-reader user hears nothing and cannot tell why the submission failed.
+
+	The required marker is text, not a red asterisk alone: an asterisk carries
+	no meaning to a screen reader, and colour alone carries none to anyone who
+	cannot distinguish it.
+-->
+<div class="space-y-1.5">
+	<label for={id} class="block text-sm font-medium text-text">
+		{label}
+		{#if required}
+			<span class="text-text-subtle">(required)</span>
+		{/if}
+	</label>
+
+	{#if description}
+		<p id={descriptionId} class="text-sm text-text-muted">{description}</p>
+	{/if}
+
+	{@render children({ describedBy, invalid: Boolean(error) })}
+
+	{#if error}
+		<!--
+			aria-live, not role="alert": a message that appears while the person
+			is still typing in the field should be announced politely, after
+			whatever they are currently hearing, rather than interrupting it.
+		-->
+		<p id={errorId} class="text-sm text-danger-text" aria-live="polite">{error}</p>
+	{/if}
+</div>

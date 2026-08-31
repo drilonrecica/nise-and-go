@@ -114,6 +114,18 @@ clean install; the remaining planned packages are named without one.
 | Vitest (`4.1.11`) | Runs the initial Node-only typed-client unit contract on Node 22. Browser component coverage remains a separate M6 addition. |
 | Playwright | A deliberately small end-to-end suite for critical user journeys — end-to-end tests are the slowest and most brittle layer, so they cover journeys, not coverage. |
 
+The generated `package.json` has **no runtime dependencies**. Every package it
+pins is a build or test tool; nothing above ships in the bundle except the
+application's own code and the framework it compiles against.
+
+### Rejected for the generated frontend
+
+| Package | Why it is not there |
+|---|---|
+| `bits-ui`, `shadcn-svelte` | The curated component set is application-owned Svelte rather than a wrapper over a headless library. [ADR 0013](adr/0013-security-headers-and-csp.md)'s policy has no `style-src-attr 'unsafe-inline'`, and a floating element positioned through a `style` attribute — which is what every Floating UI integration writes — is blocked by it. Taking the dependency would mean either weakening the policy or auditing somebody else's rendering internals on every upgrade. See [ADR 0025](adr/0025-owned-ui-primitives.md). |
+| An icon package | An icon is path data on a 24×24 grid; the set stays as small as the application needs. |
+| A CSS-class utility (`clsx`, `tailwind-merge`) | Template literals and Svelte's `class:` directive cover what the components do. |
+
 ## Denylist
 
 These are explicitly rejected for Nise-maintained code and for what Nise

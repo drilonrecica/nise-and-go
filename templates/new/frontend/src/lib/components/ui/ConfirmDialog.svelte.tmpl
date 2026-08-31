@@ -1,0 +1,67 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import Button from '$lib/components/ui/Button.svelte';
+	import Dialog from '$lib/components/ui/Dialog.svelte';
+
+	let {
+		open = $bindable(false),
+		title,
+		description,
+		confirmLabel = 'Confirm',
+		cancelLabel = 'Cancel',
+		/** A destructive action gets the danger button and says what it destroys. */
+		destructive = false,
+		/**
+		 * What the person must type to enable the confirm button. Reserve it
+		 * for something genuinely irreversible; asking for it routinely trains
+		 * people to type past it.
+		 */
+		confirmationText,
+		pending = false,
+		onconfirm
+	}: {
+		open?: boolean;
+		title: string;
+		description: string;
+		confirmLabel?: string;
+		cancelLabel?: string;
+		destructive?: boolean;
+		confirmationText?: string;
+		pending?: boolean;
+		onconfirm: () => void;
+	} = $props();
+
+	let typed = $state('');
+
+	const ready = $derived(!confirmationText || typed === confirmationText);
+
+	// Reset the typed confirmation each time the dialog opens, so a previous
+	// attempt cannot leave the button armed.
+	$effect(() => {
+		if (open) typed = '';
+	});
+</script>
+
+<Dialog bind:open {title} {description}>
+	{#if confirmationText}
+		<label for="confirm-text" class="block text-sm text-text">
+			Type <span class="font-mono font-medium">{confirmationText}</span> to confirm.
+		</label>
+		<input
+			id="confirm-text"
+			bind:value={typed}
+			autocomplete="off"
+			class="mt-2 h-control-md w-full rounded-md border border-control-line bg-surface px-3 text-sm text-text"
+		/>
+	{/if}
+
+	{#snippet footer()}
+		<Button onclick={() => (open = false)}>{cancelLabel}</Button>
+		<Button
+			variant={destructive ? 'danger' : 'primary'}
+			loading={pending}
+			disabled={!ready}
+			onclick={onconfirm}>{confirmLabel}</Button
+		>
+	{/snippet}
+</Dialog>

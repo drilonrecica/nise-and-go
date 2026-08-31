@@ -1,0 +1,36 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	type Tone = 'neutral' | 'success' | 'warning' | 'danger' | 'info';
+
+	let {
+		tone = 'neutral',
+		children
+	}: {
+		tone?: Tone;
+		children: Snippet;
+	} = $props();
+
+	const tones: Record<Tone, string> = {
+		neutral: 'bg-surface-muted text-text-muted ring-line-strong',
+		success: 'bg-success-soft text-success-text ring-success-line',
+		warning: 'bg-warning-soft text-warning-text ring-warning-line',
+		danger: 'bg-danger-soft text-danger-text ring-danger-line',
+		info: 'bg-info-soft text-info-text ring-info-line'
+	};
+</script>
+
+<!--
+	A badge is text with a background, never the only carrier of its meaning:
+	the tone is a reinforcement, and the word inside it is the status. A badge
+	whose colour is the whole message fails for a reader who cannot distinguish
+	the hues, which is WCAG 2.2 SC 1.4.1.
+-->
+<span
+	class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset {tones[
+		tone
+	]}"
+>
+	{@render children()}
+</span>
