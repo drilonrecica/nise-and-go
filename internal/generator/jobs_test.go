@@ -233,3 +233,54 @@ func TestTheRetryContractIsExplicitAndJittered(t *testing.T) {
 		t.Error("the spread test does not freeze the clock, so it would pass with the jitter removed")
 	}
 }
+
+// TestPeriodicSchedulingIsUniqueInTheDatabase pins M8-004: the uniqueness of
+// a periodic job comes from a database constraint, not from which replica
+// happens to be the scheduler.
+func TestPeriodicSchedulingIsUniqueInTheDatabase(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, defaultOptions())
+	periodic := content["internal/platform/jobs/periodic.go"]
+
+	for _, fragment := range []string{
+		"func Periodic[T river.JobArgs](r *Registry, interval time.Duration, args T) error",
+		"func PeriodicOn[T river.JobArgs](r *Registry, schedule river.PeriodicSchedule, uniquePeriod time.Duration, args T) error",
+		"ByPeriod: uniquePeriod,",
+		"ByState: rivertype.UniqueOptsByStateDefault(),",
+		"RunOnStart: true,",
+		"MinPeriodicInterval = time.Minute",
+		"func (r *Registry) scheduledWithoutWorker() []string",
+	} {
+		if !strings.Contains(periodic, fragment) {
+			t.Errorf("internal/platform/jobs/periodic.go lacks %q", fragment)
+		}
+	}
+
+	// The client must adopt the schedule, and must refuse a kind it cannot
+	// run. A periodic job with no worker is inserted forever and never runs,
+	// which reports as nothing at all.
+	jobsFile := content["internal/platform/jobs/jobs.go"]
+	if !strings.Contains(jobsFile, "PeriodicJobs: registry.riverPeriodicJobs(),") {
+		t.Error("the generated client does not install the periodic schedule")
+	}
+	if !strings.Contains(jobsFile, "registry.scheduledWithoutWorker()") {
+		t.Error("the generated client does not refuse a scheduled kind with no worker")
+	}
+
+	// Both process modes report what they schedule, so "the job never ran"
+	// and "this deployment does not schedule it" are distinguishable from
+	// the log rather than from a database query.
+	if !strings.Contains(content["internal/app/app.go"], `slog.Any("periodic_job_kinds", jobClient.PeriodicKinds())`) {
+		t.Error("the startup line does not report the scheduled kinds")
+	}
+	if !strings.Contains(content["internal/app/modes.go"], `slog.Any("periodic_job_kinds", client.PeriodicKinds())`) {
+		t.Error("the worker startup line does not report the scheduled kinds")
+	}
+
+	// A scheduling mistake must stop the process, which means the hook has
+	// to be able to report one.
+	if !strings.Contains(content["internal/app/jobs.go"], "func registerJobs(registry *jobs.Registry) error") {
+		t.Error("registerJobs cannot report a scheduling mistake")
+	}
+}

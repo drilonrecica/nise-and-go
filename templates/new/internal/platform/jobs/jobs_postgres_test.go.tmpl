@@ -5,6 +5,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -196,3 +197,33 @@ func TestInsertIsRefusedInsideATransaction(t *testing.T) {
 		t.Fatalf("the refused Insert still wrote %d rows", got)
 	}
 }
+
+// TestNewRefusesToStartWithAnUnrunnableSchedule proves the constructor
+// actually performs the check the hermetic suite covers, against a real pool
+// rather than a nil one.
+func TestNewRefusesToStartWithAnUnrunnableSchedule(t *testing.T) {
+	h := newJobsHarness(t)
+
+	r := NewRegistry()
+	Register(r, &receiptWorker{})
+	if err := Periodic(r, time.Hour, orphanArgs{}); err != nil {
+		t.Fatalf("Periodic: %v", err)
+	}
+
+	settings, err := NewSettings(1, time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	_, err = New(h.pool, r, settings, discardLogger())
+	if err == nil {
+		t.Fatal("New accepted a registry that schedules a kind it cannot run")
+	}
+	if !strings.Contains(err.Error(), "test_orphan") {
+		t.Errorf("the refusal does not name the unrunnable kind: %v", err)
+	}
+}
+
+// orphanArgs is scheduled without a worker, on purpose.
+type orphanArgs struct{}
+
+func (orphanArgs) Kind() string { return "test_orphan" }

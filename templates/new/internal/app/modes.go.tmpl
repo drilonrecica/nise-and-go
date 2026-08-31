@@ -51,7 +51,8 @@ func newWorker(client *jobs.Client, logger *slog.Logger) *lifecycle.Worker {
 		logger.Info("worker started",
 			slog.Bool("works_jobs", client.Works()),
 			slog.Int("max_workers", client.MaxWorkers()),
-			slog.Any("job_kinds", client.Kinds()))
+			slog.Any("job_kinds", client.Kinds()),
+			slog.Any("periodic_job_kinds", client.PeriodicKinds()))
 
 		<-ctx.Done()
 
