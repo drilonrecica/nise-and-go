@@ -1,0 +1,216 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/password"
+
+	"{{.ModulePath}}/internal/features/audit"
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/throttle"
+)
+
+// fakeSecondFactor stands in for the optional module, so the contract the login
+// use case depends on is tested in every generated application — including one
+// built without the module, where NoSecondFactor is the only implementation
+// that ships.
+type fakeSecondFactor struct {
+	enrolled  bool
+	enrolErr  error
+	token     string
+	completed Completion
+	failWith  error
+	completes int
+}
+
+func (f *fakeSecondFactor) Enrolled(context.Context, string) (bool, error) {
+	return f.enrolled, f.enrolErr
+}
+
+func (f *fakeSecondFactor) Begin(_ context.Context, userID string) (Challenge, error) {
+	f.completed.UserID = userID
+	return Challenge{Token: f.token, ExpiresAt: fixedNow.Add(5 * time.Minute)}, nil
+}
+
+func (f *fakeSecondFactor) Complete(_ context.Context, token, _ string) (Completion, error) {
+	f.completes++
+	if f.failWith != nil || token != f.token {
+		if f.failWith != nil {
+			return Completion{}, f.failWith
+		}
+		return Completion{}, errors.New("no such challenge")
+	}
+	return f.completed, nil
+}
+
+func credentialsWithSecondFactor(t *testing.T, h *harness, policy *password.Policy, factor SecondFactor) *Credentials {
+	t.Helper()
+
+	limiter, err := throttle.NewLimiter(h.transactor(t), throttle.DefaultPolicy(), throttle.WithClock(h.clock))
+	if err != nil {
+		t.Fatalf("NewLimiter: %v", err)
+	}
+	recorder, err := audit.NewRecorder(h.transactor(t), audit.WithClock(h.clock))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	credentials, err := NewCredentials(h.accounts, h.sessions, policy, limiter, recorder, factor)
+	if err != nil {
+		t.Fatalf("NewCredentials: %v", err)
+	}
+	return credentials
+}
+
+// A correct password with a second factor enrolled produces a challenge and no
+// session. The error is the safety net: a caller that checked only err would
+// otherwise treat a half-finished sign-in as a finished one, which is the whole
+// failure a second factor exists to prevent.
+func TestACorrectPasswordAloneIsNotASignIn(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	factor := &fakeSecondFactor{enrolled: true, token: "mfa1_test-token"}
+	credentials := credentialsWithSecondFactor(t, h, policy, factor)
+	account := enrol(t, h, policy, "person@example.test", goodPassword)
+
+	login, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword)
+	if !errors.Is(err, ErrSecondFactorRequired) {
+		t.Fatalf("error = %v, want ErrSecondFactorRequired", err)
+	}
+	if login.Outcome != OutcomeSecondFactorRequired {
+		t.Fatalf("outcome = %q", login.Outcome)
+	}
+	if !login.Session.Token.IsZero() {
+		t.Fatal("a session was issued before the second step")
+	}
+	if login.Challenge.IsZero() || login.Challenge.Token != factor.token {
+		t.Fatalf("challenge = %#v", login.Challenge)
+	}
+
+	// The half-finished attempt is its own audit action: recording it as a
+	// sign-in or as a denial would make one of those two counts wrong.
+	recorder, err := audit.NewRecorder(h.transactor(t), audit.WithClock(h.clock))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	reader := authorized(t, account.ID, authorization.AuditRead)
+	challenged, err := recorder.List(reader, audit.Filter{Action: ActionSessionChallenged}, audit.Position{}, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(challenged) != 1 || challenged[0].ActorID != account.ID {
+		t.Fatalf("challenge records = %#v", challenged)
+	}
+	created, err := recorder.List(reader, audit.Filter{Action: ActionSessionCreated}, audit.Position{}, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(created) != 0 {
+		t.Fatalf("a session was recorded as created: %#v", created)
+	}
+
+	// Completing the second step is where the session comes from.
+	completed, err := credentials.CompleteSecondFactor(h.ctx, factor.token, "123456")
+	if err != nil {
+		t.Fatalf("CompleteSecondFactor: %v", err)
+	}
+	if completed.Session.Token.IsZero() || completed.Account.ID != account.ID {
+		t.Fatalf("completed login = %#v", completed)
+	}
+	if _, err := h.sessions.Authenticate(h.ctx, completed.Session.Token.Value()); err != nil {
+		t.Fatalf("the issued session does not authenticate: %v", err)
+	}
+}
+
+// A wrong code at the second step is a refusal that names no account: an
+// invented challenge token must not let a stranger write audit rows against
+// somebody they guessed.
+func TestARefusedSecondStepIssuesNothing(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	refusal := errors.New("that code is not valid")
+	factor := &fakeSecondFactor{enrolled: true, token: "mfa1_test-token", failWith: refusal}
+	credentials := credentialsWithSecondFactor(t, h, policy, factor)
+	account := enrol(t, h, policy, "person@example.test", goodPassword)
+
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword); !errors.Is(err, ErrSecondFactorRequired) {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	login, err := credentials.CompleteSecondFactor(h.ctx, factor.token, "000000")
+	if !errors.Is(err, refusal) {
+		t.Fatalf("error = %v, want the refusal from the second factor", err)
+	}
+	if login.Outcome != OutcomeSecondFactorFailed || !login.Session.Token.IsZero() {
+		t.Fatalf("login = %#v", login)
+	}
+
+	recorder, err := audit.NewRecorder(h.transactor(t), audit.WithClock(h.clock))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	records, err := recorder.List(authorized(t, account.ID, authorization.AuditRead), audit.Filter{Action: ActionSessionDenied}, audit.Position{}, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("recorded %d denials, want 1", len(records))
+	}
+	if records[0].ActorID != "" {
+		t.Fatalf("the denial named an account: %q", records[0].ActorID)
+	}
+	if records[0].Detail["reason"] != string(OutcomeSecondFactorFailed) {
+		t.Fatalf("reason = %q", records[0].Detail["reason"])
+	}
+}
+
+// A failure asking about the second factor is not "no second factor". Treating
+// a database problem as an absent control would drop it exactly when something
+// was already wrong.
+func TestAFailureCheckingTheSecondFactorRefusesTheSignIn(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	broken := errors.New("the second-factor store is unavailable")
+	factor := &fakeSecondFactor{enrolErr: broken}
+	credentials := credentialsWithSecondFactor(t, h, policy, factor)
+	enrol(t, h, policy, "person@example.test", goodPassword)
+
+	login, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword)
+	if !errors.Is(err, broken) {
+		t.Fatalf("error = %v, want the store's failure", err)
+	}
+	if !login.Session.Token.IsZero() {
+		t.Fatal("a session was issued despite an unanswerable second-factor check")
+	}
+}
+
+// An application generated without the module still names what it does not
+// have, and its sign-in is the ordinary one.
+func TestNoSecondFactorIsAnExplicitAbsence(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := credentialsWithSecondFactor(t, h, policy, NoSecondFactor{})
+	enrol(t, h, policy, "person@example.test", goodPassword)
+
+	login, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if login.Outcome != OutcomeSucceeded || login.Session.Token.IsZero() {
+		t.Fatalf("login = %#v", login)
+	}
+
+	var absent NoSecondFactor
+	if enrolled, err := absent.Enrolled(h.ctx, "anybody"); err != nil || enrolled {
+		t.Fatalf("Enrolled = %t, %v", enrolled, err)
+	}
+	if _, err := absent.Begin(h.ctx, "anybody"); !errors.Is(err, ErrNoSecondFactor) {
+		t.Fatalf("Begin = %v, want ErrNoSecondFactor", err)
+	}
+	if _, err := absent.Complete(h.ctx, "token", "code"); !errors.Is(err, ErrNoSecondFactor) {
+		t.Fatalf("Complete = %v, want ErrNoSecondFactor", err)
+	}
+}

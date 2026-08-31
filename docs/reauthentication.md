@@ -21,6 +21,11 @@ recent proof, and how recent:
 | `users.enable` | 15 minutes | Turning a disabled account back on restores a way in. |
 | `invitations.create` | 15 minutes | An invitation is a way in that outlives the request that made it. |
 
+A [compile-time module](adr/0022-compile-time-modules.md) may add an entry on
+the same principle. The optional TOTP module adds `second_factor.disable` at
+five minutes: removing a second factor widens what a stolen session can do,
+while adding one narrows it and asks for nothing.
+
 The list is short on purpose. Every entry is friction a real person pays every
 time, and friction spent where it buys nothing is what teaches people to type
 their password into whatever asks for it.
@@ -160,5 +165,6 @@ be able to keep doing it after proving themselves once?
 - [Authorization](authorization.md)
 - [Authentication throttling](throttling.md)
 - [Audit log](audit.md)
+- [Second factor: TOTP and recovery codes](second-factor.md)
 - [Security model](security.md)
 - [ADR 0021: Require a recent proof for actions that widen access](adr/0021-reauthentication-matrix.md)

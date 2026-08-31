@@ -5,6 +5,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +63,7 @@ func testCredentialsWithThrottle(t *testing.T, h *harness, policy *password.Poli
 	if err != nil {
 		t.Fatalf("NewRecorder: %v", err)
 	}
-	credentials, err := NewCredentials(h.accounts, h.sessions, policy, limiter, recorder)
+	credentials, err := NewCredentials(h.accounts, h.sessions, policy, limiter, recorder, NoSecondFactor{})
 	if err != nil {
 		t.Fatalf("NewCredentials: %v", err)
 	}
@@ -380,19 +381,45 @@ func TestSetPasswordEndsEverySession(t *testing.T) {
 	}
 }
 
+// stubThrottler and stubAuditor stand in where only the constructor's
+// nil-checking is under test; nothing calls them.
+type stubThrottler struct{}
+
+func (stubThrottler) Allow(context.Context, string, netip.Addr) (throttle.Decision, error) {
+	return throttle.Decision{Allowed: true}, nil
+}
+
+func (stubThrottler) Reset(context.Context, string) error { return nil }
+
+type stubAuditor struct{}
+
+func (stubAuditor) Record(context.Context, audit.Event) (audit.Record, error) {
+	return audit.Record{}, nil
+}
+
 func TestCredentialsRequireTheirDependencies(t *testing.T) {
 	t.Parallel()
 
 	policy := testPasswordPolicy(t, 1)
-	if _, err := NewCredentials(nil, nil, policy, nil, nil); err == nil {
+	if _, err := NewCredentials(nil, nil, policy, nil, nil, nil); err == nil {
 		t.Error("NewCredentials accepted nil use cases")
 	}
-	if _, err := NewCredentials(&Accounts{}, &Sessions{}, nil, nil, nil); err == nil {
+	if _, err := NewCredentials(&Accounts{}, &Sessions{}, nil, nil, nil, nil); err == nil {
 		t.Error("NewCredentials accepted a nil password policy")
 	}
 	// The throttle and the audit recorder are not optional.
-	if _, err := NewCredentials(&Accounts{}, &Sessions{}, policy, nil, nil); err == nil {
+	if _, err := NewCredentials(&Accounts{}, &Sessions{}, policy, nil, nil, nil); err == nil {
 		t.Error("NewCredentials accepted a login path with no throttle or audit recorder")
+	}
+	// Neither is the second factor. An application with none says so by
+	// passing NoSecondFactor, which is a line somebody can read; a nil would
+	// be the same absence, silently.
+	throttled, recorder := &stubThrottler{}, &stubAuditor{}
+	if _, err := NewCredentials(&Accounts{}, &Sessions{}, policy, throttled, recorder, nil); err == nil {
+		t.Error("NewCredentials accepted a login path with no declared second factor")
+	}
+	if _, err := NewCredentials(&Accounts{}, &Sessions{}, policy, throttled, recorder, NoSecondFactor{}); err != nil {
+		t.Errorf("NewCredentials refused a complete wiring: %v", err)
 	}
 	_ = context.Background()
 }

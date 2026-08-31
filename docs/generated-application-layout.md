@@ -89,7 +89,8 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │   ├── database.go                [app]   explicit status/migrate application surface
     │   ├── database_runtime.go        [app]   pool and transaction-runner construction
     │   ├── modes.go                   [app]   all, web, and worker process modes
-    │   └── modules.gen.go             [nise]  wiring for the selected compile-time modules
+    │   ├── modules.gen.go             [nise]  the selected compile-time modules, and nothing else
+    │   └── secondfactor.go            [app]   the second-factor module's constructor call
     │
     ├── features/
     │   ├── auth/                      [app]   core: sessions, login, enrollment, credentials
@@ -211,14 +212,15 @@ The four compile-time modules — `organizations`, `totp`, `notifications`, `upl
 | Contribution | Path | Owner |
 |---|---|---|
 | Its runtime code, imported from Nise | `github.com/drilonrecica/nise-and-go/modules/<name>` | Nise |
-| Explicit constructor wiring | `internal/app/modules.gen.go` | `[nise]` |
+| Its selection, recorded | `internal/app/modules.gen.go` | `[nise]` |
+| Its explicit constructor wiring | `internal/app/<module concern>.go` | `[app]` |
 | Its transport and domain surface, where it has one | `internal/features/<name>/` | `[app]` |
 | Its tables | `db/migrations/` | `[app]` |
 | Its screens | `frontend/src/routes/(app)/<name>/` | `[app]` |
 
 An unselected module contributes nothing: no import, no file, no dead code behind a runtime flag. That is what compile-time selection means, and it is why the recipe records the selection rather than a configuration value.
 
-`internal/app/modules.gen.go` is the one regenerated file in `internal/app/`. It holds constructor calls and nothing else — no application logic, no business rules — so that changing the module selection can rewrite it without destroying anything the application wrote. There is no registry, no `init()` registration, and no reflection-driven discovery.
+`internal/app/modules.gen.go` is the one regenerated file in `internal/app/`. It holds the module selection and nothing else — no imports, no wiring, no business rules — which is what keeps it independent of the application's name and module path, and that independence is what licenses `nise check` to re-plan the project and compare. The constructor calls a module needs live beside it in application-owned files, generated once and yours to edit: `internal/app/secondfactor.go` is the first. There is no registry, no `init()` registration, and no reflection-driven discovery. See [ADR 0022](adr/0022-compile-time-modules.md).
 
 ## Embedding
 

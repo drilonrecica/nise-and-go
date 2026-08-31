@@ -1,6 +1,10 @@
 package generator
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/drilonrecica/nise-and-go/internal/recipe"
+)
 
 // Ownership is the ownership model a generated file declares, per ADR 0003
 // and docs/generated-application-layout.md.
@@ -102,6 +106,10 @@ type templateFile struct {
 	// engine. It is reserved for vendored templates whose delimiters belong
 	// to another pinned generator.
 	Raw bool
+	// Module names the compile-time module this file belongs to. An empty
+	// value means every project gets the file; otherwise it is written only
+	// when the recipe selected that module.
+	Module recipe.Module
 }
 
 // templateFiles is every template nise new renders, sorted by output path.
@@ -141,6 +149,7 @@ var templateFiles = []templateFile{
 	{Template: "db/migrations/00006_invitations.sql.tmpl", Output: "db/migrations/00006_invitations.sql", Owner: OwnerApp},
 	{Template: "db/migrations/00007_throttle.sql.tmpl", Output: "db/migrations/00007_throttle.sql", Owner: OwnerApp},
 	{Template: "db/migrations/00008_reauthentication.sql.tmpl", Output: "db/migrations/00008_reauthentication.sql", Owner: OwnerApp},
+	{Template: "db/migrations/module_totp.sql.tmpl", Output: "db/migrations/{{.TOTPMigration}}_totp.sql", Owner: OwnerApp, Module: recipe.ModuleTOTP},
 	{Template: "deploy/Dockerfile.tmpl", Output: "deploy/Dockerfile", Owner: OwnerApp},
 	{Template: "deploy/README.md.tmpl", Output: "deploy/README.md", Owner: OwnerApp},
 	{Template: "deploy/compose.yaml.tmpl", Output: "deploy/compose.yaml", Owner: OwnerApp},
@@ -169,6 +178,7 @@ var templateFiles = []templateFile{
 	{Template: "internal/app/enroll.go.tmpl", Output: "internal/app/enroll.go", Owner: OwnerApp},
 	{Template: "internal/app/password.go.tmpl", Output: "internal/app/password.go", Owner: OwnerApp},
 	{Template: "internal/app/modules.gen.go.tmpl", Output: "internal/app/modules.gen.go", Owner: OwnerNise},
+	{Template: "internal/app/secondfactor.go.tmpl", Output: "internal/app/secondfactor.go", Owner: OwnerApp},
 	{Template: "internal/features/README.md.tmpl", Output: "internal/features/README.md", Owner: OwnerApp},
 	{Template: "internal/features/auth/queries/invitations.sql.tmpl", Output: "internal/features/auth/queries/invitations.sql", Owner: OwnerApp},
 	{Template: "internal/features/auth/queries/sessions.sql.tmpl", Output: "internal/features/auth/queries/sessions.sql", Owner: OwnerApp},
@@ -188,6 +198,8 @@ var templateFiles = []templateFile{
 	{Template: "internal/features/auth/login.go.tmpl", Output: "internal/features/auth/login.go", Owner: OwnerApp},
 	{Template: "internal/features/auth/login_test.go.tmpl", Output: "internal/features/auth/login_test.go", Owner: OwnerApp},
 	{Template: "internal/features/auth/reauthentication_test.go.tmpl", Output: "internal/features/auth/reauthentication_test.go", Owner: OwnerApp},
+	{Template: "internal/features/auth/secondfactor.go.tmpl", Output: "internal/features/auth/secondfactor.go", Owner: OwnerApp},
+	{Template: "internal/features/auth/secondfactor_test.go.tmpl", Output: "internal/features/auth/secondfactor_test.go", Owner: OwnerApp},
 	{Template: "internal/features/auth/roles.go.tmpl", Output: "internal/features/auth/roles.go", Owner: OwnerApp},
 	{Template: "internal/features/auth/roles_test.go.tmpl", Output: "internal/features/auth/roles_test.go", Owner: OwnerApp},
 	{Template: "internal/features/auth/rotation_test.go.tmpl", Output: "internal/features/auth/rotation_test.go", Owner: OwnerApp},
@@ -230,6 +242,14 @@ var templateFiles = []templateFile{
 	{Template: "internal/platform/httpapi/router.go.tmpl", Output: "internal/platform/httpapi/router.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/router_test.go.tmpl", Output: "internal/platform/httpapi/router_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/transport_test.go.tmpl", Output: "internal/platform/httpapi/transport_test.go", Owner: OwnerApp},
+	{Template: "internal/features/mfa/mfa.go.tmpl", Output: "internal/features/mfa/mfa.go", Owner: OwnerApp, Module: recipe.ModuleTOTP},
+	{Template: "internal/features/mfa/mfa_test.go.tmpl", Output: "internal/features/mfa/mfa_test.go", Owner: OwnerApp, Module: recipe.ModuleTOTP},
+	{Template: "internal/features/mfa/queries/mfa.sql.tmpl", Output: "internal/features/mfa/queries/mfa.sql", Owner: OwnerApp, Module: recipe.ModuleTOTP},
+	{Template: "internal/features/mfa/sqlc.yaml.tmpl", Output: "internal/features/mfa/sqlc.yaml", Owner: OwnerApp, Raw: true, Module: recipe.ModuleTOTP},
+	{Template: "internal/features/mfa/store/db.go.tmpl", Output: "internal/features/mfa/store/db.go", Owner: OwnerNise, Raw: true, Module: recipe.ModuleTOTP},
+	{Template: "internal/features/mfa/store/mfa.sql.go.tmpl", Output: "internal/features/mfa/store/mfa.sql.go", Owner: OwnerNise, Raw: true, Module: recipe.ModuleTOTP},
+	{Template: "internal/features/mfa/store/models.go.tmpl", Output: "internal/features/mfa/store/models.go", Owner: OwnerNise, Raw: true, Module: recipe.ModuleTOTP},
+	{Template: "internal/features/mfa/store/querier.go.tmpl", Output: "internal/features/mfa/store/querier.go", Owner: OwnerNise, Raw: true, Module: recipe.ModuleTOTP},
 	{Template: "internal/platform/authorization/authorizer.go.tmpl", Output: "internal/platform/authorization/authorizer.go", Owner: OwnerApp},
 	{Template: "internal/platform/authorization/authorizer_test.go.tmpl", Output: "internal/platform/authorization/authorizer_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/authorization/catalog.go.tmpl", Output: "internal/platform/authorization/catalog.go", Owner: OwnerApp},

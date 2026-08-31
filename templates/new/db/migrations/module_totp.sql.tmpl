@@ -1,0 +1,71 @@
+-- Generated once by nise; owned by this application. Nise will not overwrite it.
+--
+-- The optional TOTP module: shared secrets, recovery codes, and the short-lived
+-- challenge that ties a completed password step to the second one.
+--
+-- A module's migration is numbered contiguously after the core history, in
+-- module order, and its number therefore depends on which modules this project
+-- was generated with. The history has to have no gaps — a gap is how a missing
+-- migration hides, and the runtime's compatibility check says so — and the
+-- number is fixed for the life of the project: adding a module later means
+-- writing the next forward migration, never renumbering an applied one.
+
+-- +goose Up
+CREATE TABLE totp_secrets (
+    user_id      uuid PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+    -- The secret is stored as issued. Encrypting it with a key that lives
+    -- beside the application would defend only against a leak of this table
+    -- alone, and the same leak already carries the password hashes; an owner
+    -- who needs envelope encryption owns this file and has the seam.
+    secret       bytea       NOT NULL,
+    created_at   timestamptz NOT NULL,
+    -- A secret is enrolled before it is confirmed. An unconfirmed row is not a
+    -- second factor: it exists so the person can scan the code and prove they
+    -- can produce one before anything starts depending on it.
+    confirmed_at timestamptz,
+    -- The last step a code was accepted at. It is the replay window: a code is
+    -- arithmetically valid for its whole period, and without this column the
+    -- same six digits work twice.
+    last_step    bigint,
+    CONSTRAINT totp_secrets_secret_length CHECK (octet_length(secret) = 20),
+    CONSTRAINT totp_secrets_confirmation CHECK (confirmed_at IS NULL OR confirmed_at >= created_at),
+    CONSTRAINT totp_secrets_step CHECK (last_step IS NULL OR last_step > 0)
+);
+
+CREATE TABLE recovery_codes (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    -- Only the digest, for the same reason a session token keeps only one: a
+    -- leak of this table hands nobody a usable code.
+    code_digest bytea       NOT NULL,
+    created_at  timestamptz NOT NULL,
+    used_at     timestamptz,
+    CONSTRAINT recovery_codes_digest_length CHECK (octet_length(code_digest) = 32),
+    CONSTRAINT recovery_codes_use CHECK (used_at IS NULL OR used_at >= created_at)
+);
+
+CREATE UNIQUE INDEX recovery_codes_user_digest_key ON recovery_codes (user_id, code_digest);
+CREATE INDEX recovery_codes_unused_idx ON recovery_codes (user_id) WHERE used_at IS NULL;
+
+CREATE TABLE mfa_challenges (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    token_digest bytea       NOT NULL,
+    created_at   timestamptz NOT NULL,
+    expires_at   timestamptz NOT NULL,
+    -- Attempts are counted on the challenge, not on the account. A wrong code
+    -- must cost the person holding this challenge and nobody else, or a
+    -- stranger could lock an account out by failing the second step against it.
+    attempts     integer     NOT NULL DEFAULT 0,
+    CONSTRAINT mfa_challenges_token_digest_length CHECK (octet_length(token_digest) = 32),
+    CONSTRAINT mfa_challenges_lifetime CHECK (expires_at > created_at),
+    CONSTRAINT mfa_challenges_attempts CHECK (attempts >= 0)
+);
+
+CREATE UNIQUE INDEX mfa_challenges_token_digest_key ON mfa_challenges (token_digest);
+CREATE INDEX mfa_challenges_expires_at_idx ON mfa_challenges (expires_at);
+
+-- +goose Down
+DROP TABLE mfa_challenges;
+DROP TABLE recovery_codes;
+DROP TABLE totp_secrets;

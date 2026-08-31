@@ -106,7 +106,13 @@ func newInvitations(pool *pgxpool.Pool, cfg config.Config) (*auth.Invitations, e
 	if err != nil {
 		return nil, fmt.Errorf("building the authentication throttle: %w", err)
 	}
-	credentials, err := auth.NewCredentials(accounts, sessions, policy, loginThrottle, auditRecorder)
+	// The same second factor the server wires, so the command and the server
+	// cannot disagree about whether this application has one.
+	secondFactor, err := SecondFactor(transactor, auditRecorder, "{{.AppName}}")
+	if err != nil {
+		return nil, err
+	}
+	credentials, err := auth.NewCredentials(accounts, sessions, policy, loginThrottle, auditRecorder, secondFactor)
 	if err != nil {
 		return nil, fmt.Errorf("building the login use case: %w", err)
 	}

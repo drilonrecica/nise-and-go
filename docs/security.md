@@ -10,7 +10,7 @@ This document records the planned baseline, not an audit or guarantee.
 - Future native clients use opaque, hashed, revocable bearer device tokens—not JWTs.
 - Argon2id password hashing with versioned, benchmarked parameters and rehash-on-login, plus a length-only policy with a local known-compromised check. Implemented; see [password hashing](passwords.md). The parameter history is application-owned Go code, retiring a set is explicit, and the unknown-account login path pays the same cost as a real one.
 - Closed registration by default through administrators or invitations. Implemented; see [enrollment](enrollment.md). Acceptance is one transaction, every unusable-invitation reason is the same error, and the first-administrator bootstrap withdraws earlier links so only the newest works.
-- Optional TOTP and recovery codes.
+- Optional TOTP and recovery codes. Implemented as a compile-time module; see [second factor](second-factor.md). A correct password produces a single-use challenge rather than a session, an accepted code's step is stored so it cannot be replayed, and recovery codes are single-use digests replaced as a set.
 - Default session policy of 12 hours idle and 30 days absolute, configurable, with reauthentication for sensitive actions. Implemented; see [reauthentication](reauthentication.md). The proof is stored per session, an undeclared action denies, and reauthenticating shares the sign-in throttle.
 
 ## Authorization

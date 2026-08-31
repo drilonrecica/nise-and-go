@@ -71,6 +71,12 @@ const (
 	// ActionInvitationsCreate is inviting somebody. An invitation is a way
 	// into the system that outlives the request that made it.
 	ActionInvitationsCreate Action = "invitations.create"
+{{- if .HasTOTP }}
+	// ActionSecondFactorDisable is removing an account's second factor.
+	// Adding one narrows what a stolen session can do and asks for nothing;
+	// removing one widens it, which is exactly what this matrix is for.
+	ActionSecondFactorDisable Action = "second_factor.disable"
+{{- end }}
 )
 
 // actionPattern is the same shape a permission has: dotted, lowercase, no
@@ -136,6 +142,9 @@ func DefaultMatrix() (*Matrix, error) {
 		Entry{Action: ActionRolesGrant, Window: WindowEscalation},
 		Entry{Action: ActionUsersEnable, Window: WindowAdministrative},
 		Entry{Action: ActionInvitationsCreate, Window: WindowAdministrative},
+{{- if .HasTOTP }}
+		Entry{Action: ActionSecondFactorDisable, Window: WindowEscalation},
+{{- end }}
 	)
 }
 

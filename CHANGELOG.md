@@ -127,6 +127,26 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   allowed. `Credentials.Reauthenticate` takes no account identifier, shares the
   sign-in throttle, and audits `session.reauthenticated` and
   `session.reauthentication_denied`.
+- Add the optional `totp` compile-time module (`nise new --module totp`): the
+  framework's `modules/totp` package (RFC 6238 codes verified against the
+  published test vectors, and recovery codes), an `internal/features/mfa`
+  feature, and the `00009_totp.sql` migration. A correct password now produces a
+  single-use challenge rather than a session; the session is issued only when
+  the second step completes. An accepted code's step is stored so the same
+  digits cannot be used twice, a wrong code costs the challenge one of five
+  attempts and is counted in its own transaction, and an exhausted challenge is
+  deleted rather than left refusing. Recovery codes are single-use SHA-256
+  digests replaced as a set. Removing a second factor requires a recent proof;
+  adding one does not.
+- Add module-conditional generation: a manifest entry may name a module, and an
+  unselected module contributes no file, no import, and no dead code. Module
+  migrations continue the core numbering. `internal/app/modules.gen.go` now
+  holds only the selection, with each module's constructor call in an
+  application-owned file beside it, which keeps the regenerated file
+  independent of the application's name and module path.
+- `auth.NewCredentials` now requires a `SecondFactor`; an application without
+  the module passes `auth.NoSecondFactor`, an explicit declaration rather than a
+  nil.
 
 ### Fixed
 
