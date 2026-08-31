@@ -3,6 +3,11 @@
 package app
 
 import (
+{{- if .HasUploads }}
+	"log/slog"
+
+	"{{.ModulePath}}/internal/features/uploads"
+{{- end }}
 	"{{.ModulePath}}/internal/platform/jobs"
 )
 
@@ -53,8 +58,17 @@ import (
 // It returns an error so that a scheduling mistake — an impossible interval,
 // a kind scheduled twice — stops the process at startup rather than being
 // discovered when the work quietly does not happen.
-func registerJobs(registry *jobs.Registry) error {
+func registerJobs(registry *jobs.Registry{{ if .HasUploads }}, uploadSweep *uploads.Uploads, logger *slog.Logger{{ end }}) error {
+{{- if .HasUploads }}
+	// The uploads module's sweep: it expires staged uploads whose window
+	// elapsed and deletes the objects they were holding a key for. Without
+	// it, an abandoned upload occupies a quarantine key forever.
+	if err := uploads.RegisterSweep(registry, uploadSweep, logger); err != nil {
+		return err
+	}
+{{- else }}
 	// Intentionally empty. See the doc comment above.
 	_ = registry
+{{- end }}
 	return nil
 }

@@ -180,8 +180,17 @@ func canonicalHeaders(req *http.Request) (string, string) {
 		lower := strings.ToLower(name)
 		// Only the headers SigV4 requires plus the x-amz-* family are
 		// signed. Signing everything would make the signature depend on
-		// headers a proxy may add in transit.
-		if lower != "content-type" && !strings.HasPrefix(lower, "x-amz-") {
+		// headers a proxy may add in transit, so every request through that
+		// proxy would fail authentication.
+		//
+		// content-length is in the set because a presigned PUT uses it as a
+		// bound: signed, a client that sends a different length gets a
+		// signature mismatch instead of an upload. It is safe to include
+		// here because Go keeps a real request's length in
+		// Request.ContentLength rather than in Request.Header, so this loop
+		// only ever sees one that a caller set deliberately — never one the
+		// transport will add later and disagree with.
+		if lower != "content-type" && lower != "content-length" && !strings.HasPrefix(lower, "x-amz-") {
 			continue
 		}
 		trimmed := make([]string, 0, len(vs))

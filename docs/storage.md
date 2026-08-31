@@ -121,6 +121,53 @@ whole object in memory or on disk to hash before sending, which turns an
 upload of any size into a buffer of that size; the request itself is still
 authenticated, covering the method, path, headers, and credential scope.
 
+## Move
+
+`Move` is how an upload leaves quarantine, and it is a distinct operation
+rather than a `Get`, a `Put`, and a `Delete` because both backends can do it
+far better than that. The local store renames — atomic on one filesystem, so
+there is no instant at which the object is at both keys or at neither. S3
+copies server-side: no byte crosses the application, which makes moving a
+large upload free rather than proportional to its size.
+
+The S3 path is **not** atomic and cannot be, because S3 has no rename. Between
+the copy and the delete the object exists at both keys, and a crash in that
+window leaves it at both. That is the safe direction to fail in: the
+destination is correct and complete, and the source is a quarantine key the
+sweep will remove. The reverse order would have a window in which the object
+exists at neither.
+
+It also checks something a status code does not tell you. **S3 reports a
+failed copy inside a 200 response body** — a documented and much-cursed part
+of the protocol. A client that checks only the status reports success for a
+copy that did not happen, and then deletes the source.
+
+## Presigned URLs
+
+`storage.Presigner` is an optional interface. `S3` implements it; `Local`
+deliberately does not, because a directory on this machine has no URL and
+inventing one would mean this package quietly growing an HTTP server. Callers
+ask with a type assertion and take the other path when the answer is no.
+
+A presigned URL is a **bearer capability**: whoever holds it can do the one
+thing it authorizes, to the one key it names, until it expires — no session,
+no cookie, no further check. Three things follow.
+
+- **The key must be unguessable.** `storage.NewObjectID` exists for this: 128
+  bits, base32, lowercased so it survives a case-insensitive filesystem, a
+  URL, and a copy-paste. A key derived from a filename or a counter is one
+  another user can guess, and a guessable key plus a backend that will serve
+  it is an enumeration of everybody's uploads.
+- **The lifetime is capped at one hour**, not S3's seven days. A capability
+  that outlives the session that requested it keeps working after the account
+  is disabled, after the permission is revoked, and after the person has left
+  — and none of those events can reach a signature already handed out.
+- **What arrives must be verified.** The URL constrains where the bytes go and
+  says nothing about what they are. Content type and length are signed when
+  known, so a client sending different ones gets a signature mismatch rather
+  than an upload — but that removes the easy version of the attack, not the
+  need for the check. See [uploads](uploads.md).
+
 ## What the interface deliberately lacks
 
 There is no `List`. An application that needs to enumerate objects has a

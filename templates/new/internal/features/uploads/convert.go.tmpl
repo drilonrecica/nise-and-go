@@ -1,0 +1,84 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package uploads
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"{{.ModulePath}}/internal/features/uploads/store"
+)
+
+// toUpload converts one stored row into the shape this package's callers see.
+//
+// The conversion is explicit rather than a shared struct, because the store
+// package's types are sqlc's and change when the schema does, while [Upload]
+// is a contract this feature offers. A caller holding a store.Upload would be
+// a caller a migration can break.
+func toUpload(row store.Upload) Upload {
+	return Upload{
+		ID:           uuidString(row.ID),
+		State:        string(row.State),
+		OwnerUserID:  uuidString(row.OwnerUserID),
+		StorageKey:   row.StorageKey,
+		Filename:     row.Filename,
+		DeclaredType: row.DeclaredType,
+		DeclaredSize: row.DeclaredSize,
+		ContentType:  row.ContentType.String,
+		Size:         row.Size.Int64,
+		Checksum:     row.Checksum,
+		StagedAt:     timeOf(row.StagedAt),
+		ExpiresAt:    timeOf(row.ExpiresAt),
+		FinalizedAt:  timeOf(row.FinalizedAt),
+		RejectedBy:   row.RejectedReason.String,
+	}
+}
+
+// parseUUID converts an identifier that arrived as a string. A malformed one
+// is a caller error, not a database round trip.
+func parseUUID(value string) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	if err := id.Scan(value); err != nil || !id.Valid {
+		return pgtype.UUID{}, fmt.Errorf("%q is not a valid identifier", value)
+	}
+	return id, nil
+}
+
+// mustUUID converts an identifier this package produced itself.
+//
+// It is used only on a value that has already round-tripped through the
+// database, so a failure means the row's own primary key does not parse — a
+// corruption this package cannot sensibly continue past. It returns the zero
+// UUID rather than panicking, which makes the subsequent statement match no
+// row and fail with an ordinary error.
+func mustUUID(value string) pgtype.UUID {
+	id, err := parseUUID(value)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	return id
+}
+
+func uuidString(id pgtype.UUID) string {
+	if !id.Valid {
+		return ""
+	}
+	value, err := id.Value()
+	if err != nil {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
+}
+
+func timeOf(value pgtype.Timestamptz) time.Time {
+	if !value.Valid {
+		return time.Time{}
+	}
+	return value.Time.UTC()
+}

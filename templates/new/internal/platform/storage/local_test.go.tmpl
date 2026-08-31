@@ -252,3 +252,73 @@ func iotest(err error) io.Reader { return &failingReader{err: err} }
 type failingReader struct{ err error }
 
 func (r *failingReader) Read([]byte) (int, error) { return 0, r.err }
+
+// TestMoveLeavesNothingBehind is how an upload leaves quarantine: the object
+// must be at the new key and gone from the old one, because a leaked URL for
+// the quarantine key must stop working the moment the object is available.
+func TestMoveLeavesNothingBehind(t *testing.T) {
+	t.Parallel()
+
+	store := newLocal(t)
+	ctx := context.Background()
+	const from, to = "quarantine/abc/a.bin", "objects/abc/a.bin"
+
+	if _, err := store.Put(ctx, from, strings.NewReader("moved"), PutOptions{}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := store.Move(ctx, from, to); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if _, err := store.Stat(ctx, from); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the source still exists: %v", err)
+	}
+	reader, err := store.Get(ctx, to)
+	if err != nil {
+		t.Fatalf("Get the destination: %v", err)
+	}
+	got, _ := io.ReadAll(reader)
+	_ = reader.Close()
+	if string(got) != "moved" {
+		t.Errorf("the destination holds %q", got)
+	}
+}
+
+// TestMoveOfAMissingObjectIsNotFound is where Move differs from Delete:
+// there is no reading of "move something that is not there" under which the
+// caller got what they wanted.
+func TestMoveOfAMissingObjectIsNotFound(t *testing.T) {
+	t.Parallel()
+
+	err := newLocal(t).Move(context.Background(), "quarantine/absent", "objects/absent")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Move of a missing object = %v, want ErrNotFound", err)
+	}
+}
+
+// TestMoveRefusesABadKeyAtEitherEnd covers both arguments: a destination
+// nobody validated would be a traversal with an extra step.
+func TestMoveRefusesABadKeyAtEitherEnd(t *testing.T) {
+	t.Parallel()
+
+	store := newLocal(t)
+	ctx := context.Background()
+	if _, err := store.Put(ctx, "quarantine/a.bin", strings.NewReader("x"), PutOptions{}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := store.Move(ctx, "../escaped", "objects/a.bin"); !errors.Is(err, ErrKey) {
+		t.Errorf("Move from a bad key = %v, want ErrKey", err)
+	}
+	if err := store.Move(ctx, "quarantine/a.bin", "../escaped"); !errors.Is(err, ErrKey) {
+		t.Errorf("Move to a bad key = %v, want ErrKey", err)
+	}
+	if !store.exists(t, "quarantine/a.bin") {
+		t.Error("a refused Move removed the source")
+	}
+}
+
+// exists reports whether a key holds an object.
+func (l *Local) exists(t *testing.T, key string) bool {
+	t.Helper()
+	_, err := l.Stat(context.Background(), key)
+	return err == nil
+}

@@ -1,0 +1,608 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package uploads is the staged upload lifecycle.
+//
+// An uploaded byte reaches this application through a path with exactly three
+// steps, and the middle one is where every interesting decision lives.
+//
+//  1. Stage. The application decides the key — the client never does — and
+//     records a row saying an upload is expected: who by, roughly how large,
+//     of roughly what type, and by when. The key is under a quarantine
+//     prefix. If the backend can presign, the caller gets a short-lived URL
+//     for that one key; otherwise it uploads through the application.
+//
+//  2. Finalize. The server reads the stored object, measures it, hashes it,
+//     and decides what it actually is. Only then does it ask the application
+//     whether this principal may have it. Everything the client said at step
+//     one is treated as a claim to be checked, not as a fact.
+//
+//  3. Move or delete. An accepted object moves out of quarantine to its final
+//     key, in one operation, and the row becomes available. A refused one is
+//     deleted and the row records why.
+//
+// # What is not trusted
+//
+// The filename, because it comes from the client and can be anything. It is
+// sanitized for display and never used to build a key.
+//
+// The declared content type, because a client that wants to store a script
+// will call it an image. The type is determined from the leading bytes of
+// what was actually stored, and the declared value is kept only so that a
+// mismatch is visible.
+//
+// The declared size, because a presigned PUT is a capability to write a key,
+// not a promise about length. Signing Content-Length removes the easy version
+// of the attack; measuring the stored object afterwards is what actually
+// enforces the limit.
+//
+// The client's word that it finished. An upload that is staged and never
+// finalized is swept, its object deleted, and its row marked expired.
+//
+// # What the row is for
+//
+// The database is the authority on whether an object is reachable, not the
+// object store. A row that says `staged` means not available regardless of
+// what any bucket policy says, and an object with no row is not available at
+// all. Nothing in this package hands out a URL to an object whose row is not
+// `available`.
+package uploads
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/features/uploads/store"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/storage"
+)
+
+// Bounds on an upload. They are this application's, and changing them is an
+// ordinary edit to this file.
+const (
+	// MaxUploadBytes is the largest object this application accepts. It is
+	// enforced twice: as a refusal at staging, and by measuring the stored
+	// object at finalization — because only the second one is a fact.
+	MaxUploadBytes = 25 << 20 // 25 MiB
+	// MinUploadBytes rejects an empty upload at staging, where the client
+	// has told us what it intends.
+	MinUploadBytes = 1
+	// StagingLifetime is how long a staged upload has to be finalized before
+	// it is swept. It bounds how long an unfinished upload occupies a
+	// quarantine key and how long an issued capability remains interesting.
+	StagingLifetime = 30 * time.Minute
+	// PresignedLifetime is how long an issued upload URL is valid. Shorter
+	// than StagingLifetime, because the capability should expire well before
+	// the row that describes it does.
+	PresignedLifetime = 15 * time.Minute
+	// QuarantinePrefix is where an object lives until it has been verified.
+	QuarantinePrefix = "quarantine"
+	// ObjectPrefix is where a verified object lives.
+	ObjectPrefix = "objects"
+	// sniffBytes is how much of an object is read to determine its type.
+	// net/http's detector looks at no more than 512.
+	sniffBytes = 512
+)
+
+// Errors this package returns.
+var (
+	// ErrNotFound reports an upload that does not exist.
+	ErrNotFound = errors.New("uploads: no such upload")
+	// ErrNotOwner reports a principal acting on somebody else's upload. It
+	// is deliberately indistinguishable from ErrNotFound to a caller that
+	// only formats it: whether an identifier exists is itself information.
+	ErrNotOwner = errors.New("uploads: no such upload")
+	// ErrNotStaged reports an upload that has already been finalized. A
+	// second finalization is a mistake, not an idempotent no-op: the object
+	// has moved, and re-running the checks would run them against a
+	// different key.
+	ErrNotStaged = errors.New("uploads: this upload has already been finalized")
+	// ErrRejected reports an upload the server refused. Its Reason says
+	// which check failed, for the audit trail and the operator — not for
+	// the uploader.
+	ErrRejected = errors.New("uploads: the stored object was refused")
+	// ErrTooLarge reports a declared or measured size over MaxUploadBytes.
+	ErrTooLarge = errors.New("uploads: larger than this application accepts")
+	// ErrNotPresignable reports a request for an upload URL from a backend
+	// that has none.
+	ErrNotPresignable = errors.New("uploads: this storage backend cannot issue upload URLs")
+)
+
+// Upload is one row of the staging ledger.
+type Upload struct {
+	ID           string
+	State        string
+	OwnerUserID  string
+	StorageKey   string
+	Filename     string
+	DeclaredType string
+	DeclaredSize int64
+	ContentType  string
+	Size         int64
+	Checksum     []byte
+	StagedAt     time.Time
+	ExpiresAt    time.Time
+	FinalizedAt  time.Time
+	RejectedBy   string
+}
+
+// Available reports whether this upload is reachable. It is the only
+// question a serving path should ask.
+func (u Upload) Available() bool { return u.State == string(store.UploadStateAvailable) }
+
+// StageRequest is what a client asks for, before anything is stored.
+type StageRequest struct {
+	// OwnerUserID is the principal the capability is issued to. Finalization
+	// requires the same one.
+	OwnerUserID string
+	// Filename is the client's own name for the file. It is sanitized and
+	// kept for display; it never becomes part of a key.
+	Filename string
+	// ContentType is what the client says it will upload. It is recorded as
+	// a claim and checked against the stored bytes later.
+	ContentType string
+	// Size is how large the client says the object will be.
+	Size int64
+}
+
+// StagedUpload is what staging returns.
+type StagedUpload struct {
+	Upload Upload
+	// UploadURL is a presigned PUT URL, or "" when the backend cannot
+	// presign — in which case the client uploads through this application
+	// and the server writes the object itself.
+	UploadURL string
+	// ExpiresAt is when UploadURL stops working.
+	ExpiresAt time.Time
+}
+
+// AcceptedTypes decides which media types this application stores.
+//
+// It is an allowlist and it is small, because the alternative — accepting
+// everything and hoping the serving path sets the right headers — is how a
+// file upload becomes stored cross-site scripting. Widen it deliberately, and
+// remember that every entry is a type some browser will render.
+type AcceptedTypes map[string]bool
+
+// DefaultAcceptedTypes is the set a generated application starts with:
+// images and PDFs, which is what most applications actually accept, and
+// nothing that a browser executes.
+func DefaultAcceptedTypes() AcceptedTypes {
+	return AcceptedTypes{
+		"image/png":       true,
+		"image/jpeg":      true,
+		"image/gif":       true,
+		"image/webp":      true,
+		"application/pdf": true,
+	}
+}
+
+// Uploads is the staged upload use case.
+type Uploads struct {
+	transactor *database.Transactor
+	store      storage.Store
+	accepted   AcceptedTypes
+	now        func() time.Time
+	// keys generates the unguessable component of a quarantine key. It is
+	// injected only by tests; production uses the system random source.
+	keys func() string
+}
+
+// Option configures [Uploads].
+type Option func(*Uploads)
+
+// WithClock replaces the clock, for tests that need staging deadlines to
+// arrive without waiting for them.
+func WithClock(now func() time.Time) Option {
+	return func(u *Uploads) {
+		if now != nil {
+			u.now = now
+		}
+	}
+}
+
+// WithAcceptedTypes replaces the media-type allowlist.
+func WithAcceptedTypes(accepted AcceptedTypes) Option {
+	return func(u *Uploads) {
+		if len(accepted) > 0 {
+			u.accepted = accepted
+		}
+	}
+}
+
+// New builds the use case.
+func New(transactor *database.Transactor, objects storage.Store, options ...Option) (*Uploads, error) {
+	if transactor == nil {
+		return nil, errors.New("uploads: a transaction runner is required")
+	}
+	if objects == nil {
+		return nil, errors.New("uploads: an object store is required")
+	}
+	u := &Uploads{
+		transactor: transactor,
+		store:      objects,
+		accepted:   DefaultAcceptedTypes(),
+		now:        func() time.Time { return time.Now().UTC() },
+		keys:       storage.NewObjectID,
+	}
+	for _, option := range options {
+		option(u)
+	}
+	return u, nil
+}
+
+// Stage records that an upload is expected and, where the backend can, issues
+// a short-lived URL for it.
+//
+// The key is derived here, from a random identifier this function generates.
+// It is not derived from the filename, the content type, or anything else the
+// client sent: a key a client can influence is a key a client can collide
+// with somebody else's, and an unguessable key is half of why a presigned URL
+// is safe to hand out at all.
+func (u *Uploads) Stage(ctx context.Context, request StageRequest) (StagedUpload, error) {
+	if strings.TrimSpace(request.OwnerUserID) == "" {
+		return StagedUpload{}, errors.New("uploads: an owner is required")
+	}
+	if request.Size < MinUploadBytes {
+		return StagedUpload{}, fmt.Errorf("uploads: a declared size of %d is not a file", request.Size)
+	}
+	if request.Size > MaxUploadBytes {
+		return StagedUpload{}, fmt.Errorf("%w: declared %d bytes, the limit is %d", ErrTooLarge, request.Size, MaxUploadBytes)
+	}
+	declaredType := normalizeMediaType(request.ContentType)
+	if declaredType == "" {
+		return StagedUpload{}, errors.New("uploads: a content type is required")
+	}
+	// The declared type is refused here when it is not one this application
+	// would ever accept, so an obviously unwanted upload costs no round trip
+	// and no quarantine object. It is checked again after the upload, which
+	// is the check that counts.
+	if !u.accepted[declaredType] {
+		return StagedUpload{}, fmt.Errorf("%w: %s is not an accepted type", ErrRejected, declaredType)
+	}
+
+	filename := storage.SanitizeFilename(request.Filename)
+	key, err := storage.JoinKey(QuarantinePrefix, u.keys(), filename)
+	if err != nil {
+		return StagedUpload{}, fmt.Errorf("uploads: deriving a storage key: %w", err)
+	}
+
+	owner, err := parseUUID(request.OwnerUserID)
+	if err != nil {
+		return StagedUpload{}, err
+	}
+	now := u.now()
+	expires := now.Add(StagingLifetime)
+
+	var row store.Upload
+	err = u.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		row, txErr = store.New(tx).StageUpload(ctx, store.StageUploadParams{
+			OwnerUserID:  owner,
+			StorageKey:   key,
+			Filename:     filename,
+			DeclaredType: declaredType,
+			DeclaredSize: request.Size,
+			ExpiresAt:    pgtype.Timestamptz{Time: expires, Valid: true},
+		})
+		return txErr
+	})
+	if err != nil {
+		return StagedUpload{}, fmt.Errorf("uploads: staging: %w", err)
+	}
+
+	staged := StagedUpload{Upload: toUpload(row)}
+	presigner, ok := u.store.(storage.Presigner)
+	if !ok {
+		// No URL: the application's own endpoint accepts the bytes and
+		// calls Write. That is not a lesser path, only a different one —
+		// and it is the only one that exists for a local store, which has
+		// no URL of its own.
+		return staged, nil
+	}
+	url, err := presigner.PresignPut(ctx, key, PresignedLifetime, storage.PutOptions{
+		ContentType:   declaredType,
+		ContentLength: request.Size,
+	})
+	if err != nil {
+		return StagedUpload{}, fmt.Errorf("uploads: issuing an upload URL: %w", err)
+	}
+	staged.UploadURL = url
+	staged.ExpiresAt = now.Add(PresignedLifetime)
+	return staged, nil
+}
+
+// Write stores an upload's bytes through this application, for a backend that
+// cannot presign.
+//
+// The reader is bounded at the declared size plus one byte, so a client that
+// sends more than it declared is refused rather than allowed to fill the
+// disk. The extra byte is what makes "exactly at the limit" distinguishable
+// from "over it".
+func (u *Uploads) Write(ctx context.Context, id string, ownerUserID string, body io.Reader) error {
+	upload, err := u.load(ctx, id, ownerUserID)
+	if err != nil {
+		return err
+	}
+	if upload.State != string(store.UploadStateStaged) {
+		return ErrNotStaged
+	}
+	limited := io.LimitReader(body, upload.DeclaredSize+1)
+	if _, err := u.store.Put(ctx, upload.StorageKey, limited, storage.PutOptions{
+		ContentType:   upload.DeclaredType,
+		ContentLength: upload.DeclaredSize,
+	}); err != nil {
+		return fmt.Errorf("uploads: storing: %w", err)
+	}
+	return nil
+}
+
+// Finalize verifies the stored object and, if it passes, moves it out of
+// quarantine and marks the row available.
+//
+// The order matters and is not arbitrary. The object is read and measured
+// before anything is written to the database, so a refusal leaves no
+// half-finalized row. The move happens before the row is marked available, so
+// a crash between them leaves a row that still says `staged` for an object
+// that is already at its final key — which the sweep will notice, rather than
+// a row claiming an object is available at a key nothing is at.
+func (u *Uploads) Finalize(ctx context.Context, id string, ownerUserID string) (Upload, error) {
+	upload, err := u.load(ctx, id, ownerUserID)
+	if err != nil {
+		return Upload{}, err
+	}
+	if upload.State != string(store.UploadStateStaged) {
+		return Upload{}, ErrNotStaged
+	}
+	if u.now().After(upload.ExpiresAt) {
+		return Upload{}, u.reject(ctx, upload, "the staging window had already elapsed", 0, "")
+	}
+
+	measured, err := u.measure(ctx, upload)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return Upload{}, u.reject(ctx, upload, "no object was stored under the staged key", 0, "")
+		}
+		return Upload{}, err
+	}
+
+	if measured.size > MaxUploadBytes {
+		return Upload{}, u.reject(ctx, upload, "the stored object is larger than this application accepts", measured.size, measured.contentType)
+	}
+	if measured.size > upload.DeclaredSize {
+		return Upload{}, u.reject(ctx, upload, "the stored object is larger than the size that was declared", measured.size, measured.contentType)
+	}
+	if measured.size == 0 {
+		return Upload{}, u.reject(ctx, upload, "the stored object is empty", 0, measured.contentType)
+	}
+	if !u.accepted[measured.contentType] {
+		return Upload{}, u.reject(ctx, upload, "the stored object is not of an accepted type", measured.size, measured.contentType)
+	}
+	if measured.contentType != upload.DeclaredType {
+		return Upload{}, u.reject(ctx, upload, "the stored object is not of the type that was declared", measured.size, measured.contentType)
+	}
+
+	finalKey, err := storage.JoinKey(ObjectPrefix, strings.TrimPrefix(upload.StorageKey, QuarantinePrefix+"/"))
+	if err != nil {
+		return Upload{}, fmt.Errorf("uploads: deriving the final key: %w", err)
+	}
+	if err := u.store.Move(ctx, upload.StorageKey, finalKey); err != nil {
+		return Upload{}, fmt.Errorf("uploads: leaving quarantine: %w", err)
+	}
+
+	var row store.Upload
+	err = u.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		row, txErr = store.New(tx).MarkUploadAvailable(ctx, store.MarkUploadAvailableParams{
+			ID:          mustUUID(upload.ID),
+			StorageKey:  finalKey,
+			ContentType: pgtype.Text{String: measured.contentType, Valid: true},
+			Size:        pgtype.Int8{Int64: measured.size, Valid: true},
+			Checksum:    measured.checksum,
+		})
+		return txErr
+	})
+	if err != nil {
+		return Upload{}, fmt.Errorf("uploads: finalizing: %w", err)
+	}
+	return toUpload(row), nil
+}
+
+// Sweep expires staged uploads whose window has elapsed, deleting the objects
+// they were holding a key for.
+//
+// It returns how many it expired, so the periodic job that calls it can say
+// something specific rather than "done".
+func (u *Uploads) Sweep(ctx context.Context, limit int32) (int, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var rows []store.Upload
+	err := u.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		rows, txErr = store.New(tx).ListExpiredStagedUploads(ctx, store.ListExpiredStagedUploadsParams{
+			ExpiresAt: pgtype.Timestamptz{Time: u.now(), Valid: true},
+			Limit:     limit,
+		})
+		return txErr
+	})
+	if err != nil {
+		return 0, fmt.Errorf("uploads: listing expired uploads: %w", err)
+	}
+
+	swept := 0
+	for _, row := range rows {
+		upload := toUpload(row)
+		// The object is deleted first. A row marked expired while its
+		// object survives is a quarantine key nothing will ever look at
+		// again; a deleted object whose row still says staged is swept on
+		// the next pass. Only one of those two failures self-corrects.
+		if err := u.store.Delete(ctx, upload.StorageKey); err != nil {
+			return swept, fmt.Errorf("uploads: deleting the expired object %s: %w", upload.StorageKey, err)
+		}
+		err := u.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+			_, txErr := store.New(tx).MarkUploadExpired(ctx, store.MarkUploadExpiredParams{ID: row.ID})
+			return txErr
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return swept, fmt.Errorf("uploads: expiring %s: %w", upload.ID, err)
+		}
+		swept++
+	}
+	return swept, nil
+}
+
+// Get returns one upload, for its owner.
+func (u *Uploads) Get(ctx context.Context, id string, ownerUserID string) (Upload, error) {
+	return u.load(ctx, id, ownerUserID)
+}
+
+// measurement is what the server found in the stored object.
+type measurement struct {
+	size        int64
+	contentType string
+	checksum    []byte
+}
+
+// measure reads the stored object once, hashing as it goes.
+//
+// One pass, because a second read of an object that a client can still write
+// to is a second chance for the content to have changed between the check and
+// the use. The hash is recorded so that a later change is at least
+// detectable.
+//
+// The read is bounded at one byte over the limit: an object larger than this
+// application accepts is refused without ever being read in full.
+func (u *Uploads) measure(ctx context.Context, upload Upload) (measurement, error) {
+	reader, err := u.store.Get(ctx, upload.StorageKey)
+	if err != nil {
+		return measurement{}, err
+	}
+	defer func() { _ = reader.Close() }()
+
+	digest := sha256.New()
+	head := make([]byte, 0, sniffBytes)
+	var size int64
+
+	buffer := make([]byte, 32<<10)
+	for size <= MaxUploadBytes {
+		n, readErr := reader.Read(buffer)
+		if n > 0 {
+			size += int64(n)
+			digest.Write(buffer[:n])
+			if len(head) < sniffBytes {
+				remaining := sniffBytes - len(head)
+				if remaining > n {
+					remaining = n
+				}
+				head = append(head, buffer[:remaining]...)
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return measurement{}, fmt.Errorf("uploads: reading the stored object: %w", readErr)
+		}
+	}
+
+	return measurement{
+		size:     size,
+		checksum: digest.Sum(nil),
+		// The type comes from the leading bytes, never from a header the
+		// client set. http.DetectContentType is the standard library's
+		// sniffing algorithm and returns a bare media type with no
+		// parameters, which is exactly what the allowlist compares against.
+		contentType: normalizeMediaType(http.DetectContentType(head)),
+	}, nil
+}
+
+// reject records a refusal, deletes the quarantined object, and returns the
+// error the caller reports.
+func (u *Uploads) reject(ctx context.Context, upload Upload, reason string, size int64, contentType string) error {
+	// Delete first, for the same reason the sweep does: an object left
+	// behind by a failed database write is swept, while a row marked
+	// rejected beside a surviving object is a quarantine key nothing will
+	// look at again.
+	if err := u.store.Delete(ctx, upload.StorageKey); err != nil {
+		return fmt.Errorf("uploads: deleting the refused object: %w", err)
+	}
+	err := u.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		_, txErr := store.New(tx).MarkUploadRejected(ctx, store.MarkUploadRejectedParams{
+			ID:             mustUUID(upload.ID),
+			ContentType:    optionalText(contentType),
+			Size:           optionalInt8(size),
+			RejectedReason: pgtype.Text{String: reason, Valid: true},
+		})
+		return txErr
+	})
+	if err != nil {
+		return fmt.Errorf("uploads: recording the refusal: %w", err)
+	}
+	return fmt.Errorf("%w: %s", ErrRejected, reason)
+}
+
+// load reads one upload and checks that ownerUserID owns it.
+//
+// The ownership check is not the same as the authorization check an
+// application performs. This one only establishes that the capability being
+// used belongs to the principal using it — a presigned URL is unguessable,
+// but "unguessable" is not "authorized", and an identifier that leaked into a
+// log or a referrer would otherwise be usable by whoever read it.
+func (u *Uploads) load(ctx context.Context, id string, ownerUserID string) (Upload, error) {
+	uploadID, err := parseUUID(id)
+	if err != nil {
+		return Upload{}, ErrNotFound
+	}
+	var row store.Upload
+	err = u.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		row, txErr = store.New(tx).GetUpload(ctx, store.GetUploadParams{ID: uploadID})
+		return txErr
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Upload{}, ErrNotFound
+		}
+		return Upload{}, fmt.Errorf("uploads: reading: %w", err)
+	}
+	upload := toUpload(row)
+	if upload.OwnerUserID != ownerUserID {
+		return Upload{}, ErrNotOwner
+	}
+	return upload, nil
+}
+
+// normalizeMediaType lowercases a media type and drops its parameters, so
+// "IMAGE/PNG" and "image/png; charset=binary" compare equal to "image/png".
+func normalizeMediaType(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if index := strings.IndexByte(value, ';'); index >= 0 {
+		value = strings.TrimSpace(value[:index])
+	}
+	return value
+}
+
+func optionalText(value string) pgtype.Text {
+	if value == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: value, Valid: true}
+}
+
+func optionalInt8(value int64) pgtype.Int8 {
+	if value <= 0 {
+		return pgtype.Int8{}
+	}
+	return pgtype.Int8{Int64: value, Valid: true}
+}

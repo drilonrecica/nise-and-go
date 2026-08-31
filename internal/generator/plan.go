@@ -132,17 +132,24 @@ type templateData struct {
 	HasOrganizations bool
 	HasTOTP          bool
 	HasUploads       bool
-	// TOTPMigration is the zero-padded version the TOTP module's migration
-	// is written as. Module migrations are numbered contiguously after the
-	// core history, in module order, because the runtime's compatibility
-	// check requires a history with no gaps — and a gap is how a missing
-	// migration hides.
-	TOTPMigration string
-	NiseModule    string
-	NiseVersion   string
-	ChiVersion    string
-	PgxVersion    string
-	RiverVersion  string
+	// TOTPMigration and UploadsMigration are the zero-padded versions each
+	// module's migration is written as. Module migrations are numbered
+	// contiguously after the core history, in module order, because the
+	// runtime's compatibility check requires a history with no gaps — and a
+	// gap is how a missing migration hides.
+	//
+	// The numbers therefore depend on which other modules were selected: a
+	// project with uploads but not TOTP numbers uploads where a project with
+	// both numbers TOTP. That is correct rather than a hazard, because a
+	// migration file is application-owned and is never renumbered after the
+	// project exists.
+	TOTPMigration    string
+	UploadsMigration string
+	NiseModule       string
+	NiseVersion      string
+	ChiVersion       string
+	PgxVersion       string
+	RiverVersion     string
 	// RiverSchemaVersion is the River migration line version the generated
 	// job schema brings the database up to. It appears both in the
 	// migration's prose and in the row it seeds, so it is one value here
@@ -187,6 +194,7 @@ func newTemplateData(opts Options) templateData {
 		HasTOTP:             selected[recipe.ModuleTOTP],
 		HasUploads:          selected[recipe.ModuleUploads],
 		TOTPMigration:       moduleMigrationVersions(selected)[recipe.ModuleTOTP],
+		UploadsMigration:    moduleMigrationVersions(selected)[recipe.ModuleUploads],
 		NiseModule:          NiseModulePath,
 		NiseVersion:         NiseModuleVersion,
 		ChiVersion:          ChiVersion,
@@ -216,7 +224,7 @@ const coreMigrations = 9
 
 // modulesWithMigrations lists, in the order they are numbered, the modules that
 // contribute a migration. A module absent from this list adds none.
-var modulesWithMigrations = []recipe.Module{recipe.ModuleTOTP}
+var modulesWithMigrations = []recipe.Module{recipe.ModuleTOTP, recipe.ModuleUploads}
 
 // moduleMigrationVersions assigns each selected module's migration the next
 // version after the core history.

@@ -175,6 +175,36 @@ func (l *Local) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// Move implements [Store] with a rename, which on one filesystem is atomic:
+// there is no instant at which the object is at both keys or at neither.
+func (l *Local) Move(ctx context.Context, from, to string) error {
+	if err := ValidateKey(from); err != nil {
+		return err
+	}
+	if err := ValidateKey(to); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if from == to {
+		return nil
+	}
+	if _, err := l.root.Stat(from); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%w: %s", ErrNotFound, from)
+		}
+		return fmt.Errorf("storage: stat %s: %w", from, err)
+	}
+	if err := l.mkdirAll(objectDir(to)); err != nil {
+		return err
+	}
+	if err := l.root.Rename(from, to); err != nil {
+		return fmt.Errorf("storage: moving %s to %s: %w", from, to, err)
+	}
+	return nil
+}
+
 // mkdirAll creates every directory in dir, inside the confined root.
 //
 // os.Root has no MkdirAll, deliberately: each level is created separately so
