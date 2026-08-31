@@ -148,6 +148,12 @@ func TestEveryGeneratedFileDeclaresItsOwnership(t *testing.T) {
 		if generator.IsFeatureQueryPath(f.Path) {
 			continue
 		}
+		// A message template declares ownership by path for a stronger
+		// version of the same reason: its plain-text part is sent verbatim
+		// to a person, so a header in it would arrive in an inbox.
+		if generator.IsMailTemplatePath(f.Path) {
+			continue
+		}
 		want := generator.AppOwnedHeader
 		if f.Owner == generator.OwnerNise {
 			want = generator.NiseOwnedHeader

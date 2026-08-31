@@ -1,0 +1,161 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package mail
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestNewRendererParsesEveryEmbeddedTemplate(t *testing.T) {
+	t.Parallel()
+
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("NewRenderer: %v", err)
+	}
+	names := r.Names()
+	if len(names) == 0 {
+		t.Fatal("no message templates are embedded")
+	}
+	// Every text template must have an HTML sibling. NewRenderer enforces
+	// it; this asserts the enforcement covers what is actually shipped, so
+	// adding a lone .txt fails here rather than silently sending
+	// text-only mail.
+	for _, name := range names {
+		if _, err := r.Render(name, "Subject", []string{"b@example.com"}, invitationData()); err != nil {
+			t.Errorf("rendering %q: %v", name, err)
+		}
+	}
+}
+
+func invitationData() map[string]string {
+	return map[string]string{
+		"AppName":   "Example",
+		"AcceptURL": "https://example.com/invitations/accept?token=inv1_abc",
+	}
+}
+
+func TestRenderProducesBothParts(t *testing.T) {
+	t.Parallel()
+
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("NewRenderer: %v", err)
+	}
+	m, err := r.Render("invitation", "You have been invited", []string{"b@example.com"}, invitationData())
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if m.Text == "" {
+		t.Error("the message has no plain-text part")
+	}
+	if m.HTML == "" {
+		t.Error("the message has no HTML part")
+	}
+	if !strings.Contains(m.Text, "inv1_abc") || !strings.Contains(m.HTML, "inv1_abc") {
+		t.Error("the accept URL did not reach both parts")
+	}
+	if m.Subject != "You have been invited" {
+		t.Errorf("Subject = %q", m.Subject)
+	}
+}
+
+// TestTheHTMLPartEscapesItsData is the reason the two parts use different
+// template engines. text/template does no escaping, which is correct for a
+// plain-text body and catastrophic for markup.
+func TestTheHTMLPartEscapesItsData(t *testing.T) {
+	t.Parallel()
+
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("NewRenderer: %v", err)
+	}
+	data := map[string]string{
+		"AppName":   `</h1><script>alert(1)</script>`,
+		"AcceptURL": "https://example.com/a",
+	}
+	m, err := r.Render("invitation", "Subject", []string{"b@example.com"}, data)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if strings.Contains(m.HTML, "<script>") {
+		t.Errorf("the HTML part contains unescaped markup from its data:\n%s", m.HTML)
+	}
+	// The text part is not markup and must not be escaped into
+	// unreadability.
+	if strings.Contains(m.Text, "&lt;") {
+		t.Errorf("the plain-text part was HTML-escaped:\n%s", m.Text)
+	}
+}
+
+// TestAJavaScriptURLIsNeutralized covers the other half of contextual
+// escaping: a URL is not just text, and html/template knows it.
+func TestAJavaScriptURLIsNeutralized(t *testing.T) {
+	t.Parallel()
+
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("NewRenderer: %v", err)
+	}
+	data := map[string]string{
+		"AppName":   "Example",
+		"AcceptURL": "javascript:alert(1)",
+	}
+	m, err := r.Render("invitation", "Subject", []string{"b@example.com"}, data)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if strings.Contains(m.HTML, "javascript:alert(1)") {
+		t.Errorf("a javascript: URL survived into an href:\n%s", m.HTML)
+	}
+}
+
+func TestRenderRefusesAnUnknownTemplate(t *testing.T) {
+	t.Parallel()
+
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("NewRenderer: %v", err)
+	}
+	if _, err := r.Render("no-such-template", "Subject", []string{"b@example.com"}, nil); err == nil {
+		t.Fatal("Render accepted a template name that does not exist")
+	}
+}
+
+// TestRenderRefusesMissingData covers the missingkey=error option. A template
+// referencing a key its data does not have would otherwise render "<no
+// value>" into a message somebody receives.
+func TestRenderRefusesMissingData(t *testing.T) {
+	t.Parallel()
+
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("NewRenderer: %v", err)
+	}
+	_, err = r.Render("invitation", "Subject", []string{"b@example.com"}, map[string]string{"AppName": "Example"})
+	if err == nil {
+		t.Fatal("Render accepted data missing a key the template uses")
+	}
+	if strings.Contains(err.Error(), "<no value>") {
+		t.Error("the placeholder reached the message rather than the error")
+	}
+}
+
+// TestRenderValidatesWhatItProduced keeps a rendering mistake attributable to
+// the template that made it, rather than surfacing three layers away in a
+// transport.
+func TestRenderValidatesWhatItProduced(t *testing.T) {
+	t.Parallel()
+
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("NewRenderer: %v", err)
+	}
+	if _, err := r.Render("invitation", "Subject\nBcc: attacker@example.com", []string{"b@example.com"}, invitationData()); err == nil {
+		t.Fatal("Render accepted a subject carrying a header break")
+	}
+	if _, err := r.Render("invitation", "Subject", nil, invitationData()); err == nil {
+		t.Fatal("Render accepted a message with no recipients")
+	}
+}

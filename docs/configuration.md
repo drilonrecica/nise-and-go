@@ -266,6 +266,40 @@ every other setting on this page is: an operator should learn at startup that a
 value was impossible, not discover later that it was quietly replaced with a
 different one.
 
+## Generated mail settings
+
+See [background jobs](jobs.md) for why sending happens in a job rather than in
+a request.
+
+| Variable | Default | Constraint |
+|---|---:|---|
+| `MAIL_TRANSPORT` | `log` | `smtp` or `log`; production requires `smtp` |
+| `MAIL_FROM` | `noreply@localhost` | a parseable RFC 5322 address |
+| `SMTP_HOST` | — | required when the transport is `smtp` |
+| `SMTP_PORT` | `587` | required when the transport is `smtp` |
+| `SMTP_ENCRYPTION` | `starttls` | `starttls`, `implicit`, or `none` |
+| `SMTP_USERNAME` | — | optional; requires encryption when set |
+| `SMTP_PASSWORD` | — | optional; requires a username |
+
+The `log` transport records that a message would have been sent and sends
+nothing. It validates every message exactly as the SMTP transport does — so a
+message that would be refused in production is refused in development too —
+and it never writes the body, because a rendered message routinely carries a
+single-use token and a development log is the least protected place one could
+end up.
+
+**Production refuses `log`.** An application that silently sends no
+invitations is worse than one that will not start without a mail server: the
+first failure is reported weeks later as "the link is broken", by somebody who
+never received a link.
+
+**Credentials with `SMTP_ENCRYPTION=none` are refused at startup.** SMTP `AUTH
+PLAIN` is a base64-encoded password on the wire; without TLS it hands the
+sending account to anything on the path. And a server that does not offer
+`STARTTLS` when `starttls` is configured is an error rather than a fallback to
+plaintext — a silent downgrade makes an active attacker's job a matter of
+stripping one capability line.
+
 ## Generated session settings
 
 See [sessions](sessions.md) for the cookie and lifecycle contracts.

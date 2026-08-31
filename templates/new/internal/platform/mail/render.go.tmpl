@@ -1,0 +1,146 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package mail
+
+import (
+	"bytes"
+	"embed"
+	"errors"
+	"fmt"
+	htmltemplate "html/template"
+	"io/fs"
+	"strings"
+	texttemplate "text/template"
+)
+
+// templateFS holds this application's message templates, embedded in the
+// binary.
+//
+// Embedded rather than read from disk, for the same reason the frontend and
+// the migrations are: a deployment is one file, and a template that is
+// missing at run time is a message that cannot be sent to a user who is
+// waiting for it. A missing template here fails at startup, in
+// [NewRenderer], on every replica at once.
+//
+//go:embed templates/*.txt templates/*.html
+var templateFS embed.FS
+
+// Message templates come in pairs: a .txt for the plain-text part and a
+// .html for the HTML part, sharing a base name. The pair is the unit,
+// because a message with only an HTML part is filtered more aggressively,
+// unreadable in a text client, and unreadable to a screen reader that has
+// given up on the markup — so a text part is required and the HTML one is
+// optional.
+//
+// The two use different template engines on purpose. text/template does no
+// escaping, which is right for a plain-text body and catastrophic for
+// markup; html/template escapes contextually, so a name containing a `<`
+// arrives as a name rather than as a tag.
+const (
+	textSuffix = ".txt"
+	htmlSuffix = ".html"
+)
+
+// Renderer turns a template name and its data into a [Message].
+//
+// Templates are parsed once, when the renderer is built. A parse error is a
+// startup failure rather than a runtime one, so a typo in a template is found
+// by the deployment rather than by the first user who triggers that email.
+type Renderer struct {
+	text  *texttemplate.Template
+	html  *htmltemplate.Template
+	names []string
+}
+
+// NewRenderer parses every embedded template.
+func NewRenderer() (*Renderer, error) {
+	entries, err := fs.ReadDir(templateFS, "templates")
+	if err != nil {
+		return nil, fmt.Errorf("mail: reading the embedded templates: %w", err)
+	}
+
+	var names []string
+	for _, entry := range entries {
+		if name, found := strings.CutSuffix(entry.Name(), textSuffix); found {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil, errors.New("mail: no message templates are embedded")
+	}
+
+	text, err := texttemplate.New("mail").Option("missingkey=error").
+		ParseFS(templateFS, "templates/*"+textSuffix)
+	if err != nil {
+		return nil, fmt.Errorf("mail: parsing the text templates: %w", err)
+	}
+	html, err := htmltemplate.New("mail").Option("missingkey=error").
+		ParseFS(templateFS, "templates/*"+htmlSuffix)
+	if err != nil {
+		return nil, fmt.Errorf("mail: parsing the HTML templates: %w", err)
+	}
+
+	// Every text template must have an HTML sibling, or a message would be
+	// silently text-only depending on which files happened to be added.
+	for _, name := range names {
+		if html.Lookup(name+htmlSuffix) == nil {
+			return nil, fmt.Errorf("mail: template %q has no %s sibling", name, htmlSuffix)
+		}
+	}
+	return &Renderer{text: text, html: html, names: names}, nil
+}
+
+// Names returns the template names this renderer knows, in directory order.
+func (r *Renderer) Names() []string {
+	out := make([]string, len(r.names))
+	copy(out, r.names)
+	return out
+}
+
+// Render builds a message from the named template pair.
+//
+// subject is a parameter rather than a line inside the template. A subject
+// living in the template would have to be extracted from the rendered output
+// by convention — a first line, a comment, a defined block — and every one of
+// those conventions breaks quietly when somebody edits the template. As a
+// parameter it is a value the caller can localize, test, and read.
+func (r *Renderer) Render(name, subject string, to []string, data any) (Message, error) {
+	textTemplate := r.text.Lookup(name + textSuffix)
+	if textTemplate == nil {
+		return Message{}, fmt.Errorf("mail: no template named %q", name)
+	}
+
+	var text bytes.Buffer
+	if err := textTemplate.Execute(&text, data); err != nil {
+		return Message{}, fmt.Errorf("mail: rendering %q as text: %w", name, err)
+	}
+
+	var html bytes.Buffer
+	if htmlTemplate := r.html.Lookup(name + htmlSuffix); htmlTemplate != nil {
+		if err := htmlTemplate.Execute(&html, data); err != nil {
+			return Message{}, fmt.Errorf("mail: rendering %q as HTML: %w", name, err)
+		}
+	}
+
+	m := Message{
+		To:      to,
+		Subject: subject,
+		Text:    text.String(),
+		HTML:    html.String(),
+	}
+	// Validate here as well as in the transport. A rendering mistake — a
+	// template that produced nothing, data that carried a newline into the
+	// subject — should be reported by the call that made it, next to the
+	// name of the template, rather than by a send three layers away.
+	if err := m.validateWithoutSender(); err != nil {
+		return Message{}, fmt.Errorf("mail: rendering %q: %w", name, err)
+	}
+	return m, nil
+}
+
+// validateWithoutSender is Validate for a message that has not been given its
+// From address yet, which the transport fills in from its own configuration.
+func (m Message) validateWithoutSender() error {
+	m.From = "renderer@invalid.example"
+	return m.Validate()
+}

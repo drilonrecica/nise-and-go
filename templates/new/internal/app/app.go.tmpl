@@ -33,6 +33,7 @@ import (
 	"{{.ModulePath}}/internal/platform/httpapi/problem"
 	"{{.ModulePath}}/internal/platform/httpauth"
 	"{{.ModulePath}}/internal/platform/jobs"
+	"{{.ModulePath}}/internal/platform/mail"
 	"{{.ModulePath}}/internal/platform/passwords"
 	"{{.ModulePath}}/internal/platform/reauth"
 	"{{.ModulePath}}/internal/platform/throttle"
@@ -270,9 +271,28 @@ func Run(ctx context.Context, modeOverride string) error {
 		return fmt.Errorf("building the HTTP handler: %w", err)
 	}
 
+	// Mail is chosen once, here, so nothing downstream branches on which
+	// transport is in use. Production has already refused the log transport
+	// by this point; see config.Load.
+	mailer, err := newMailer(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("building the mailer: %w", err)
+	}
+	mailRenderer, err := mail.NewRenderer()
+	if err != nil {
+		return fmt.Errorf("parsing the embedded message templates: %w", err)
+	}
+
 	// Every process builds a job client, because every process may need to
 	// enqueue. Only the worker component ever starts one, so a web replica
 	// holds a client that never fetches a job.
+	// Nothing sends mail yet, so the renderer and the mailer are held for
+	// the first use case that does. They are constructed here rather than
+	// where they are eventually needed because a template that does not
+	// parse and a mail configuration that does not resolve are startup
+	// failures, not first-message failures.
+	_, _ = mailer, mailRenderer
+
 	jobRegistry := jobs.NewRegistry()
 	if err := registerJobs(jobRegistry); err != nil {
 		return fmt.Errorf("registering background jobs: %w", err)
@@ -300,6 +320,8 @@ func Run(ctx context.Context, modeOverride string) error {
 		slog.Any("modules", SelectedModules()),
 		slog.Any("job_kinds", jobClient.Kinds()),
 		slog.Any("periodic_job_kinds", jobClient.PeriodicKinds()),
+		slog.String("mail_transport", cfg.MailTransport),
+		slog.Any("mail_templates", mailRenderer.Names()),
 	)
 
 	// Initialization is complete: open the gate so the startup probe
