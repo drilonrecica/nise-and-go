@@ -56,6 +56,12 @@ func (e *InactiveError) Error() string {
 	return fmt.Sprintf("session is %s", e.State)
 }
 
+// SessionRefusalReason names the refusal for a log line. It is the closed
+// State value and never anything derived from the credential.
+func (e *InactiveError) SessionRefusalReason() string {
+	return string(e.State)
+}
+
 // Issued is one newly created session: the token to hand the client exactly
 // once, and the record the server keeps.
 type Issued struct {

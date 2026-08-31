@@ -23,7 +23,15 @@ import (
 
 const (
 	testDatabaseConnectionLimit = 8
-	adminOperationTimeout       = 10 * time.Second
+	// adminOperationTimeout bounds CREATE DATABASE and DROP DATABASE. It is
+	// generous on purpose: both copy or remove a whole database directory,
+	// they serialize against each other on the server, and `go test ./...`
+	// runs several packages at once. On a busy machine a drop that normally
+	// takes milliseconds can take tens of seconds, and a tight bound there
+	// fails a test that has already passed. The timeout exists to stop a
+	// hung administrative connection from blocking forever, not to measure
+	// anything.
+	adminOperationTimeout = 60 * time.Second
 )
 
 // Database is one isolated test database. Its connection material is wrapped
@@ -168,7 +176,7 @@ func cleanup(t testing.TB, adminConfig *pgx.ConnConfig, name string) {
 	_, dropErr := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+identifier+" WITH (FORCE)")
 	closeErr := admin.Close(ctx)
 	if err := errors.Join(dropErr, closeErr); err != nil {
-		t.Errorf("clean up isolated PostgreSQL database %s", name)
+		t.Errorf("clean up isolated PostgreSQL database %s: %v", name, err)
 	}
 }
 

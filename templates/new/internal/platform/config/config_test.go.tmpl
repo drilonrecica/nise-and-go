@@ -195,31 +195,151 @@ func TestLoadRejectsUnusableCursorConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadBuildsTheSessionPolicy(t *testing.T) {
+	setTestEnvironment(t)
+
+	cfg, warnings, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SessionLifetime.Idle() != 12*time.Hour || cfg.SessionLifetime.Absolute() != 720*time.Hour {
+		t.Errorf("session lifetime = %s/%s, want the stated 12h/30d", cfg.SessionLifetime.Idle(), cfg.SessionLifetime.Absolute())
+	}
+	if !cfg.SessionCookie.Hardened() || cfg.SessionCookie.Name() != "__Host-session" {
+		t.Errorf("cookie = %q hardened=%t, want the hardened default", cfg.SessionCookie.Name(), cfg.SessionCookie.Hardened())
+	}
+	if cfg.SessionCookieInsecure {
+		t.Error("the default configuration reports an insecure cookie")
+	}
+	for _, warning := range warnings {
+		if strings.Contains(warning, "SESSION_COOKIE_INSECURE") {
+			t.Errorf("the hardened default produced warning %q", warning)
+		}
+	}
+}
+
+func TestLoadWarnsAboutTheInsecureCookieEscapeHatch(t *testing.T) {
+	setTestEnvironment(t)
+	t.Setenv("SESSION_COOKIE_INSECURE", "true")
+
+	cfg, warnings, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// The prefix and Secure move together; the name changes with them.
+	if cfg.SessionCookie.Hardened() || cfg.SessionCookie.Name() != "session" {
+		t.Fatalf("cookie = %q hardened=%t", cfg.SessionCookie.Name(), cfg.SessionCookie.Hardened())
+	}
+	warned := false
+	for _, warning := range warnings {
+		if strings.Contains(warning, "SESSION_COOKIE_INSECURE") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("warnings = %v, want one naming SESSION_COOKIE_INSECURE", warnings)
+	}
+}
+
+func TestProductionRefusesTheInsecureCookie(t *testing.T) {
+	setTestEnvironment(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("LOG_FORMAT", "json")
+	t.Setenv("SESSION_COOKIE_INSECURE", "true")
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("production accepted a session cookie without __Host- and Secure")
+	}
+	if !strings.Contains(err.Error(), "SESSION_COOKIE_INSECURE") {
+		t.Errorf("error %q does not name SESSION_COOKIE_INSECURE", err)
+	}
+}
+
+func TestLoadRejectsUnusableSessionConfiguration(t *testing.T) {
+	tests := []struct {
+		name  string
+		env   map[string]string
+		wants string
+	}{
+		{
+			name:  "idle beyond absolute",
+			env:   map[string]string{"SESSION_IDLE_TIMEOUT": "48h", "SESSION_ABSOLUTE_TIMEOUT": "24h"},
+			wants: "SESSION_IDLE_TIMEOUT",
+		},
+		{
+			name:  "touch interval beyond half the idle window",
+			env:   map[string]string{"SESSION_IDLE_TIMEOUT": "10m", "SESSION_TOUCH_INTERVAL": "9m"},
+			wants: "SESSION_TOUCH_INTERVAL",
+		},
+		{
+			name:  "absolute beyond the ceiling",
+			env:   map[string]string{"SESSION_ABSOLUTE_TIMEOUT": "10000h"},
+			wants: "SESSION_ABSOLUTE_TIMEOUT",
+		},
+		{
+			name:  "a __Host- name without Secure",
+			env:   map[string]string{"SESSION_COOKIE_INSECURE": "true", "SESSION_COOKIE_NAME": "__Host-session"},
+			wants: "SESSION_COOKIE_NAME",
+		},
+		{
+			name:  "an unprefixed name with Secure",
+			env:   map[string]string{"SESSION_COOKIE_NAME": "session"},
+			wants: "SESSION_COOKIE_NAME",
+		},
+		{
+			name:  "a name a cookie may not carry",
+			env:   map[string]string{"SESSION_COOKIE_NAME": "__Host-session;evil"},
+			wants: "SESSION_COOKIE_NAME",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setTestEnvironment(t)
+			for name, value := range tc.env {
+				t.Setenv(name, value)
+			}
+			_, _, err := Load()
+			if err == nil {
+				t.Fatalf("Load accepted %v", tc.env)
+			}
+			if !strings.Contains(err.Error(), tc.wants) {
+				t.Errorf("error %q does not name %s", err, tc.wants)
+			}
+		})
+	}
+}
+
 func setTestEnvironment(t *testing.T) {
 	t.Helper()
 	values := map[string]string{
-		"APP_ENV":                 "test",
-		"APP_MODE":                "all",
-		"BIND_ADDR":               "127.0.0.1",
-		"PORT":                    "8080",
-		"DEBUG":                   "false",
-		"LOG_LEVEL":               "info",
-		"LOG_FORMAT":              "text",
-		"TRUST_PROXY_HEADERS":     "false",
-		"ALLOW_PUBLIC_BIND":       "false",
-		"OPERATOR_TOKEN":          "",
-		"DATABASE_URL":            "postgres://app:secret@127.0.0.1:5432/app?sslmode=disable",
-		"DATABASE_PASSWORD":       "",
-		"DB_MAX_CONNS":            "10",
-		"DB_MIN_CONNS":            "0",
-		"DB_MAX_CONN_LIFETIME":    "30m",
-		"DB_MAX_CONN_IDLE_TIME":   "5m",
-		"DB_HEALTH_CHECK_PERIOD":  "30s",
-		"DB_CONNECT_TIMEOUT":      "5s",
-		"DB_SLOW_QUERY_THRESHOLD": "250ms",
-		"CURSOR_SIGNING_KEY":      testCursorKey("y2026a"),
-		"CURSOR_RETIRED_KEYS":     "",
-		"CURSOR_TTL":              "1h",
+		"APP_ENV":                  "test",
+		"APP_MODE":                 "all",
+		"BIND_ADDR":                "127.0.0.1",
+		"PORT":                     "8080",
+		"DEBUG":                    "false",
+		"LOG_LEVEL":                "info",
+		"LOG_FORMAT":               "text",
+		"TRUST_PROXY_HEADERS":      "false",
+		"ALLOW_PUBLIC_BIND":        "false",
+		"OPERATOR_TOKEN":           "",
+		"DATABASE_URL":             "postgres://app:secret@127.0.0.1:5432/app?sslmode=disable",
+		"DATABASE_PASSWORD":        "",
+		"DB_MAX_CONNS":             "10",
+		"DB_MIN_CONNS":             "0",
+		"DB_MAX_CONN_LIFETIME":     "30m",
+		"DB_MAX_CONN_IDLE_TIME":    "5m",
+		"DB_HEALTH_CHECK_PERIOD":   "30s",
+		"DB_CONNECT_TIMEOUT":       "5s",
+		"DB_SLOW_QUERY_THRESHOLD":  "250ms",
+		"CURSOR_SIGNING_KEY":       testCursorKey("y2026a"),
+		"CURSOR_RETIRED_KEYS":      "",
+		"CURSOR_TTL":               "1h",
+		"SESSION_IDLE_TIMEOUT":     "12h",
+		"SESSION_ABSOLUTE_TIMEOUT": "720h",
+		"SESSION_TOUCH_INTERVAL":   "5m",
+		"SESSION_COOKIE_NAME":      "",
+		"SESSION_COOKIE_INSECURE":  "false",
 	}
 	for name, value := range values {
 		t.Setenv(name, value)

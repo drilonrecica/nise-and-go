@@ -1,0 +1,118 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpauth
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/session"
+)
+
+// Authenticator resolves a presented credential to a session. It is declared
+// here, by the consumer, rather than imported from the auth feature: this
+// package depends on the shape it needs, not on the feature that happens to
+// provide it.
+type Authenticator interface {
+	Authenticate(ctx context.Context, presented string) (session.Record, error)
+}
+
+// Resolver attaches a resolved session to each request that carries a valid
+// one.
+//
+// The zero value is unusable; construct one with NewResolver.
+type Resolver struct {
+	authenticator Authenticator
+	cookies       *Cookies
+	now           func() time.Time
+}
+
+// ResolverOption configures a Resolver.
+type ResolverOption func(*Resolver)
+
+// WithClock replaces the clock the resolver reads. It exists for tests.
+func WithClock(now func() time.Time) ResolverOption {
+	return func(r *Resolver) {
+		if now != nil {
+			r.now = now
+		}
+	}
+}
+
+// NewResolver constructs the session-resolving middleware.
+func NewResolver(authenticator Authenticator, cookies *Cookies, options ...ResolverOption) (*Resolver, error) {
+	if authenticator == nil {
+		return nil, errors.New("httpauth: an authenticator is required")
+	}
+	if cookies == nil {
+		return nil, errors.New("httpauth: a cookie boundary is required")
+	}
+	resolver := &Resolver{authenticator: authenticator, cookies: cookies, now: time.Now}
+	for _, option := range options {
+		option(resolver)
+	}
+	return resolver, nil
+}
+
+// Middleware resolves the session cookie into a request-scoped identity.
+//
+// It never rejects a request. An absent, malformed, expired, or revoked
+// credential simply produces an unauthenticated request, and the use case
+// behind the handler is what refuses it. Rejecting here would put an
+// authorization decision in a place no handler's reader can see, and would
+// make every public endpoint a special case in the middleware instead of an
+// ordinary route.
+//
+// A credential that was presented and did not resolve has its cookie cleared,
+// so a browser holding a dead session stops sending it — which also stops a
+// dead credential from costing a database lookup on every subsequent request.
+func (s *Resolver) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		presented, ok := s.cookies.Read(r)
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		record, err := s.authenticator.Authenticate(r.Context(), presented)
+		if err != nil {
+			s.cookies.Clear(w)
+			logResolution(r, err)
+			next.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(WithSession(r.Context(), record)))
+	})
+}
+
+// Reasoner is implemented by an authentication error that can name, in one
+// bounded word, why a credential was refused.
+//
+// It exists so this package can log something more useful than "rejected"
+// without importing the feature that produced the error, and so the value
+// logged is a closed set the error type chose rather than free text a caller
+// might interpolate a credential into.
+type Reasoner interface {
+	SessionRefusalReason() string
+}
+
+// logResolution records why a presented credential did not resolve.
+//
+// The record is for the server: it names the reason, never the credential, and
+// it is informational rather than an error, because an expired session is the
+// ordinary end of a session's life and not a fault.
+func logResolution(r *http.Request, err error) {
+	reason := "unresolved"
+	var reasoner Reasoner
+	if errors.As(err, &reasoner) {
+		if named := reasoner.SessionRefusalReason(); named != "" {
+			reason = named
+		}
+	}
+	logging.FromContext(r.Context()).Info("session credential was not accepted",
+		slog.String("reason", reason))
+}

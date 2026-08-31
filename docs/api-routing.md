@@ -83,6 +83,11 @@ in slice order, with the first entry outermost, but the entire slot remains
 inside the fixed core. A nil entry fails router construction rather than
 panicking on the first request.
 
+The generated application uses both slots for exactly one middleware today: the
+session resolver, which attaches a request-scoped identity and rejects nothing.
+It runs on both surfaces because request identity is not an API-only concern and
+because two copies of it would eventually disagree about who is asking.
+
 Use the API slot for cross-operation concerns that genuinely apply to every
 API operation. Route- or operation-specific middleware belongs in the
 registration callback or generated strict-handler wiring. Do not call

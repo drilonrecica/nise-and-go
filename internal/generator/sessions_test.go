@@ -167,3 +167,85 @@ func TestGeneratedProjectDocumentsTheCookieDecision(t *testing.T) {
 		}
 	}
 }
+
+func TestGeneratedProjectCarriesTheSessionCookie(t *testing.T) {
+	t.Parallel()
+
+	files, err := generator.Plan(defaultOptions())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	content := make(map[string]string, len(files))
+	for _, file := range files {
+		content[file.Path] = string(file.Content)
+	}
+
+	wants := map[string][]string{
+		"internal/platform/httpauth/cookie.go": {
+			"func (c *Cookies) Write(w http.ResponseWriter, token session.Token, expiresAt time.Time, now time.Time)",
+			"func (c *Cookies) Clear(w http.ResponseWriter)",
+			"func (c *Cookies) Read(r *http.Request) (string, bool)",
+			"HttpOnly: true",
+			"Secure:   c.policy.Secure()",
+			"SameSite: c.policy.SameSite()",
+			"r.CookiesNamed(c.policy.Name())",
+		},
+		"internal/platform/httpauth/context.go": {
+			"type contextKey struct{}",
+			"func WithSession(ctx context.Context, record session.Record) context.Context",
+			"func FromContext(ctx context.Context) (session.Record, bool)",
+		},
+		"internal/platform/httpauth/middleware.go": {
+			"type Authenticator interface",
+			"func (s *Resolver) Middleware(next http.Handler) http.Handler",
+			"s.cookies.Clear(w)",
+			"SessionRefusalReason() string",
+		},
+		"internal/platform/httpauth/httpauth_test.go": {
+			"TestWriteSetsEveryHardenedAttribute",
+			"TestClearMatchesWhatWriteSent",
+			"TestReadRequiresExactlyOneCandidate",
+			"TestResolverClearsACredentialThatDidNotResolve",
+			"TestResolverNeverLogsTheCredential",
+			"TestContextIdentityCannotBeForged",
+		},
+		"internal/platform/config/config.go": {
+			"SessionLifetime session.Lifetime",
+			"SessionCookie session.CookiePolicy",
+			`l.Duration("SESSION_IDLE_TIMEOUT"`,
+			`l.Duration("SESSION_ABSOLUTE_TIMEOUT"`,
+			`l.Duration("SESSION_TOUCH_INTERVAL"`,
+			`l.Bool("SESSION_COOKIE_INSECURE"`,
+			`v.Check(cfg.SessionCookie.Hardened(), "SESSION_COOKIE_INSECURE"`,
+		},
+		"internal/app/app.go": {
+			"auth.NewSessions(transactor, cfg.SessionLifetime)",
+			"httpauth.NewCookies(cfg.SessionCookie)",
+			"httpauth.NewResolver(sessions, sessionCookies)",
+			"API:      []httpapi.Middleware{sessionResolver.Middleware}",
+			"Document: []httpapi.Middleware{sessionResolver.Middleware}",
+		},
+		".env.example": {
+			"SESSION_IDLE_TIMEOUT=12h",
+			"SESSION_ABSOLUTE_TIMEOUT=720h",
+			"SESSION_TOUCH_INTERVAL=5m",
+			"SESSION_COOKIE_NAME=",
+		},
+	}
+	for path, fragments := range wants {
+		for _, fragment := range fragments {
+			if !strings.Contains(content[path], fragment) {
+				t.Errorf("%s lacks %q", path, fragment)
+			}
+		}
+	}
+
+	// The resolver must not decide anything. A status write in it would be an
+	// authorization control no handler's reader can see.
+	middleware := content["internal/platform/httpauth/middleware.go"]
+	for _, forbidden := range []string{"WriteHeader", "StatusUnauthorized", "StatusForbidden", "http.Error("} {
+		if strings.Contains(middleware, forbidden) {
+			t.Errorf("the session resolver rejects requests: it contains %q", forbidden)
+		}
+	}
+}

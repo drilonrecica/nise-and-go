@@ -1,0 +1,106 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package httpauth carries the session between the browser and the
+// application: the cookie it travels in, and the middleware that resolves it
+// into a request-scoped identity.
+//
+// It enforces nothing. Resolving a session says who is asking; deciding what
+// they may do is the use case's job, and a middleware that answered it would
+// be an authorization control nobody can see from the handler.
+package httpauth
+
+import (
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/session"
+)
+
+// MaxCookieValueBytes bounds a presented cookie value before anything parses
+// it. It is generous next to a real token and still small enough that a
+// crafted header costs a length comparison.
+const MaxCookieValueBytes = 512
+
+// Cookies writes, reads, and clears the session cookie under one policy.
+//
+// The zero value is unusable; construct one with NewCookies.
+type Cookies struct {
+	policy session.CookiePolicy
+}
+
+// NewCookies constructs the cookie boundary.
+func NewCookies(policy session.CookiePolicy) (*Cookies, error) {
+	if policy.IsZero() {
+		return nil, errors.New("httpauth: a constructed cookie policy is required")
+	}
+	return &Cookies{policy: policy}, nil
+}
+
+// Policy returns the cookie policy in force.
+func (c *Cookies) Policy() session.CookiePolicy { return c.policy }
+
+// Write sets the session cookie.
+//
+// The cookie expires with the session's absolute deadline rather than with the
+// browser process. A session-scoped cookie would look safer and would not be:
+// it does not shorten the server-side session at all, it only makes the
+// credential's disappearance depend on whether someone closed a window.
+func (c *Cookies) Write(w http.ResponseWriter, token session.Token, expiresAt time.Time, now time.Time) {
+	remaining := int(expiresAt.Sub(now).Seconds())
+	if remaining < 1 {
+		// Nothing useful can be set for a session that is already over;
+		// clearing is the honest response and leaves no stale credential.
+		c.Clear(w)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     c.policy.Name(),
+		Value:    token.Value(),
+		Path:     "/",
+		MaxAge:   remaining,
+		HttpOnly: true,
+		Secure:   c.policy.Secure(),
+		SameSite: c.policy.SameSite(),
+	})
+}
+
+// Clear removes the session cookie.
+//
+// Every attribute except the value and lifetime must match what Write sent, or
+// the browser treats it as a different cookie and leaves the original in place.
+func (c *Cookies) Clear(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     c.policy.Name(),
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   c.policy.Secure(),
+		SameSite: c.policy.SameSite(),
+	})
+}
+
+// Read returns the presented cookie value, if there is exactly one that could
+// be a token.
+//
+// A request may carry several cookies with the same name — a leftover from a
+// different path or domain, or one an attacker planted on a sibling host. The
+// `__Host-` prefix is what makes that impossible in production; here, more than
+// one candidate is treated as no credential at all rather than resolved by
+// picking whichever the browser happened to send first.
+func (c *Cookies) Read(r *http.Request) (string, bool) {
+	var found string
+	seen := 0
+	for _, cookie := range r.CookiesNamed(c.policy.Name()) {
+		if cookie.Value == "" || len(cookie.Value) > MaxCookieValueBytes {
+			continue
+		}
+		seen++
+		found = cookie.Value
+	}
+	if seen != 1 {
+		return "", false
+	}
+	return found, true
+}

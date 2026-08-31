@@ -23,9 +23,11 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/pagination"
 
 	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/features/auth"
 	"{{.ModulePath}}/internal/platform/config"
 	"{{.ModulePath}}/internal/platform/database"
 	"{{.ModulePath}}/internal/platform/httpapi"
+	"{{.ModulePath}}/internal/platform/httpauth"
 	"{{.ModulePath}}/internal/platform/webui"
 )
 
@@ -110,6 +112,23 @@ func Run(ctx context.Context, modeOverride string) error {
 	if err != nil {
 		return fmt.Errorf("building the pagination cursor codec: %w", err)
 	}
+
+	transactor, err := database.NewTransactor(pool)
+	if err != nil {
+		return fmt.Errorf("building the transaction runner: %w", err)
+	}
+	sessions, err := auth.NewSessions(transactor, cfg.SessionLifetime)
+	if err != nil {
+		return fmt.Errorf("building the session use case: %w", err)
+	}
+	sessionCookies, err := httpauth.NewCookies(cfg.SessionCookie)
+	if err != nil {
+		return fmt.Errorf("building the session cookie boundary: %w", err)
+	}
+	sessionResolver, err := httpauth.NewResolver(sessions, sessionCookies)
+	if err != nil {
+		return fmt.Errorf("building the session resolver: %w", err)
+	}
 	apiServer, err := httpapi.NewServer(cursors)
 	if err != nil {
 		return fmt.Errorf("building the API adapter: %w", err)
@@ -124,6 +143,14 @@ func Run(ctx context.Context, modeOverride string) error {
 		Metrics:     httpMetrics,
 		UI:          ui,
 		RegisterAPI: apiServer.Register,
+		Middleware: httpapi.MiddlewareSlots{
+			// Resolving the session is a request-identity concern, so it
+			// runs on both surfaces: the document chain needs it as soon as
+			// the frontend has protected pages, and running it in one place
+			// is what keeps the two from disagreeing about who is asking.
+			API:      []httpapi.Middleware{sessionResolver.Middleware},
+			Document: []httpapi.Middleware{sessionResolver.Middleware},
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("building the HTTP handler: %w", err)
@@ -143,6 +170,7 @@ func Run(ctx context.Context, modeOverride string) error {
 		slog.String("addr", cfg.Addr()),
 		slog.Bool("frontend_embedded", ui.Built()),
 		slog.Any("cursor_keys", cfg.CursorKeys),
+		slog.String("session_cookie", cfg.SessionCookie.Name()),
 		slog.Any("modules", SelectedModules()),
 	)
 
