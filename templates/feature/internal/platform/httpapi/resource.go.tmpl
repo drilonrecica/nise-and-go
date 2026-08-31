@@ -1,0 +1,217 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpapi
+
+import (
+	"context"
+	"errors"
+	"net/url"
+	"strconv"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/pagination"
+
+	"{{.ModulePath}}/internal/features/{{.Singular}}"
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
+	"{{.ModulePath}}/internal/platform/httpapi/problem"
+)
+
+// The HTTP surface of the {{.Title}} feature.
+//
+// It contains no rules. Every decision — who may do what, what a name is,
+// whether a record exists — belongs to internal/features/{{.Singular}}, and
+// this file translates between that use case and the wire. When something here
+// looks like it is deciding, it is a bug.
+//
+// It is a separate file from api.go because `nise generate` writes new files
+// and edits none (ADR 0026). The four lines that attach it to the Server were
+// printed by the command for you to add.
+
+// {{.Singular}}Resource is the cursor binding's resource name: the collection's
+// own path. A collection whose result set depends on something outside the
+// query string — a tenant, a path parameter — includes it here, so two
+// different result sets can never share a binding.
+const {{.Singular}}Resource = "/{{.Plural}}"
+
+// List{{.TitlePlural}} reads one page.
+//
+// The cursor is parsed from the typed parameters rather than from the raw
+// request, because a strict handler never sees one — and rebuilding the query
+// values here is also what makes the binding exact: it fingerprints the
+// filters this operation actually has, so adding a filter to the contract
+// without adding it below would let a cursor survive a filter change and page
+// into a different result set.
+func (s *Server) List{{.TitlePlural}}(ctx context.Context, request openapigen.List{{.TitlePlural}}RequestObject) (openapigen.List{{.TitlePlural}}ResponseObject, error) {
+	if _, err := requireSession(ctx); err != nil {
+		return nil, err
+	}
+
+	filters := url.Values{}
+	if request.Params.Q != nil {
+		filters.Set("q", *request.Params.Q)
+	}
+	binding := pagination.NewBinding({{.Singular}}Resource, filters)
+
+	limits, err := pagination.NewLimits({{.Singular}}.DefaultPageSize, {{.Singular}}.MaxPageSize)
+	if err != nil {
+		return nil, err
+	}
+	page, err := s.cursors.ParsePage(binding, cursorValues(request.Params), limits)
+	if err != nil {
+		return nil, problem.Wrap(paginationProblem(err), err)
+	}
+	// Backward paging is not implemented for this collection yet: the query
+	// reads one direction. Refusing is honest; silently reading forward would
+	// answer a different question than the one asked.
+	if page.Direction == pagination.Backward {
+		return nil, problem.Fail(problem.InvalidPagination())
+	}
+
+	after := {{.Singular}}.{{.Type}}{}
+	if page.HasCursor && len(page.Cursor.Values) == 2 {
+		parsed, err := time.Parse(time.RFC3339Nano, page.Cursor.Values[0])
+		if err != nil {
+			return nil, problem.Fail(problem.InvalidPagination())
+		}
+		after.CreatedAt = parsed
+		after.ID = page.Cursor.Values[1]
+	}
+
+	result, err := s.{{.Plural}}.List(ctx, search(request.Params.Q), after, page.Limit)
+	if err != nil {
+		return nil, {{.Singular}}Failure(err)
+	}
+
+	boundaries := pageBoundaries{HasMore: result.HasMore}
+	if len(result.Items) > 0 {
+		last := result.Items[len(result.Items)-1]
+		boundaries.Last = []string{last.CreatedAt.Format(time.RFC3339Nano), last.ID}
+	}
+	issued, err := issueCursorPage(s.cursors, binding, boundaries)
+	if err != nil {
+		return nil, err
+	}
+	return openapigen.List{{.TitlePlural}}200JSONResponse(collectionOf(result, issued)), nil
+}
+
+// cursorValues rebuilds the pagination query the parser reads.
+func cursorValues(params openapigen.List{{.TitlePlural}}Params) url.Values {
+	values := url.Values{}
+	if params.Limit != nil {
+		values.Set(pagination.LimitParam, strconv.Itoa(int(*params.Limit)))
+	}
+	if params.After != nil {
+		values.Set(pagination.AfterParam, string(*params.After))
+	}
+	if params.Before != nil {
+		values.Set(pagination.BeforeParam, string(*params.Before))
+	}
+	return values
+}
+
+// Create{{.Type}} stores one.
+func (s *Server) Create{{.Type}}(ctx context.Context, request openapigen.Create{{.Type}}RequestObject) (openapigen.Create{{.Type}}ResponseObject, error) {
+	if _, err := requireSession(ctx); err != nil {
+		return nil, err
+	}
+	created, err := s.{{.Plural}}.Create(ctx, request.Body.Name)
+	if err != nil {
+		return nil, {{.Singular}}Failure(err)
+	}
+	return openapigen.Create{{.Type}}201JSONResponse(resourceOf(created)), nil
+}
+
+// Get{{.Type}} reads one.
+func (s *Server) Get{{.Type}}(ctx context.Context, request openapigen.Get{{.Type}}RequestObject) (openapigen.Get{{.Type}}ResponseObject, error) {
+	if _, err := requireSession(ctx); err != nil {
+		return nil, err
+	}
+	found, err := s.{{.Plural}}.Get(ctx, string(request.Id))
+	if err != nil {
+		return nil, {{.Singular}}Failure(err)
+	}
+	return openapigen.Get{{.Type}}200JSONResponse(resourceOf(found)), nil
+}
+
+// Update{{.Type}} renames one.
+func (s *Server) Update{{.Type}}(ctx context.Context, request openapigen.Update{{.Type}}RequestObject) (openapigen.Update{{.Type}}ResponseObject, error) {
+	if _, err := requireSession(ctx); err != nil {
+		return nil, err
+	}
+	updated, err := s.{{.Plural}}.Update(ctx, string(request.Id), request.Body.Name)
+	if err != nil {
+		return nil, {{.Singular}}Failure(err)
+	}
+	return openapigen.Update{{.Type}}200JSONResponse(resourceOf(updated)), nil
+}
+
+// Delete{{.Type}} removes one.
+func (s *Server) Delete{{.Type}}(ctx context.Context, request openapigen.Delete{{.Type}}RequestObject) (openapigen.Delete{{.Type}}ResponseObject, error) {
+	if _, err := requireSession(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.{{.Plural}}.Delete(ctx, string(request.Id)); err != nil {
+		return nil, {{.Singular}}Failure(err)
+	}
+	return openapigen.Delete{{.Type}}204Response{}, nil
+}
+
+// Archive{{.Type}} is the domain command.
+func (s *Server) Archive{{.Type}}(ctx context.Context, request openapigen.Archive{{.Type}}RequestObject) (openapigen.Archive{{.Type}}ResponseObject, error) {
+	if _, err := requireSession(ctx); err != nil {
+		return nil, err
+	}
+	archived, err := s.{{.Plural}}.Archive(ctx, string(request.Id))
+	if err != nil {
+		return nil, {{.Singular}}Failure(err)
+	}
+	return openapigen.Archive{{.Type}}200JSONResponse(resourceOf(archived)), nil
+}
+
+// {{.Singular}}Failure maps one use-case error onto the public catalog.
+//
+// A permission denial and a missing record are the two the caller can act on;
+// everything else is a defect and becomes the generic 500 rather than a status
+// somebody might trust.
+func {{.Singular}}Failure(err error) error {
+	switch {
+	case errors.Is(err, authorization.ErrDenied):
+		return problem.Wrap(problem.PermissionDenied(), err)
+	case errors.Is(err, {{.Singular}}.ErrNotFound):
+		return problem.Wrap(problem.NotFound(), err)
+	case errors.Is(err, {{.Singular}}.ErrName):
+		return problem.Wrap(problem.InvalidRequest(), err)
+	default:
+		return err
+	}
+}
+
+// resourceOf is the public view of one record.
+func resourceOf(record {{.Singular}}.{{.Type}}) openapigen.{{.Type}} {
+	return openapigen.{{.Type}}{
+		Id:        openapigen.{{.Type}}Id(record.ID),
+		Name:      record.Name,
+		CreatedAt: record.CreatedAt,
+		UpdatedAt: record.UpdatedAt,
+	}
+}
+
+// collectionOf keeps the collection faithful to its non-null contract: an
+// empty page is [] and never null, because a client testing for presence must
+// not also have to test for null.
+func collectionOf(page {{.Singular}}.Page, issued openapigen.CursorPage) openapigen.{{.Type}}CursorCollection {
+	items := make([]openapigen.{{.Type}}, 0, len(page.Items))
+	for _, record := range page.Items {
+		items = append(items, resourceOf(record))
+	}
+	return openapigen.{{.Type}}CursorCollection{Items: items, Page: issued}
+}
+
+// search reads the optional query parameter.
+func search(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}

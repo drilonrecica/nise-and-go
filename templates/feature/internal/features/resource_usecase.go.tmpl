@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -102,6 +103,86 @@ func (u *{{.TitlePlural}}) Get(ctx context.Context, id string) ({{.Type}}, error
 		return {{.Type}}{}, err
 	}
 	return found, nil
+}
+
+// Page is one page of {{.Plural}} and the position to continue from.
+type Page struct {
+	// Items are the rows, newest first.
+	Items []{{.Type}}
+	// HasMore reports that more rows exist after the last one here.
+	HasMore bool
+}
+
+// List reads one page, newest first.
+//
+// The page is one row larger than asked for and the extra row is dropped: that
+// is how HasMore is answered without a second COUNT over the whole table,
+// which is the query that gets slow first and is never needed.
+func (u *{{.TitlePlural}}) List(ctx context.Context, search string, after {{.Type}}, limit int) (Page, error) {
+	if err := authorization.Require(ctx, authorization.{{.PermissionRead}}); err != nil {
+		return Page{}, err
+	}
+	if limit < 1 || limit > MaxPageSize {
+		limit = DefaultPageSize
+	}
+
+	params := {{.Singular}}store.List{{.TitlePlural}}Params{PageSize: int32(limit + 1)}
+	if trimmed := strings.TrimSpace(search); trimmed != "" {
+		params.Search = pgtype.Text{String: trimmed, Valid: true}
+	}
+	// An empty cursor is the first page. Both parts move together: a position
+	// is (created_at, id), and half of one would place the boundary wrong
+	// whenever two rows share an instant.
+	if after.ID != "" {
+		identifier, err := parseUUID(after.ID)
+		if err != nil {
+			return Page{}, ErrNotFound
+		}
+		params.AfterID = identifier
+		params.AfterCreatedAt = pgtype.Timestamptz{Time: after.CreatedAt, Valid: true}
+	}
+
+	var page Page
+	err := u.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := {{.Singular}}store.New(tx).List{{.TitlePlural}}(ctx, params)
+		if err != nil {
+			return fmt.Errorf("listing {{.Plural}}: %w", err)
+		}
+		page.HasMore = len(rows) > limit
+		if page.HasMore {
+			rows = rows[:limit]
+		}
+		page.Items = make([]{{.Type}}, 0, len(rows))
+		for _, row := range rows {
+			page.Items = append(page.Items, recordFrom(row))
+		}
+		return nil
+	})
+	if err != nil {
+		return Page{}, err
+	}
+	return page, nil
+}
+
+// Page sizes. The default is what a list asks for when it asks for nothing;
+// the maximum is what it may not exceed, because an unbounded page is a way to
+// ask one query to read the whole table.
+const (
+	DefaultPageSize = 25
+	MaxPageSize     = 100
+)
+
+// Archive is the domain-command example: a verb with its own permission, its
+// own meaning, and its own rules, rather than a field on the record.
+//
+// TODO: this is a stub that reads the record back. Give it the behaviour the
+// name promises, and remember that the reason it is a command rather than a
+// PUT is that it means something — so it probably belongs in the audit log.
+func (u *{{.TitlePlural}}) Archive(ctx context.Context, id string) ({{.Type}}, error) {
+	if err := authorization.Require(ctx, authorization.{{.PermissionManage}}); err != nil {
+		return {{.Type}}{}, err
+	}
+	return u.Get(ctx, id)
 }
 
 // Update renames one {{.Singular}}.
