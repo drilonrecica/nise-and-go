@@ -136,6 +136,9 @@ var resourceTemplates = []templateFile{
 	{Template: "frontend/routes/new.svelte.tmpl", Output: "frontend/src/routes/(app)/{{.Plural}}/new/+page.svelte"},
 	{Template: "frontend/routes/detail.svelte.tmpl", Output: "frontend/src/routes/(app)/{{.Plural}}/[id]/+page.svelte"},
 	{Template: "frontend/routes/edit.svelte.tmpl", Output: "frontend/src/routes/(app)/{{.Plural}}/[id]/edit/+page.svelte"},
+	{Template: "frontend/lib/features/form.browser.test.ts.tmpl", Output: "frontend/src/lib/features/{{.Singular}}/{{.Component}}Form.browser.test.ts"},
+	{Template: "internal/features/resource_integration_test.go.tmpl", Output: "internal/features/{{.Singular}}/{{.Singular}}_integration_test.go"},
+	{Template: "internal/platform/httpapi/resource_test.go.tmpl", Output: "internal/platform/httpapi/{{.Singular}}_test.go"},
 }
 
 // templateFile maps one embedded template to its output path.

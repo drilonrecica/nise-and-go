@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { playwright } from '@vitest/browser-playwright';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vitest/config';
 
 // Two suites, one configuration.
@@ -24,7 +25,7 @@ import { defineConfig } from 'vitest/config';
 // The $lib alias is declared rather than inherited, because SvelteKit's own
 // plugin is deliberately not loaded here.
 const shared = {
-	plugins: [svelte()],
+	plugins: [svelte(), tailwindcss()],
 	resolve: {
 		alias: {
 			$lib: fileURLToPath(new URL('./src/lib', import.meta.url))
@@ -49,6 +50,13 @@ export default defineConfig({
 				test: {
 					name: 'browser',
 					include: ['src/**/*.browser.test.ts'],
+					// The application's stylesheet is loaded before any
+					// component mounts. Without it every size, spacing, and
+					// colour class is inert, and an accessibility assertion
+					// about a target's size or a contrast pair is then
+					// measuring unstyled markup — which passes or fails for
+					// reasons that have nothing to do with the component.
+					setupFiles: ['./src/browser-setup.ts'],
 					browser: {
 						enabled: true,
 						provider: playwright(),

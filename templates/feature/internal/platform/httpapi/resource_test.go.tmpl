@@ -1,0 +1,74 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpapi
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"{{.ModulePath}}/internal/features/{{.Singular}}"
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/httpapi/problem"
+)
+
+// The contract starting point: what this feature's transport answers, as
+// opposed to what it does. The behaviour is tested against real PostgreSQL in
+// internal/features/{{.Singular}}; these are about the wire.
+//
+// Add a request-level test here as you add operations — build the router the
+// way api_test.go does and assert the status, the media type, and the body's
+// shape. What is here is the mapping every one of those depends on.
+
+// A use-case failure becomes the right public code, and a failure the catalog
+// does not name stays a 500 rather than becoming a status somebody trusts.
+func Test{{.TitlePlural}}FailuresMapToThePublicCatalog(t *testing.T) {
+	t.Parallel()
+
+	for name, expected := range map[string]struct {
+		err  error
+		code string
+	}{
+		"denied":    {authorization.ErrDenied, "permission_denied"},
+		"not found": {{"{"}}{{.Singular}}.ErrNotFound, "not_found"},
+		"bad name":  {{"{"}}{{.Singular}}.ErrName, "invalid_request"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var named *problem.Error
+			if !errors.As({{.Singular}}Failure(expected.err), &named) {
+				t.Fatalf("{{.Singular}}Failure(%v) is not a *problem.Error", expected.err)
+			}
+			if got := named.Definition().Code(); got != expected.code {
+				t.Errorf("code = %q, want %q", got, expected.code)
+			}
+		})
+	}
+}
+
+// A failure the catalog does not name is a defect rather than a decision, and
+// answering it with a status a caller might trust is how one leaks as a 404
+// they then believe.
+func Test{{.TitlePlural}}UnnamedFailuresStayInternal(t *testing.T) {
+	t.Parallel()
+
+	var named *problem.Error
+	if errors.As({{.Singular}}Failure(errors.New("the database went away")), &named) {
+		t.Errorf("an unnamed failure became the public problem %q", named.Definition().Code())
+	}
+}
+
+// The cursor's binding names this collection. Two collections sharing a
+// binding would accept each other's cursors, which is the defect the binding
+// exists to prevent.
+func Test{{.TitlePlural}}CursorBindingNamesTheCollection(t *testing.T) {
+	t.Parallel()
+
+	if !strings.HasPrefix({{.Singular}}Resource, "/") {
+		t.Errorf("{{.Singular}}Resource = %q, want a path", {{.Singular}}Resource)
+	}
+	if {{.Singular}}Resource == "/" {
+		t.Error("{{.Singular}}Resource is the API root; every collection would share one binding")
+	}
+}

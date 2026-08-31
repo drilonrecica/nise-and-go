@@ -163,6 +163,7 @@ var templateFiles = []templateFile{
 	{Template: "frontend/scripts/check-contrast.mjs.tmpl", Output: "frontend/scripts/check-contrast.mjs", Owner: OwnerApp},
 	{Template: "frontend/scripts/check-runes.mjs.tmpl", Output: "frontend/scripts/check-runes.mjs", Owner: OwnerApp},
 	{Template: "frontend/src/app.css.tmpl", Output: "frontend/src/app.css", Owner: OwnerApp},
+	{Template: "frontend/src/browser-setup.ts.tmpl", Output: "frontend/src/browser-setup.ts", Owner: OwnerApp},
 	{Template: "frontend/src/app.d.ts.tmpl", Output: "frontend/src/app.d.ts", Owner: OwnerApp},
 	{Template: "frontend/src/app.html.tmpl", Output: "frontend/src/app.html", Owner: OwnerApp},
 	{Template: "frontend/src/lib/components/ThemeControl.svelte.tmpl", Output: "frontend/src/lib/components/ThemeControl.svelte", Owner: OwnerApp},

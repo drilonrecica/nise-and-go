@@ -87,7 +87,7 @@ func TestGeneratedThemeIsLiveAndMotionAware(t *testing.T) {
 			"scroll-behavior: auto !important;",
 		},
 		"frontend/vitest.config.ts": {
-			"plugins: [svelte()]",
+			"plugins: [svelte(), tailwindcss()]",
 		},
 	}
 	for path, fragments := range wants {

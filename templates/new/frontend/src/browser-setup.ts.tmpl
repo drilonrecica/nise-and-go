@@ -1,0 +1,10 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Loaded before every browser component test.
+//
+// It exists for one reason: a component rendered without the application's
+// stylesheet is a component whose every size, spacing, and colour class is
+// inert. An accessibility assertion about a target's size or a contrast pair
+// would then be measuring unstyled markup, and would pass or fail for reasons
+// that have nothing to do with the component under test.
+import './app.css';
