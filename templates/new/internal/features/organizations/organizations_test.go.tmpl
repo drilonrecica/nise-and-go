@@ -1,0 +1,505 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package organizations
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+)
+
+const organizationsTestTimeout = 60 * time.Second
+
+type harness struct {
+	ctx        context.Context
+	pool       *pgxpool.Pool
+	transactor *database.Transactor
+	orgs       *Organizations
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+
+	testDatabase := dbtest.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), organizationsTestTimeout)
+	t.Cleanup(cancel)
+
+	settings, err := database.NewSettings(6, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	// Migrations run as the administrative role, which creates the tables
+	// and owns them.
+	adminURL := testDatabase.URL().Reveal()
+	adminPassword := testDatabase.Password().Reveal()
+	migrator, err := database.OpenMigrator(ctx, adminURL, adminPassword, 5*time.Second, migrationdb.Migrations())
+	if err != nil {
+		t.Fatalf("OpenMigrator: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := migrator.Close(); err != nil {
+			t.Errorf("close migrator: %v", err)
+		}
+	})
+	if _, err := migrator.Up(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// Everything else runs as a role with no special privileges, and that
+	// is the whole reason these tests mean anything.
+	//
+	// A superuser bypasses every row-level security policy, and so does any
+	// role with BYPASSRLS — FORCE ROW LEVEL SECURITY removes the table
+	// owner's exemption, not the superuser's. TEST_DATABASE_URL has to name
+	// a role that can create and drop databases, which in most development
+	// setups is a superuser. Run as that role, every test below reads every
+	// tenant's rows and passes anyway, because there is nothing to enforce
+	// against. That is not a hypothetical: it is what these tests did on
+	// their first run.
+	databaseURL, databasePassword := testDatabase.Restricted(t)
+	pool, err := database.Open(ctx, databaseURL, databasePassword, settings, database.OpenOptions{})
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	// The premise, checked rather than assumed. If this role could bypass
+	// policies, every assertion below would be vacuous.
+	isolation, err := database.CheckTenantIsolation(ctx, pool)
+	if err != nil {
+		t.Fatalf("CheckTenantIsolation: %v", err)
+	}
+	if !isolation.Enforced() {
+		t.Fatalf("the restricted role still bypasses row-level security (%s); every isolation test below would pass vacuously", isolation.Reason())
+	}
+
+	transactor, err := database.NewTransactor(pool)
+	if err != nil {
+		t.Fatalf("NewTransactor: %v", err)
+	}
+	orgs, err := New(transactor)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return &harness{ctx: ctx, pool: pool, transactor: transactor, orgs: orgs}
+}
+
+func (h *harness) createUser(t *testing.T, email string) string {
+	t.Helper()
+
+	var id string
+	if err := h.pool.QueryRow(h.ctx,
+		`INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id::text`,
+		email, strings.Repeat("x", 32)).Scan(&id); err != nil {
+		t.Fatalf("creating a user: %v", err)
+	}
+	return id
+}
+
+// tenant is one organization with an owner, which is what almost every test
+// below needs two of.
+type tenant struct {
+	org   Organization
+	owner string
+}
+
+func (h *harness) newTenant(t *testing.T, slug string) tenant {
+	t.Helper()
+
+	owner := h.createUser(t, slug+"-owner@example.com")
+	org, err := h.orgs.Create(h.ctx, strings.ToUpper(slug)+" Ltd", slug, owner)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	return tenant{org: org, owner: owner}
+}
+
+// TestCreatingAnOrganizationMakesItsCreatorOwner covers the invariant that
+// keeps an organization administrable: it cannot exist without an owner,
+// because both statements are in one transaction.
+func TestCreatingAnOrganizationMakesItsCreatorOwner(t *testing.T) {
+	h := newHarness(t)
+	first := h.newTenant(t, "acme")
+
+	member, err := h.orgs.MemberOf(h.ctx, first.org.ID, first.owner)
+	if err != nil {
+		t.Fatalf("MemberOf: %v", err)
+	}
+	if member.Role != RoleOwner {
+		t.Errorf("Role = %q, want %q", member.Role, RoleOwner)
+	}
+}
+
+// TestOneTenantCannotReadAnother is the whole module, stated once.
+func TestOneTenantCannotReadAnother(t *testing.T) {
+	h := newHarness(t)
+	first := h.newTenant(t, "first")
+	second := h.newTenant(t, "second")
+
+	// Reading the other organization's row, with this transaction's tenant
+	// established as our own, must find nothing — the row exists, and the
+	// policy does not let this tenant see it.
+	var found int
+	err := h.transactor.WithinTenant(h.ctx, first.org.ID, transaction.Options{Access: transaction.ReadOnly},
+		func(ctx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT count(*) FROM organizations WHERE id = $1`, second.org.ID).Scan(&found)
+		})
+	if err != nil {
+		t.Fatalf("Within: %v", err)
+	}
+	if found != 0 {
+		t.Fatalf("a tenant read %d rows of another tenant's organization", found)
+	}
+
+	// And its own row is visible, so the policy is not simply refusing
+	// everything.
+	err = h.transactor.WithinTenant(h.ctx, first.org.ID, transaction.Options{Access: transaction.ReadOnly},
+		func(ctx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT count(*) FROM organizations WHERE id = $1`, first.org.ID).Scan(&found)
+		})
+	if err != nil {
+		t.Fatalf("Within: %v", err)
+	}
+	if found != 1 {
+		t.Fatalf("a tenant cannot read its own organization: found %d rows", found)
+	}
+}
+
+// TestOneTenantCannotReadAnothersMembership is the same boundary on the table
+// that actually holds people's names.
+func TestOneTenantCannotReadAnothersMembership(t *testing.T) {
+	h := newHarness(t)
+	first := h.newTenant(t, "first")
+	second := h.newTenant(t, "second")
+
+	members, err := h.orgs.Members(h.ctx, first.org.ID, 100)
+	if err != nil {
+		t.Fatalf("Members: %v", err)
+	}
+	if len(members) != 1 || members[0].UserID != first.owner {
+		t.Fatalf("Members returned %v, want only this tenant's owner", members)
+	}
+
+	// Asking for the other tenant's members, from inside the other tenant's
+	// context, is how the application would legitimately do it — so the
+	// interesting case is asking with the wrong context established. That
+	// is what a bug looks like, and it must return nothing.
+	var leaked int
+	err = h.transactor.WithinTenant(h.ctx, first.org.ID, transaction.Options{Access: transaction.ReadOnly},
+		func(ctx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT count(*) FROM organization_members WHERE org_id = $1`, second.org.ID).Scan(&leaked)
+		})
+	if err != nil {
+		t.Fatalf("Within: %v", err)
+	}
+	if leaked != 0 {
+		t.Fatalf("a tenant read %d membership rows belonging to another tenant", leaked)
+	}
+}
+
+// TestOneTenantCannotWriteIntoAnother is why the policies carry WITH CHECK as
+// well as USING. USING decides what a statement may read or modify; WITH
+// CHECK decides what it may leave behind. With only USING, a tenant can write
+// a row belonging to another tenant and merely not read it back — which is a
+// poor consolation and an excellent way to corrupt somebody else's data.
+func TestOneTenantCannotWriteIntoAnother(t *testing.T) {
+	h := newHarness(t)
+	first := h.newTenant(t, "first")
+	second := h.newTenant(t, "second")
+	intruder := h.createUser(t, "intruder@example.com")
+
+	err := h.transactor.WithinTenant(h.ctx, first.org.ID, transaction.Options{},
+		func(ctx context.Context, tx pgx.Tx) error {
+			_, insertErr := tx.Exec(ctx,
+				`INSERT INTO organization_members (org_id, user_id, role) VALUES ($1, $2, 'member')`,
+				second.org.ID, intruder)
+			return insertErr
+		})
+	if err == nil {
+		t.Fatal("a tenant inserted a membership row into another tenant's organization")
+	}
+
+	// And nothing was left behind.
+	members, err := h.orgs.Members(h.ctx, second.org.ID, 100)
+	if err != nil {
+		t.Fatalf("Members: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("the other tenant now has %d members, want 1", len(members))
+	}
+}
+
+// TestOneTenantCannotUpdateOrDeleteAnothers covers the two statements that
+// are not INSERT: a policy that only filtered SELECT would let one tenant
+// silently rewrite another's rows.
+func TestOneTenantCannotUpdateOrDeleteAnothers(t *testing.T) {
+	h := newHarness(t)
+	first := h.newTenant(t, "first")
+	second := h.newTenant(t, "second")
+
+	err := h.transactor.WithinTenant(h.ctx, first.org.ID, transaction.Options{},
+		func(ctx context.Context, tx pgx.Tx) error {
+			tag, execErr := tx.Exec(ctx, `UPDATE organizations SET name = 'seized' WHERE id = $1`, second.org.ID)
+			if execErr != nil {
+				return execErr
+			}
+			if tag.RowsAffected() != 0 {
+				t.Errorf("an UPDATE from another tenant changed %d rows", tag.RowsAffected())
+			}
+			tag, execErr = tx.Exec(ctx, `DELETE FROM organization_members WHERE org_id = $1`, second.org.ID)
+			if execErr != nil {
+				return execErr
+			}
+			if tag.RowsAffected() != 0 {
+				t.Errorf("a DELETE from another tenant removed %d rows", tag.RowsAffected())
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("Within: %v", err)
+	}
+
+	// The other tenant is untouched.
+	other, err := h.orgs.Get(h.ctx, second.org.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if other.Name == "seized" {
+		t.Fatal("another tenant renamed this organization")
+	}
+	members, err := h.orgs.Members(h.ctx, second.org.ID, 100)
+	if err != nil {
+		t.Fatalf("Members: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("the other tenant has %d members after an outside DELETE, want 1", len(members))
+	}
+}
+
+// TestATransactionWithNoTenantSeesNothing is the default-deny, and the
+// direction matters. A forgotten SET LOCAL must produce an empty page, which
+// somebody notices, and never another tenant's data, which nobody does.
+func TestATransactionWithNoTenantSeesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.newTenant(t, "first")
+	h.newTenant(t, "second")
+
+	var organizations, members int
+	err := h.transactor.Within(h.ctx, transaction.Options{Access: transaction.ReadOnly},
+		func(ctx context.Context, tx pgx.Tx) error {
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM organizations`).Scan(&organizations); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `SELECT count(*) FROM organization_members`).Scan(&members)
+		})
+	if err != nil {
+		t.Fatalf("Within: %v", err)
+	}
+	if organizations != 0 || members != 0 {
+		t.Fatalf("a transaction with no tenant context read %d organizations and %d members; row-level security is not being enforced",
+			organizations, members)
+	}
+}
+
+// TestRowLevelSecurityIsForcedNotMerelyEnabled is the check that would catch
+// the single most consequential omission in the migration.
+//
+// ENABLE ROW LEVEL SECURITY does not apply to a table's owner. Migrations run
+// as the owner and most deployments connect as the same role, so a schema
+// with only ENABLE has policies that are never consulted — it passes every
+// test that checks the policies exist and enforces nothing at all. The
+// behavioural tests above would already fail without FORCE; this one names
+// the reason, so the failure is one line to understand rather than an
+// afternoon.
+func TestRowLevelSecurityIsForcedNotMerelyEnabled(t *testing.T) {
+	h := newHarness(t)
+
+	for _, table := range []string{"organizations", "organization_members"} {
+		var enabled, forced bool
+		if err := h.pool.QueryRow(h.ctx,
+			`SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = $1`,
+			table).Scan(&enabled, &forced); err != nil {
+			t.Fatalf("reading %s's row-security flags: %v", table, err)
+		}
+		if !enabled {
+			t.Errorf("%s does not have row-level security enabled", table)
+		}
+		if !forced {
+			t.Errorf("%s has row-level security enabled but not FORCED, so the table owner — which is how this application connects — is exempt from every policy", table)
+		}
+	}
+}
+
+// TestTheTenantIsRevertedWhenTheTransactionEnds is the property that makes a
+// pooled connection safe. SET LOCAL is reverted by PostgreSQL at the end of
+// the transaction, by commit or rollback, with no code path in which somebody
+// forgot to clear it.
+func TestTheTenantIsRevertedWhenTheTransactionEnds(t *testing.T) {
+	h := newHarness(t)
+	first := h.newTenant(t, "first")
+
+	// Establish a tenant, then commit.
+	if _, err := h.orgs.Get(h.ctx, first.org.ID); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	// Every subsequent transaction with no tenant must see nothing, however
+	// many times it runs — one of these will be handed the same pooled
+	// connection the tenant-scoped transaction used.
+	for range 20 {
+		var found int
+		err := h.transactor.Within(h.ctx, transaction.Options{Access: transaction.ReadOnly},
+			func(ctx context.Context, tx pgx.Tx) error {
+				return tx.QueryRow(ctx, `SELECT count(*) FROM organizations`).Scan(&found)
+			})
+		if err != nil {
+			t.Fatalf("Within: %v", err)
+		}
+		if found != 0 {
+			t.Fatalf("a transaction with no tenant read %d organizations; the previous transaction's tenant survived on the pooled connection", found)
+		}
+	}
+}
+
+// TestARolledBackTenantTransactionAlsoReverts covers the other exit path.
+func TestARolledBackTenantTransactionAlsoReverts(t *testing.T) {
+	h := newHarness(t)
+	first := h.newTenant(t, "first")
+
+	sentinel := errors.New("the work failed")
+	err := h.transactor.WithinTenant(h.ctx, first.org.ID, transaction.Options{},
+		func(context.Context, pgx.Tx) error { return sentinel })
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("WithinTenant = %v", err)
+	}
+
+	for range 20 {
+		var found int
+		txErr := h.transactor.Within(h.ctx, transaction.Options{Access: transaction.ReadOnly},
+			func(ctx context.Context, tx pgx.Tx) error {
+				return tx.QueryRow(ctx, `SELECT count(*) FROM organizations`).Scan(&found)
+			})
+		if txErr != nil {
+			t.Fatalf("Within: %v", txErr)
+		}
+		if found != 0 {
+			t.Fatalf("a rolled-back tenant transaction left its tenant on the connection")
+		}
+	}
+}
+
+// TestAMalformedTenantIsRefusedBeforeItReachesTheDatabase keeps a bad
+// identifier from turning every policy comparison into a cast error, which
+// would make a default-deny into a 500.
+func TestAMalformedTenantIsRefusedBeforeItReachesTheDatabase(t *testing.T) {
+	h := newHarness(t)
+
+	for _, orgID := range []string{
+		"",
+		"not-a-uuid",
+		"'; DROP TABLE organizations; --",
+		// 36 hex characters with the hyphens omitted. pgtype accepts it and
+		// normalizes it, so without the canonical-form check two different
+		// strings would name one tenant — the same "two spellings, one
+		// object" hazard that makes an authorization decision unreliable.
+		strings.Repeat("a", 36),
+		// The canonical form uppercased.
+		"AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
+	} {
+		err := h.transactor.WithinTenant(h.ctx, orgID, transaction.Options{},
+			func(context.Context, pgx.Tx) error {
+				t.Errorf("the work ran with tenant %q", orgID)
+				return nil
+			})
+		if !errors.Is(err, database.ErrTenant) {
+			t.Errorf("WithinTenant(%q) = %v, want ErrTenant", orgID, err)
+		}
+	}
+
+	// And the table is still there, which the injection attempt above would
+	// have removed if the value were interpolated rather than bound.
+	var tables int
+	if err := h.pool.QueryRow(h.ctx,
+		`SELECT count(*) FROM information_schema.tables WHERE table_name = 'organizations'`).Scan(&tables); err != nil {
+		t.Fatalf("checking the table: %v", err)
+	}
+	if tables != 1 {
+		t.Fatal("the organizations table is gone")
+	}
+}
+
+// TestRemovingTheLastOwnerIsRefused keeps an organization administrable.
+func TestRemovingTheLastOwnerIsRefused(t *testing.T) {
+	h := newHarness(t)
+	first := h.newTenant(t, "acme")
+
+	if err := h.orgs.RemoveMember(h.ctx, first.org.ID, first.owner); !errors.Is(err, ErrLastOwner) {
+		t.Fatalf("RemoveMember = %v, want ErrLastOwner", err)
+	}
+
+	// With a second owner, the first may leave.
+	second := h.createUser(t, "second-owner@example.com")
+	if _, err := h.orgs.AddMember(h.ctx, first.org.ID, second, RoleOwner); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	if err := h.orgs.RemoveMember(h.ctx, first.org.ID, first.owner); err != nil {
+		t.Fatalf("RemoveMember: %v", err)
+	}
+	if _, err := h.orgs.MemberOf(h.ctx, first.org.ID, first.owner); !errors.Is(err, ErrNotMember) {
+		t.Errorf("MemberOf after removal = %v, want ErrNotMember", err)
+	}
+}
+
+// TestMembershipOfAnotherTenantIsNotVisible covers the lookup a request
+// performs to decide which tenant it is in.
+func TestMembershipOfAnotherTenantIsNotVisible(t *testing.T) {
+	h := newHarness(t)
+	first := h.newTenant(t, "first")
+	second := h.newTenant(t, "second")
+
+	if _, err := h.orgs.MemberOf(h.ctx, second.org.ID, first.owner); !errors.Is(err, ErrNotMember) {
+		t.Fatalf("MemberOf across tenants = %v, want ErrNotMember", err)
+	}
+}
+
+func TestInputIsValidatedBeforeItReachesTheDatabase(t *testing.T) {
+	h := newHarness(t)
+	owner := h.createUser(t, "validation@example.com")
+
+	cases := []struct{ name, orgName, slug string }{
+		{"no name", "", "valid-slug"},
+		{"long name", strings.Repeat("n", MaxNameBytes+1), "valid-slug"},
+		{"short slug", "Valid", "a"},
+		{"uppercase slug", "Valid", "Invalid"},
+		{"slug with a space", "Valid", "in valid"},
+		{"slug starting with a hyphen", "Valid", "-invalid"},
+		{"slug ending with a hyphen", "Valid", "invalid-"},
+		{"slug with a slash", "Valid", "in/valid"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := h.orgs.Create(h.ctx, c.orgName, c.slug, owner); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Create = %v, want ErrInvalid", err)
+			}
+		})
+	}
+
+	var created int
+	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM organizations`).Scan(&created); err != nil {
+		t.Fatalf("counting: %v", err)
+	}
+	if created != 0 {
+		t.Errorf("refused input created %d organizations", created)
+	}
+}

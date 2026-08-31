@@ -1,0 +1,131 @@
+-- Generated once by nise; owned by this application. Nise will not overwrite it.
+--
+-- The organizations module: multitenancy, and the row-level security that
+-- makes it a boundary rather than a convention.
+--
+-- # The mechanism
+--
+-- Every tenant-scoped table carries `org_id` and has a policy comparing it
+-- against `app.current_org_id`, a setting the application writes with `SET
+-- LOCAL` at the start of each transaction. `SET LOCAL` is reverted when the
+-- transaction ends, which is the whole reason it is used: a pooled connection
+-- handed to the next request cannot still be carrying the previous one's
+-- tenant, because PostgreSQL reverted it at commit and there is no code path
+-- in which somebody forgot to.
+--
+-- # FORCE, not just ENABLE
+--
+-- `ENABLE ROW LEVEL SECURITY` does not apply to a table's owner. Migrations
+-- run as the owner, and in most deployments the application connects as the
+-- same role — so a schema with only ENABLE has policies that are never
+-- consulted, passes every test that checks the policies exist, and enforces
+-- nothing at all.
+--
+-- `FORCE ROW LEVEL SECURITY` removes that exemption. It is the single line
+-- that decides whether this file is a security control or documentation, and
+-- it is why the tests below check what a query returns rather than what
+-- pg_policies contains.
+--
+-- # The missing-setting case
+--
+-- `current_setting('app.current_org_id', true)` returns NULL when nothing set
+-- it, and every policy is written so that NULL matches no row. A query that
+-- forgot to establish tenant context therefore returns nothing, rather than
+-- everything. That direction is not an accident: the failure mode of a
+-- forgotten `SET LOCAL` must be an empty page, which somebody notices, and
+-- never another tenant's data, which nobody does.
+
+-- +goose Up
+CREATE TABLE organizations (
+    id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    name       text        NOT NULL,
+    slug       text        NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+
+    CONSTRAINT organizations_slug_unique UNIQUE (slug),
+    CONSTRAINT organizations_name_length CHECK (char_length(name) BETWEEN 1 AND 200),
+    CONSTRAINT organizations_slug_shape CHECK (slug ~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$' AND char_length(slug) BETWEEN 2 AND 64)
+);
+
+CREATE TABLE organization_members (
+    -- org_id first: it is the tenant key, it leads the primary key, and it is
+    -- what every policy on this table compares.
+    org_id    uuid        NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    user_id   uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    -- The member's role inside this organization. It is not a permission:
+    -- permissions come from the authorization catalog, and this names which
+    -- bundle of them applies here.
+    role      text        NOT NULL,
+    joined_at timestamptz NOT NULL DEFAULT now(),
+
+    CONSTRAINT organization_members_pkey PRIMARY KEY (org_id, user_id),
+    CONSTRAINT organization_members_role_shape CHECK (role ~ '^[a-z][a-z0-9_]*$' AND char_length(role) <= 32)
+);
+
+-- The membership lookup a request performs: "which organizations is this
+-- person in". It is read on every request that resolves tenant context, so it
+-- gets its own index rather than relying on the primary key's leading column.
+CREATE INDEX organization_members_user_idx ON organization_members (user_id);
+
+--
+-- Row-level security.
+--
+
+ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE organizations FORCE ROW LEVEL SECURITY;
+ALTER TABLE organization_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE organization_members FORCE ROW LEVEL SECURITY;
+
+-- +goose StatementBegin
+--
+-- current_tenant returns the tenant this transaction established, or NULL.
+--
+-- A function rather than the raw current_setting call repeated in every
+-- policy, because the `true` argument — "missing_ok" — is what makes an unset
+-- variable return NULL instead of raising. A policy that omitted it would
+-- error on the first query of any transaction that forgot to set the tenant,
+-- which sounds strict and is worse: an error is caught and logged somewhere,
+-- while an empty result is noticed by the person looking at an empty page.
+--
+-- STABLE, not IMMUTABLE: the value changes between transactions, and telling
+-- the planner otherwise would let it cache one tenant's answer for another's
+-- query.
+--
+CREATE OR REPLACE FUNCTION current_tenant()
+    RETURNS uuid
+    LANGUAGE sql
+    STABLE
+    AS $$
+    SELECT nullif(current_setting('app.current_org_id', true), '')::uuid;
+$$;
+-- +goose StatementEnd
+
+-- An organization is visible to a transaction that is inside it.
+--
+-- Written as `id = current_tenant()` rather than `current_tenant() IS NULL OR
+-- …`: a NULL comparison is NULL, which is not true, so no row matches. That
+-- is the default-deny the comment above describes, and it is a property of
+-- three-valued logic rather than of a condition somebody has to remember to
+-- write.
+CREATE POLICY organizations_tenant_isolation ON organizations
+    USING (id = current_tenant())
+    WITH CHECK (id = current_tenant());
+
+-- Membership rows belong to their organization.
+--
+-- WITH CHECK as well as USING, and they are not the same thing: USING decides
+-- what a statement may read or modify, WITH CHECK decides what it may leave
+-- behind. A policy with only USING lets a tenant *write* a row belonging to
+-- another tenant — it just cannot read it back afterwards, which is a poor
+-- consolation and an excellent way to corrupt somebody else's data.
+CREATE POLICY organization_members_tenant_isolation ON organization_members
+    USING (org_id = current_tenant())
+    WITH CHECK (org_id = current_tenant());
+
+-- +goose Down
+DROP POLICY organization_members_tenant_isolation ON organization_members;
+DROP POLICY organizations_tenant_isolation ON organizations;
+DROP FUNCTION current_tenant();
+DROP TABLE organization_members;
+DROP TABLE organizations;

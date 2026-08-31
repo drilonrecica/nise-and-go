@@ -113,6 +113,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │   audit/                         [app]   the append-only audit log and its query API
     │   auth/                          [app]   accounts, sessions, roles, login, invitations, and their SQL
     │   notifications/                 [app]   notifications module: persistent notifications and their delivery jobs
+    │   organizations/                 [app]   organizations module: tenants, membership, and the row-level-security boundary
     │   uploads/                       [app]   uploads module: the staged upload lifecycle and its sweep job
     │
     └── platform/

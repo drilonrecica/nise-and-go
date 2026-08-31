@@ -11,6 +11,9 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+{{- if .HasOrganizations }}
+	"github.com/jackc/pgx/v5/pgxpool"
+{{- end }}
 )
 
 // SchemaState is a compatible database's position relative to this binary.
@@ -203,3 +206,68 @@ func evaluateHistory(target int64, historyExists bool, schemaObjects int64, rows
 	}
 	return base, nil
 }
+
+{{- if .HasOrganizations }}
+
+// TenantIsolation is what a startup check found out about the role this
+// application connects as.
+type TenantIsolation struct {
+	// Role is the role the application authenticated as.
+	Role string
+	// Superuser reports that the role is a superuser.
+	Superuser bool
+	// BypassRLS reports that the role carries the BYPASSRLS attribute.
+	BypassRLS bool
+}
+
+// Enforced reports whether row-level security applies to this role.
+func (t TenantIsolation) Enforced() bool { return !t.Superuser && !t.BypassRLS }
+
+// Reason names why isolation is not enforced, for an error message.
+func (t TenantIsolation) Reason() string {
+	switch {
+	case t.Superuser && t.BypassRLS:
+		return "the role is a superuser and carries BYPASSRLS"
+	case t.Superuser:
+		return "the role is a superuser"
+	case t.BypassRLS:
+		return "the role carries BYPASSRLS"
+	default:
+		return ""
+	}
+}
+
+// CheckTenantIsolation reports whether row-level security can actually apply
+// to the role this application connects as.
+//
+// This check exists because of a fact about PostgreSQL that turns tenant
+// isolation into decoration without changing a single line of SQL: **a
+// superuser bypasses every row-level security policy, and so does any role
+// with BYPASSRLS.** `FORCE ROW LEVEL SECURITY` does not change that — it
+// removes the table *owner's* exemption, not the superuser's.
+//
+// So a deployment that connects as `postgres` has policies that are never
+// consulted. The schema looks right, `pg_policies` lists everything, every
+// structural test passes, and one tenant reads another's data. It is the
+// exact shape of the risk the project's own threat model names: row-level
+// security can increase security or create false confidence, and nothing
+// about the SQL distinguishes the two.
+//
+// The application therefore asks, at startup, and production refuses to
+// start. Development warns loudly rather than refusing, because a developer
+// running against a local `postgres` superuser has not made a mistake worth
+// blocking — they have made one worth knowing about.
+func CheckTenantIsolation(ctx context.Context, pool *pgxpool.Pool) (TenantIsolation, error) {
+	if pool == nil {
+		return TenantIsolation{}, errors.New("tenant isolation check needs a database pool")
+	}
+	var isolation TenantIsolation
+	err := pool.QueryRow(ctx,
+		`SELECT current_user, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`).
+		Scan(&isolation.Role, &isolation.Superuser, &isolation.BypassRLS)
+	if err != nil {
+		return TenantIsolation{}, fmt.Errorf("checking whether row-level security applies to this role: %w", err)
+	}
+	return isolation, nil
+}
+{{- end }}

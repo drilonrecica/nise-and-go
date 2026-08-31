@@ -144,6 +144,7 @@ type templateData struct {
 	// migration file is application-owned and is never renumbered after the
 	// project exists.
 	NotificationsMigration string
+	OrganizationsMigration string
 	TOTPMigration          string
 	UploadsMigration       string
 	NiseModule             string
@@ -195,6 +196,7 @@ func newTemplateData(opts Options) templateData {
 		HasTOTP:                selected[recipe.ModuleTOTP],
 		HasUploads:             selected[recipe.ModuleUploads],
 		NotificationsMigration: moduleMigrationVersions(selected)[recipe.ModuleNotifications],
+		OrganizationsMigration: moduleMigrationVersions(selected)[recipe.ModuleOrganizations],
 		TOTPMigration:          moduleMigrationVersions(selected)[recipe.ModuleTOTP],
 		UploadsMigration:       moduleMigrationVersions(selected)[recipe.ModuleUploads],
 		NiseModule:             NiseModulePath,
@@ -228,6 +230,7 @@ const coreMigrations = 9
 // contribute a migration. A module absent from this list adds none.
 var modulesWithMigrations = []recipe.Module{
 	recipe.ModuleNotifications,
+	recipe.ModuleOrganizations,
 	recipe.ModuleTOTP,
 	recipe.ModuleUploads,
 }

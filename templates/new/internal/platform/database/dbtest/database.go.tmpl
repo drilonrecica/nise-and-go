@@ -116,6 +116,116 @@ func New(t testing.TB) Database {
 	}
 }
 
+{{- if .HasOrganizations }}
+
+// restrictedRolePassword is the password the unprivileged role is created
+// with. It is a literal in a test helper for a database that exists for the
+// length of one test and is dropped afterwards; it is not a credential.
+const restrictedRolePassword = "nise-restricted-role"
+
+// Restricted returns a connection string for a role with no special
+// privileges, and the password to use with it.
+//
+// It exists because of a fact about PostgreSQL that quietly defeats
+// row-level security: **a superuser bypasses every policy, and so does any
+// role with BYPASSRLS — even with FORCE ROW LEVEL SECURITY set.** The role
+// TEST_DATABASE_URL names has to be able to create and drop databases, which
+// in most development setups means it is a superuser. A tenant-isolation test
+// run as that role therefore reads every tenant's rows and passes anyway,
+// because there is nothing to enforce against.
+//
+// This creates a role that is neither, grants it exactly the privileges an
+// application needs, and hands back a URL for it. Every test that means to
+// prove isolation must use it — and the same is true of the deployment: see
+// database.CheckTenantIsolation.
+//
+// The role is created inside the disposable test database's own cluster, so
+// it outlives the database. Cleanup drops it.
+func (d Database) Restricted(t testing.TB) (url string, password string) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), adminOperationTimeout)
+	defer cancel()
+
+	config, err := pgx.ParseConfig(d.url.Reveal())
+	if err != nil {
+		t.Fatal("parse the isolated test database URL")
+	}
+	config.Password = d.password.Reveal()
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		t.Fatal("connect to the isolated test database to create a restricted role")
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+
+	role := "r_" + d.name
+	quoted := pgx.Identifier{role}.Sanitize()
+	// NOSUPERUSER and NOBYPASSRLS are spelled out rather than left to the
+	// defaults. They are the entire point of this role, and a default is a
+	// thing that can change.
+	statements := []string{
+		fmt.Sprintf("CREATE ROLE %s LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE PASSWORD %s",
+			quoted, quoteLiteral(restrictedRolePassword)),
+		fmt.Sprintf("GRANT USAGE ON SCHEMA public TO %s", quoted),
+		fmt.Sprintf("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %s", quoted),
+		fmt.Sprintf("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %s", quoted),
+		fmt.Sprintf("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %s", quoted),
+	}
+	for _, statement := range statements {
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			t.Fatalf("preparing the restricted role: %v", err)
+		}
+	}
+
+	t.Cleanup(func() { dropRole(t, config, role) })
+
+	restricted := config.Copy()
+	restricted.User = role
+	restricted.Password = restrictedRolePassword
+	return restrictedURL(d.url.Reveal(), role), restrictedRolePassword
+}
+
+// restrictedURL rewrites a connection string's user.
+func restrictedURL(base, role string) string {
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return base
+	}
+	parsed.User = url.User(role)
+	return parsed.String()
+}
+
+// quoteLiteral quotes a string for use in SQL where a parameter cannot be
+// bound — CREATE ROLE's PASSWORD clause, which PostgreSQL does not accept a
+// placeholder in. The value is this file's own constant, so this is belt and
+// braces rather than the control; it is here so that changing the constant to
+// something read from the environment cannot silently become an injection.
+func quoteLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+// dropRole removes the restricted role after its database is gone.
+func dropRole(t testing.TB, config *pgx.ConnConfig, role string) {
+	t.Helper()
+
+	admin, err := pgx.ParseConfig(os.Getenv("TEST_DATABASE_URL"))
+	if err != nil {
+		return
+	}
+	if password := os.Getenv("TEST_DATABASE_PASSWORD"); password != "" {
+		admin.Password = password
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), adminOperationTimeout)
+	defer cancel()
+	conn, err := pgx.ConnectConfig(ctx, admin)
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	_, _ = conn.Exec(ctx, fmt.Sprintf("DROP ROLE IF EXISTS %s", pgx.Identifier{role}.Sanitize()))
+}
+{{- end }}
+
 func availabilityPolicy(baseURL, ci string) (skip bool, err error) {
 	if strings.TrimSpace(baseURL) != "" {
 		return false, nil
