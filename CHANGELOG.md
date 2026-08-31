@@ -45,6 +45,12 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   a secure context; the single escape hatch for a non-localhost development
   origin drops the prefix and `Secure` together and cannot be used in
   production (ADR 0018).
+- Add `internal/platform/httpauth`: the session cookie boundary and a resolver
+  middleware that attaches a request-scoped identity without ever rejecting a
+  request, clears a credential that did not resolve, and logs the refusal reason
+  but never the credential. Adds the `SESSION_IDLE_TIMEOUT`,
+  `SESSION_ABSOLUTE_TIMEOUT`, `SESSION_TOUCH_INTERVAL`, `SESSION_COOKIE_NAME`,
+  and `SESSION_COOKIE_INSECURE` settings.
 
 ### Fixed
 

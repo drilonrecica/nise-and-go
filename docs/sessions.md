@@ -138,11 +138,40 @@ startup and is refused in production. See
 [ADR 0018](adr/0018-development-cookie-policy.md) for why `SameSite` is `Lax`
 rather than `Strict`.
 
+## At the HTTP boundary
+
+`internal/platform/httpauth` carries the session between the browser and the
+application:
+
+- `Cookies` writes, reads, and clears the cookie. `Clear` matches every
+  attribute `Write` sent except the value and lifetime, or the browser treats it
+  as a different cookie and leaves the original in place. A request carrying two
+  cookies with the session's name is treated as carrying **no** credential
+  rather than resolved by picking whichever arrived first.
+- `Resolver.Middleware` resolves a valid cookie into a request-scoped identity
+  and **never rejects a request**. An absent, malformed, expired, or revoked
+  credential simply produces an unauthenticated request; the use case behind the
+  handler refuses it. Rejecting in middleware would put an authorization
+  decision where no handler's reader can see it, and would make every public
+  endpoint a special case.
+- A credential that was presented and did not resolve has its cookie cleared, so
+  a browser holding a dead session stops sending it — which also stops a dead
+  credential from costing a database lookup on every request.
+- The context key is unexported, so nothing outside the package can place an
+  identity in a request. `FromContext` returns two values, so a caller has to
+  acknowledge the unauthenticated case rather than receive a zero-valued record
+  whose empty `UserID` would compare equal to another empty one.
+
+The refusal reason is logged, never the credential. An error may implement
+`SessionRefusalReason() string` to name itself in one bounded word, which is how
+`auth.InactiveError` reports `revoked`, `expired`, or `idle` without this
+package importing the feature.
+
 ## Not yet here
 
-CSRF, login, and enrollment are the tasks that follow. This page describes the
-session store, its lifecycle, and its cookie policy; nothing in it is an
-authentication boundary on its own yet.
+CSRF, login, and enrollment are the tasks that follow. Resolving a session says
+who is asking; nothing here decides what they may do, and there is no login
+endpoint to obtain a session from yet.
 
 ## Related
 

@@ -1,0 +1,422 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpauth
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/session"
+)
+
+var fixedNow = time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+
+func testCookies(t *testing.T, secure bool) *Cookies {
+	t.Helper()
+
+	policy, err := session.NewCookiePolicy(secure)
+	if err != nil {
+		t.Fatalf("NewCookiePolicy: %v", err)
+	}
+	cookies, err := NewCookies(policy)
+	if err != nil {
+		t.Fatalf("NewCookies: %v", err)
+	}
+	return cookies
+}
+
+func testToken(t *testing.T) session.Token {
+	t.Helper()
+
+	token, err := session.New()
+	if err != nil {
+		t.Fatalf("session.New: %v", err)
+	}
+	return token
+}
+
+func TestNewCookiesRequiresAPolicy(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewCookies(session.CookiePolicy{}); err == nil {
+		t.Fatal("NewCookies accepted an unconstructed policy")
+	}
+}
+
+func TestWriteSetsEveryHardenedAttribute(t *testing.T) {
+	t.Parallel()
+
+	cookies := testCookies(t, true)
+	token := testToken(t)
+	response := httptest.NewRecorder()
+	cookies.Write(response, token, fixedNow.Add(24*time.Hour), fixedNow)
+
+	header := response.Header().Get("Set-Cookie")
+	for _, required := range []string{
+		"__Host-session=" + token.Value(),
+		"Path=/",
+		"HttpOnly",
+		"Secure",
+		"SameSite=Lax",
+		"Max-Age=86400",
+	} {
+		if !strings.Contains(header, required) {
+			t.Errorf("Set-Cookie = %q, missing %q", header, required)
+		}
+	}
+	if strings.Contains(header, "Domain=") {
+		t.Errorf("Set-Cookie = %q; a __Host- cookie may not carry Domain", header)
+	}
+
+	// The cookie must outlive the browser process: a session-scoped cookie
+	// would look safer and would not shorten the server-side session at all.
+	if strings.Contains(header, "Max-Age=0") {
+		t.Errorf("Set-Cookie = %q, want a positive Max-Age", header)
+	}
+}
+
+func TestWriteOnTheInsecurePolicyDropsBothTogether(t *testing.T) {
+	t.Parallel()
+
+	cookies := testCookies(t, false)
+	response := httptest.NewRecorder()
+	cookies.Write(response, testToken(t), fixedNow.Add(time.Hour), fixedNow)
+
+	header := response.Header().Get("Set-Cookie")
+	if !strings.HasPrefix(header, "session=") {
+		t.Errorf("Set-Cookie = %q, want the unprefixed name", header)
+	}
+	if strings.Contains(header, "Secure") {
+		t.Errorf("Set-Cookie = %q, want no Secure attribute", header)
+	}
+	// Everything that does not depend on the transport is unchanged.
+	for _, required := range []string{"Path=/", "HttpOnly", "SameSite=Lax"} {
+		if !strings.Contains(header, required) {
+			t.Errorf("Set-Cookie = %q, missing %q", header, required)
+		}
+	}
+}
+
+func TestWriteRefusesToSetAnAlreadyExpiredSession(t *testing.T) {
+	t.Parallel()
+
+	cookies := testCookies(t, true)
+	for _, expiresAt := range []time.Time{fixedNow, fixedNow.Add(-time.Hour)} {
+		response := httptest.NewRecorder()
+		cookies.Write(response, testToken(t), expiresAt, fixedNow)
+		header := response.Header().Get("Set-Cookie")
+		if !strings.Contains(header, "Max-Age=0") {
+			t.Errorf("Set-Cookie = %q for an expired session, want a clearing cookie", header)
+		}
+		if strings.Contains(header, "ns1_") {
+			t.Errorf("Set-Cookie = %q; an expired session still carried a token", header)
+		}
+	}
+}
+
+func TestClearMatchesWhatWriteSent(t *testing.T) {
+	t.Parallel()
+
+	// Every attribute except the value and lifetime has to match, or the
+	// browser treats the clearing cookie as a different cookie and leaves the
+	// original in place.
+	for _, secure := range []bool{true, false} {
+		cookies := testCookies(t, secure)
+
+		written := httptest.NewRecorder()
+		cookies.Write(written, testToken(t), fixedNow.Add(time.Hour), fixedNow)
+		cleared := httptest.NewRecorder()
+		cookies.Clear(cleared)
+
+		writtenAttributes := cookieAttributes(t, written.Header().Get("Set-Cookie"))
+		clearedAttributes := cookieAttributes(t, cleared.Header().Get("Set-Cookie"))
+		for _, attribute := range []string{"name", "path", "httponly", "secure", "samesite"} {
+			if writtenAttributes[attribute] != clearedAttributes[attribute] {
+				t.Errorf("secure=%t: %s differs between Write (%q) and Clear (%q)",
+					secure, attribute, writtenAttributes[attribute], clearedAttributes[attribute])
+			}
+		}
+		if !strings.Contains(cleared.Header().Get("Set-Cookie"), "Max-Age=0") {
+			t.Errorf("Clear = %q, want Max-Age=0", cleared.Header().Get("Set-Cookie"))
+		}
+	}
+}
+
+func TestReadRequiresExactlyOneCandidate(t *testing.T) {
+	t.Parallel()
+
+	cookies := testCookies(t, true)
+	token := testToken(t)
+
+	present := httptest.NewRequest(http.MethodGet, "/", nil)
+	present.AddCookie(&http.Cookie{Name: "__Host-session", Value: token.Value()})
+	if got, ok := cookies.Read(present); !ok || got != token.Value() {
+		t.Fatalf("Read = %q, %t", got, ok)
+	}
+
+	tests := []struct {
+		name    string
+		cookies []*http.Cookie
+	}{
+		{name: "no cookies"},
+		{
+			name:    "a different name",
+			cookies: []*http.Cookie{namedCookie("session", token.Value())},
+		},
+		{
+			name:    "an empty value",
+			cookies: []*http.Cookie{namedCookie("__Host-session", "")},
+		},
+		{
+			name:    "an oversized value",
+			cookies: []*http.Cookie{namedCookie("__Host-session", strings.Repeat("a", MaxCookieValueBytes+1))},
+		},
+		{
+			// Two cookies with one name is what a planted cookie from a
+			// sibling host looks like. Picking whichever arrived first would
+			// let the attacker choose.
+			name: "two candidates",
+			cookies: []*http.Cookie{
+				namedCookie("__Host-session", token.Value()),
+				namedCookie("__Host-session", "ns1_"+strings.Repeat("A", 43)),
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			for _, cookie := range tc.cookies {
+				request.AddCookie(cookie)
+			}
+			if got, ok := cookies.Read(request); ok {
+				t.Fatalf("Read = %q, true; want no credential", got)
+			}
+		})
+	}
+}
+
+// stubAuthenticator resolves one token and refuses everything else.
+type stubAuthenticator struct {
+	accepted string
+	record   session.Record
+	err      error
+	calls    int
+}
+
+func (s *stubAuthenticator) Authenticate(_ context.Context, presented string) (session.Record, error) {
+	s.calls++
+	if s.err != nil {
+		return session.Record{}, s.err
+	}
+	if presented != s.accepted {
+		return session.Record{}, errors.New("no session matches")
+	}
+	return s.record, nil
+}
+
+// refusal is an error that can name itself for a log line.
+type refusal struct{ reason string }
+
+func (r *refusal) Error() string                { return "refused: " + r.reason }
+func (r *refusal) SessionRefusalReason() string { return r.reason }
+
+func testResolver(t *testing.T, authenticator Authenticator) (*Resolver, *Cookies) {
+	t.Helper()
+
+	cookies := testCookies(t, true)
+	resolver, err := NewResolver(authenticator, cookies, WithClock(func() time.Time { return fixedNow }))
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	return resolver, cookies
+}
+
+func serve(t *testing.T, resolver *Resolver, request *http.Request) (*httptest.ResponseRecorder, session.Record, bool) {
+	t.Helper()
+
+	var (
+		record        session.Record
+		authenticated bool
+	)
+	handler := resolver.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		record, authenticated = FromContext(r.Context())
+	}))
+	logs := &strings.Builder{}
+	ctx := logging.WithLogger(request.Context(), slog.New(slog.NewTextHandler(logs, nil)))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request.WithContext(ctx))
+	return response, record, authenticated
+}
+
+func TestResolverRequiresItsDependencies(t *testing.T) {
+	t.Parallel()
+
+	cookies := testCookies(t, true)
+	if _, err := NewResolver(nil, cookies); err == nil {
+		t.Error("NewResolver accepted a nil authenticator")
+	}
+	if _, err := NewResolver(&stubAuthenticator{}, nil); err == nil {
+		t.Error("NewResolver accepted a nil cookie boundary")
+	}
+}
+
+func TestResolverAttachesAValidSession(t *testing.T) {
+	t.Parallel()
+
+	token := testToken(t)
+	authenticator := &stubAuthenticator{
+		accepted: token.Value(),
+		record:   session.Record{ID: "s1", UserID: "u1", LastSeenAt: fixedNow},
+	}
+	resolver, _ := testResolver(t, authenticator)
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.AddCookie(&http.Cookie{Name: "__Host-session", Value: token.Value()})
+	response, record, authenticated := serve(t, resolver, request)
+
+	if !authenticated {
+		t.Fatal("a valid credential did not produce an authenticated request")
+	}
+	if record.UserID != "u1" || UserID(request.Context()) != "" {
+		t.Fatalf("record = %#v; the identity must live in the handler's context, not the original request's", record)
+	}
+	if response.Header().Get("Set-Cookie") != "" {
+		t.Errorf("a valid session's cookie was rewritten: %q", response.Header().Get("Set-Cookie"))
+	}
+}
+
+func TestResolverLeavesAnAbsentCredentialUnauthenticated(t *testing.T) {
+	t.Parallel()
+
+	authenticator := &stubAuthenticator{accepted: "never"}
+	resolver, _ := testResolver(t, authenticator)
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response, _, authenticated := serve(t, resolver, request)
+
+	if authenticated {
+		t.Fatal("a request with no cookie was authenticated")
+	}
+	if authenticator.calls != 0 {
+		t.Errorf("an absent cookie cost %d database lookups", authenticator.calls)
+	}
+	// Nothing was presented, so there is nothing to clear: sending a
+	// clearing cookie to every anonymous visitor would be noise on every
+	// public page.
+	if response.Header().Get("Set-Cookie") != "" {
+		t.Errorf("an anonymous request received %q", response.Header().Get("Set-Cookie"))
+	}
+	if response.Code != http.StatusOK {
+		t.Errorf("status = %d; the resolver must not reject", response.Code)
+	}
+}
+
+func TestResolverClearsACredentialThatDidNotResolve(t *testing.T) {
+	t.Parallel()
+
+	authenticator := &stubAuthenticator{err: &refusal{reason: "revoked"}}
+	resolver, _ := testResolver(t, authenticator)
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.AddCookie(&http.Cookie{Name: "__Host-session", Value: testToken(t).Value()})
+	response, _, authenticated := serve(t, resolver, request)
+
+	if authenticated {
+		t.Fatal("a refused credential produced an authenticated request")
+	}
+	header := response.Header().Get("Set-Cookie")
+	if !strings.Contains(header, "Max-Age=0") {
+		t.Fatalf("Set-Cookie = %q, want the dead credential cleared", header)
+	}
+	if response.Code != http.StatusOK {
+		t.Errorf("status = %d; the resolver must not reject", response.Code)
+	}
+}
+
+func TestResolverNeverLogsTheCredential(t *testing.T) {
+	t.Parallel()
+
+	token := testToken(t)
+	authenticator := &stubAuthenticator{err: &refusal{reason: "expired"}}
+	cookies := testCookies(t, true)
+	resolver, err := NewResolver(authenticator, cookies)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+
+	logs := &strings.Builder{}
+	handler := resolver.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.AddCookie(&http.Cookie{Name: "__Host-session", Value: token.Value()})
+	ctx := logging.WithLogger(request.Context(), slog.New(slog.NewTextHandler(logs, nil)))
+	handler.ServeHTTP(httptest.NewRecorder(), request.WithContext(ctx))
+
+	if strings.Contains(logs.String(), token.Value()) {
+		t.Fatalf("the log recorded the credential: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "expired") {
+		t.Errorf("the log does not name the refusal reason: %s", logs.String())
+	}
+}
+
+func TestContextIdentityCannotBeForged(t *testing.T) {
+	t.Parallel()
+
+	// The key is unexported, so a value placed under any other key — even one
+	// that looks the same — is not an identity.
+	type lookalike struct{}
+	ctx := context.WithValue(context.Background(), lookalike{}, session.Record{UserID: "attacker"})
+	if _, ok := FromContext(ctx); ok {
+		t.Fatal("a session placed under a foreign key was accepted")
+	}
+	if UserID(ctx) != "" {
+		t.Fatal("UserID resolved a forged identity")
+	}
+
+	real := WithSession(context.Background(), session.Record{ID: "s1", UserID: "u1"})
+	record, ok := FromContext(real)
+	if !ok || record.UserID != "u1" || UserID(real) != "u1" {
+		t.Fatalf("record = %#v, ok = %t", record, ok)
+	}
+}
+
+// namedCookie builds one request cookie.
+func namedCookie(name, value string) *http.Cookie {
+	return &http.Cookie{Name: name, Value: value}
+}
+
+// cookieAttributes parses a Set-Cookie header into a comparable map.
+func cookieAttributes(t *testing.T, header string) map[string]string {
+	t.Helper()
+
+	if header == "" {
+		t.Fatal("no Set-Cookie header")
+	}
+	parsed := (&http.Response{Header: http.Header{"Set-Cookie": []string{header}}}).Cookies()
+	if len(parsed) != 1 {
+		t.Fatalf("parsed %d cookies from %q", len(parsed), header)
+	}
+	cookie := parsed[0]
+	return map[string]string{
+		"name":     cookie.Name,
+		"path":     cookie.Path,
+		"httponly": boolText(cookie.HttpOnly),
+		"secure":   boolText(cookie.Secure),
+		"samesite": boolText(cookie.SameSite == http.SameSiteLaxMode),
+	}
+}
+
+func boolText(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
+}

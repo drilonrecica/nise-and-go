@@ -5,7 +5,7 @@
 # <path> dir <mode>
 # <path> file <mode> <sha256>
 .dockerignore file 0644 e67c07ed17a9271672b7bac7dd99034f3f55e864a847558d67481a4f31e8a392
-.env.example file 0644 77b055a721b2d612299d6cae73215d36edb93d8b7893243121279ae0e7d926f8
+.env.example file 0644 4408d5ad28fa044e25f29d10632cd58bd46feb63e3060f71efd874936b97f08c
 .gitignore file 0644 ccc454e599a681107318bf8e887057052022fe2f44dc80a4267d879ae7fc8e21
 .nise dir 0755
 .nise/architecture.json file 0644 2c1b7fa51a2f42102a4cc0ee94e4f3ab46fafa949c4bcfb6cd4c8ddbff1b6eaa
@@ -58,7 +58,7 @@ frontend/vitest.config.ts file 0644 490ddf8c71d0f94c3a09775e0919bf8cf2a16ef3a244
 go.mod file 0644 5c40be901f9f80eb2fa6a5b40125a8a4cb14bc9480e3ce0fcc22ebd7940e4dde
 internal dir 0755
 internal/app dir 0755
-internal/app/app.go file 0644 cad394ec19cf955955401e64e3cc367fdff2b3a9e4b73849ef5ef21738a337e3
+internal/app/app.go file 0644 40f4dfd3b2e32529a73acd09329ec8bdfc5ea803f9b293e85b41cf8ce291d6e5
 internal/app/database.go file 0644 0dda4beca6185845806aafa2f0211db9b8c8c832cbf9ead38290ad78bfe98318
 internal/app/database_runtime.go file 0644 cebda86bbdf1a0094abe173b61e8785fc752dea884089bbddcaa8108598ff4d5
 internal/app/modes.go file 0644 0ce6c95c483fe4cf922ae6c44cd80ad6c5c5583d403b469161520633fef9875d
@@ -72,7 +72,7 @@ internal/features/auth/auth_test.go file 0644 a0f556e5d866f2a18c9d14e412699be19c
 internal/features/auth/queries dir 0755
 internal/features/auth/queries/sessions.sql file 0644 8dbcd98e0eaf7d0ed6e205231df22e114df307ab4d34af675586aee2e36ca48e
 internal/features/auth/queries/users.sql file 0644 97c5fa3fe3d8f5a144646196f1a9d4a16a3556f1caf0493882da5c0e80d5bba7
-internal/features/auth/sessions.go file 0644 c906229b7ef62007c168dde1f2644347372788e9b685e6630f161dbd55c89579
+internal/features/auth/sessions.go file 0644 5d52e6c93ef9ab740c33133178c9611be5a0f3c0d4a72502597a694dc0aeea63
 internal/features/auth/sqlc.yaml file 0644 7bc40a6003a1f91c9deeef697a3e133364f46951fd84a23d3dbef8326d302187
 internal/features/auth/store dir 0755
 internal/features/auth/store/db.go file 0644 770dfabb639e487bd985c9942adc0d854e84ed06a6fd30348ab1eb33081bc403
@@ -82,14 +82,14 @@ internal/features/auth/store/sessions.sql.go file 0644 129ae5839087c62fb376e951f
 internal/features/auth/store/users.sql.go file 0644 359ffe2c0924479596ea4962c2135ef6272de18ba4e9cc4e27c866b9c3d10a5c
 internal/platform dir 0755
 internal/platform/config dir 0755
-internal/platform/config/config.go file 0644 021848f05b53d94ee1987bad952e9801a028dd6446dd2ee2b583c45a4200c1d2
-internal/platform/config/config_test.go file 0644 683ca976caf164bea9bcd043c07612c2442f3b8379f8f7db90ac95a8cb3060b6
+internal/platform/config/config.go file 0644 7b53c889f22d9ed4a8a8584419f76f3fa49b3d47f403ff4e3e49284cd56357e8
+internal/platform/config/config_test.go file 0644 f307615522c51dd686ec44dd6867b530ac87226ea067b49f1b17a8c32385a220
 internal/platform/database dir 0755
 internal/platform/database/README.md file 0644 379bfe9051325823ea59d37f173c811ab03c0267f5c3f217f46fb0b477f01675
 internal/platform/database/compatibility.go file 0644 696f985b188edb40c9045583126f2abccdc26ce66d3c17c74fe8044d3f46d56e
 internal/platform/database/compatibility_test.go file 0644 e68f36aa4e8120d7042972ff99d36e846a761d671ccac5cc0a89de8030139591
 internal/platform/database/dbtest dir 0755
-internal/platform/database/dbtest/database.go file 0644 6b01db158faed7be4110040c21269e28522dc58cb7c3cd8898c86e5676c1908f
+internal/platform/database/dbtest/database.go file 0644 f631706ace2196f19afd26887f26e6b09c0677969788cfea8c4fc6f1b44ddbdd
 internal/platform/database/dbtest/database_test.go file 0644 10615d4de7d4dce0ee61e83ea0cd543e0e4bf2b10f941989784cbb3632287ab9
 internal/platform/database/directpgx_test.go file 0644 6c5f7ecbcfd839c6d729ec5ed0a9e8ae3c647c37cdb3dc6e1adb2860b6661835
 internal/platform/database/migrate.go file 0644 192481b888e2a412be1fdc1a6430c98bfde40c3e139928aa5d18cbe22b9d9c2f
@@ -121,6 +121,11 @@ internal/platform/httpapi/problem/problem_test.go file 0644 58ec205b552c9bfb69ba
 internal/platform/httpapi/router.go file 0644 96dbbe09dfb883720471341d85339ae2e2d900e346973905c5013ee73ce3c13d
 internal/platform/httpapi/router_test.go file 0644 6504f432871bea9fe1b5a9d2a31f4de9285dafb6bf92a331ec243411da545999
 internal/platform/httpapi/transport_test.go file 0644 6a16f3907a2f2aba0bcd81f043737fca6dbde35c25c788452c78a3f839943bd0
+internal/platform/httpauth dir 0755
+internal/platform/httpauth/context.go file 0644 762930651454ba19a825e4ecfd9627ea6eda5feebef62268a0319cc9978d9f5b
+internal/platform/httpauth/cookie.go file 0644 d30512721c0cda371ecca0ef24125cfc85344e3fa1fce369ee5a8bdc02e9ab48
+internal/platform/httpauth/httpauth_test.go file 0644 3b923b642c3d7cecab28037a40d67d1ca9d997099e9d1a18476c9671d0d3516a
+internal/platform/httpauth/middleware.go file 0644 30f6d026e662b0b066162d27102a0afe524370c5b185259c8450b9fd5e28b717
 internal/platform/idempotency dir 0755
 internal/platform/idempotency/idempotency.go file 0644 a0f8f5f4ccf5b0bcf6da17b577ad40f3e7a3863d4f96e9711f2700bb167e60f9
 internal/platform/idempotency/idempotency_test.go file 0644 82000189086ba82c3cec2ae2c3007c7f981ba91e20484551b3d9d35ab89e3ae2

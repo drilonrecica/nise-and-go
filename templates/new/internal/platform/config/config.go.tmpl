@@ -20,6 +20,7 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/lifecycle"
 	"github.com/drilonrecica/nise-and-go/runtime/pagination"
 	"github.com/drilonrecica/nise-and-go/runtime/secure"
+	"github.com/drilonrecica/nise-and-go/runtime/session"
 
 	"{{.ModulePath}}/internal/platform/database"
 )
@@ -74,6 +75,15 @@ type Config struct {
 	CursorKeysAreEphemeral bool
 	// CursorTTL is how long an issued cursor stays valid.
 	CursorTTL time.Duration
+	// SessionLifetime is the idle window, absolute deadline, and activity
+	// write interval applied to browser sessions.
+	SessionLifetime session.Lifetime
+	// SessionCookie is the name and attributes of the session cookie.
+	SessionCookie session.CookiePolicy
+	// SessionCookieInsecure reports that the session cookie has given up the
+	// __Host- prefix and the Secure attribute. It exists for a development
+	// origin that is not localhost; production refuses it.
+	SessionCookieInsecure bool
 }
 
 // Addr is the host:port the HTTP server listens on.
@@ -112,6 +122,10 @@ func Load() (Config, []string, error) {
 	connectTimeout := l.Duration("DB_CONNECT_TIMEOUT", rtconfig.Default("5s"))
 	slowQueryThreshold := l.Duration("DB_SLOW_QUERY_THRESHOLD", rtconfig.Default("250ms"))
 	cursorTTL := l.Duration("CURSOR_TTL", rtconfig.Default("1h"))
+	sessionIdle := l.Duration("SESSION_IDLE_TIMEOUT", rtconfig.Default("12h"))
+	sessionAbsolute := l.Duration("SESSION_ABSOLUTE_TIMEOUT", rtconfig.Default("720h"))
+	sessionTouch := l.Duration("SESSION_TOUCH_INTERVAL", rtconfig.Default("5m"))
+	sessionCookieName := l.String("SESSION_COOKIE_NAME", rtconfig.Default(""))
 	// The two cursor key variables are read into locals rather than kept as
 	// Config fields: once the ring is built, holding the raw material would
 	// only add a second place for it to escape from.
@@ -131,6 +145,7 @@ func Load() (Config, []string, error) {
 		DatabasePassword:           l.Secret("DATABASE_PASSWORD", rtconfig.Default("")),
 		DatabaseSlowQueryThreshold: time.Duration(slowQueryThreshold),
 		CursorTTL:                  time.Duration(cursorTTL),
+		SessionCookieInsecure:      l.Bool("SESSION_COOKIE_INSECURE", rtconfig.Default("false")),
 	}
 	if err := l.Err(); err != nil {
 		return Config{}, nil, err
@@ -178,6 +193,29 @@ func Load() (Config, []string, error) {
 		return Config{}, warnings, fmt.Errorf("CURSOR_TTL: must be greater than zero and at most %s, found %s", maxCursorTTL, cfg.CursorTTL)
 	}
 
+	sessionLifetime, err := session.NewLifetime(
+		time.Duration(sessionIdle),
+		time.Duration(sessionAbsolute),
+		time.Duration(sessionTouch),
+	)
+	if err != nil {
+		return Config{}, warnings, fmt.Errorf("SESSION_IDLE_TIMEOUT/SESSION_ABSOLUTE_TIMEOUT/SESSION_TOUCH_INTERVAL: %w", err)
+	}
+	cfg.SessionLifetime = sessionLifetime
+
+	cookieOptions := make([]session.CookieOption, 0, 1)
+	if sessionCookieName != "" {
+		cookieOptions = append(cookieOptions, session.WithCookieName(sessionCookieName))
+	}
+	sessionCookie, err := session.NewCookiePolicy(!cfg.SessionCookieInsecure, cookieOptions...)
+	if err != nil {
+		return Config{}, warnings, fmt.Errorf("SESSION_COOKIE_NAME/SESSION_COOKIE_INSECURE: %w", err)
+	}
+	cfg.SessionCookie = sessionCookie
+	if cfg.SessionCookieInsecure {
+		warnings = append(warnings, "SESSION_COOKIE_INSECURE is set: the session cookie has given up the __Host- prefix and the Secure attribute, which is only safe on a development origin")
+	}
+
 	if cfg.LogFormat != "json" && cfg.LogFormat != "text" {
 		return Config{}, warnings, fmt.Errorf(`LOG_FORMAT: must be "json" or "text", found %q`, cfg.LogFormat)
 	}
@@ -193,6 +231,9 @@ func Load() (Config, []string, error) {
 		v.Check(!isWildcardAddr(cfg.BindAddr) || cfg.AllowPublicBind, "BIND_ADDR",
 			"bound to every interface without an explicit opt-in",
 			"set BIND_ADDR to a private address, or set ALLOW_PUBLIC_BIND=true if a public bind is intended")
+		v.Check(cfg.SessionCookie.Hardened(), "SESSION_COOKIE_INSECURE",
+			"the session cookie would be sent without the __Host- prefix and without Secure",
+			"unset SESSION_COOKIE_INSECURE; http://localhost is a secure context, so development needs no exception")
 		v.Check(!cfg.CursorKeysAreEphemeral, "CURSOR_SIGNING_KEY",
 			"pagination cursors would be signed with a key generated for this process, so every restart and every replica rejects outstanding cursors",
 			"set CURSOR_SIGNING_KEY to <id>:<base64 secret>; generate one with: openssl rand -base64 32")

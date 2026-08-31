@@ -198,6 +198,27 @@ restart and every replica would then reject the others' cursors. There is no
 built-in default key. `CURSOR_RETIRED_KEYS` without a signing key is an error:
 a retired key verifies cursors but cannot issue them.
 
+## Generated session settings
+
+See [sessions](sessions.md) for the cookie and lifecycle contracts.
+
+| Variable | Default | Constraint |
+|---|---:|---|
+| `SESSION_IDLE_TIMEOUT` | `12h` | 1m through 30d, and no longer than the absolute timeout |
+| `SESSION_ABSOLUTE_TIMEOUT` | `720h` | 1m through 365d |
+| `SESSION_TOUCH_INTERVAL` | `5m` | greater than zero and at most half the idle timeout |
+| `SESSION_COOKIE_NAME` | *(the policy default)* | must match the transport: `__Host-`-prefixed when Secure, unprefixed when not |
+| `SESSION_COOKIE_INSECURE` | `false` | must be false in production |
+
+`SESSION_COOKIE_INSECURE` drops the `__Host-` prefix and the `Secure` attribute
+together and warns at startup. It exists for a development origin that is not
+localhost; `http://localhost` is a secure context, so ordinary development needs
+no exception ([ADR 0018](adr/0018-development-cookie-policy.md)).
+
+The absolute deadline is written onto each session when it is created, so
+changing `SESSION_ABSOLUTE_TIMEOUT` affects sessions issued afterwards and
+neither extends nor ends the ones that already exist.
+
 The slow-query threshold applies to pgx query, batch, and copy round trips.
 Crossing it emits a bounded operation label, outcome, duration, threshold, and
 available validated correlation IDs; SQL, arguments, copied rows, results, and

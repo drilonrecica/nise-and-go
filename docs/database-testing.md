@@ -33,10 +33,18 @@ pool, err := database.Open(
 
 `dbtest.New` creates a cryptographically unique, identifier-safe database from
 `template0`, with a PostgreSQL-enforced connection limit of eight. It registers
-cleanup immediately after creation. Cleanup uses a separate ten-second admin
-context and `DROP DATABASE ... WITH (FORCE)`, so leaked test connections cannot
-silently leave a database behind. Cleanup failure fails the test and names only
-the random database, never a URL or password.
+cleanup immediately after creation. Cleanup uses a separate admin context and
+`DROP DATABASE ... WITH (FORCE)`, so leaked test connections cannot silently
+leave a database behind. Cleanup failure fails the test and names only the
+random database, never a URL or password.
+
+The administrative context is bounded at sixty seconds, deliberately generously.
+Creating and dropping a database copies or removes a whole directory, the two
+serialize against each other on the server, and `go test ./...` runs several
+packages at once — so on a busy machine a drop that normally takes milliseconds
+can take tens of seconds. A tight bound there fails a test that has already
+passed. The timeout exists to stop a hung administrative connection from
+blocking forever, not to measure anything.
 
 Testing cleanup is LIFO: pools and migrators registered after `dbtest.New`
 close first, then the database is dropped. The force option is a final safety

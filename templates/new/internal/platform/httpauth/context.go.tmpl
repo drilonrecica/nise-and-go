@@ -1,0 +1,38 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpauth
+
+import (
+	"context"
+
+	"github.com/drilonrecica/nise-and-go/runtime/session"
+)
+
+// contextKey is unexported, so nothing outside this package can place a
+// session in the context. An authenticated identity that any package could
+// forge would not be an identity.
+type contextKey struct{}
+
+// WithSession returns a context carrying the resolved session.
+func WithSession(ctx context.Context, record session.Record) context.Context {
+	return context.WithValue(ctx, contextKey{}, record)
+}
+
+// FromContext returns the resolved session, and whether there is one.
+//
+// The two-value form is the point: a caller has to acknowledge the
+// unauthenticated case, rather than receive a zero-valued record whose empty
+// UserID would compare equal to an equally empty one somewhere else.
+func FromContext(ctx context.Context) (session.Record, bool) {
+	record, ok := ctx.Value(contextKey{}).(session.Record)
+	return record, ok
+}
+
+// UserID returns the authenticated subject, or the empty string.
+func UserID(ctx context.Context) string {
+	record, ok := FromContext(ctx)
+	if !ok {
+		return ""
+	}
+	return record.UserID
+}
