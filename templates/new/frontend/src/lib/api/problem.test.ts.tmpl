@@ -1,0 +1,76 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { describe, expect, it } from 'vitest';
+
+import { isProblem, isRetryable, problemCodes, problemMessage, type Problem } from './problem';
+
+const valid: Problem = {
+	type: '/problems/permission-denied',
+	title: 'Permission denied',
+	status: 403,
+	detail: 'This account may not perform that action.',
+	code: problemCodes.permissionDenied,
+	request_id: 'req_01HZ',
+	correlation_id: 'cor_01HZ'
+};
+
+describe('isProblem', () => {
+	it('accepts the shape the server sends', () => {
+		expect(isProblem(valid)).toBe(true);
+		expect(isProblem({ ...valid, instance: '/api/v1/widgets/7' })).toBe(true);
+	});
+
+	it('refuses anything that is not an object', () => {
+		for (const value of [null, undefined, '', 'problem', 42, [], true]) {
+			expect(isProblem(value)).toBe(false);
+		}
+	});
+
+	it('refuses a body missing any required member', () => {
+		for (const key of Object.keys(valid) as (keyof Problem)[]) {
+			const partial = { ...valid };
+			delete partial[key];
+			expect(isProblem(partial)).toBe(false);
+		}
+	});
+
+	it('refuses a status outside the error range, which a success body would carry', () => {
+		expect(isProblem({ ...valid, status: 200 })).toBe(false);
+		expect(isProblem({ ...valid, status: 600 })).toBe(false);
+		expect(isProblem({ ...valid, status: 403.5 })).toBe(false);
+	});
+
+	it('refuses an unbounded detail, which is how a response body becomes a message somebody believes', () => {
+		expect(isProblem({ ...valid, detail: 'x'.repeat(4096) })).toBe(true);
+		expect(isProblem({ ...valid, detail: 'x'.repeat(4097) })).toBe(false);
+		expect(isProblem({ ...valid, detail: '' })).toBe(false);
+	});
+});
+
+describe('problemMessage', () => {
+	it('shows the server detail for a problem the server explained', () => {
+		const explained = { ...valid, code: problemCodes.invalidRequest, detail: 'name is required.' };
+		expect(problemMessage(explained)).toBe('name is required.');
+	});
+
+	it('substitutes for the failures whose server wording is deliberately uninformative', () => {
+		expect(problemMessage(valid)).toBe('You do not have permission to do that.');
+		expect(problemMessage({ ...valid, code: problemCodes.crossSiteRequest })).toContain('Reload');
+		expect(problemMessage({ ...valid, code: problemCodes.cursorExpired })).toContain('first page');
+	});
+});
+
+describe('isRetryable', () => {
+	it('is true only for failures that are actually transient', () => {
+		expect(isRetryable({ ...valid, code: problemCodes.internalServerError, status: 500 })).toBe(true);
+		expect(isRetryable({ ...valid, code: problemCodes.idempotencyConflict, status: 409 })).toBe(true);
+		expect(isRetryable({ ...valid, status: 503 })).toBe(true);
+	});
+
+	it('is false for a failure that will fail identically next time', () => {
+		expect(isRetryable(valid)).toBe(false);
+		expect(isRetryable({ ...valid, code: problemCodes.invalidRequest, status: 400 })).toBe(false);
+		expect(isRetryable({ ...valid, code: problemCodes.idempotencyKeyReuse, status: 409 })).toBe(false);
+		expect(isRetryable({ ...valid, code: problemCodes.notFound, status: 404 })).toBe(false);
+	});
+});

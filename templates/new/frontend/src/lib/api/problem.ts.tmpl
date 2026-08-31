@@ -1,0 +1,126 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// RFC 9457 Problem Details, as this application's API actually sends them.
+//
+// The server has one catalog of problems (internal/platform/httpapi/problem)
+// and every failure it can express comes from it. That is what makes the
+// `code` member usable as a decision: it is a closed, documented set, unlike
+// the status code, which several unrelated failures share, and unlike the
+// human-readable `detail`, which is prose that will be reworded.
+//
+// Nothing here parses a message out of a body to show to a person verbatim.
+// `detail` is bounded and controlled by the server catalog, so it is safe to
+// display; a body that does not validate as a Problem is not displayed at
+// all, because an unvalidated string from a response is exactly the shape of
+// an injected message.
+
+import type { components } from './schema';
+
+/** The Problem schema, taken from the authoritative OpenAPI document. */
+export type Problem = components['schemas']['Problem'];
+
+/** The media type a Problem is sent as. */
+export const problemMediaType = 'application/problem+json';
+
+/**
+ * The server's problem catalog, mirrored as constants.
+ *
+ * These are the codes `internal/platform/httpapi/problem` defines. Comparing
+ * against one of these rather than against a status code is what lets a
+ * caller distinguish "this cursor is stale, start the list again" from every
+ * other 400 the same endpoint can return.
+ *
+ * A code the server adds later is still delivered; this list is a
+ * convenience for the ones a frontend routinely branches on, not a filter.
+ */
+export const problemCodes = {
+	invalidRequest: 'invalid_request',
+	notFound: 'not_found',
+	methodNotAllowed: 'method_not_allowed',
+	requestBodyTooLarge: 'request_body_too_large',
+	invalidPagination: 'invalid_pagination',
+	cursorExpired: 'cursor_expired',
+	reportTooDeep: 'report_too_deep',
+	invalidIdempotencyKey: 'invalid_idempotency_key',
+	idempotencyConflict: 'idempotency_conflict',
+	idempotencyKeyReuse: 'idempotency_key_reuse',
+	permissionDenied: 'permission_denied',
+	crossSiteRequest: 'cross_site_request',
+	unsupportedMediaType: 'unsupported_media_type',
+	internalServerError: 'internal_server_error'
+} as const;
+
+/** One of the codes above. */
+export type ProblemCode = (typeof problemCodes)[keyof typeof problemCodes];
+
+/**
+ * Whether value is a Problem this application will act on.
+ *
+ * Every required member is checked, and the bounds that matter are checked
+ * too: an unbounded `detail` rendered into the interface is how a response
+ * body becomes a message somebody reads and believes. A body that fails here
+ * is discarded rather than partially trusted.
+ */
+export function isProblem(value: unknown): value is Problem {
+	if (typeof value !== 'object' || value === null) {
+		return false;
+	}
+	const candidate = value as Record<string, unknown>;
+	return (
+		isBoundedString(candidate.type, 2048) &&
+		isBoundedString(candidate.title, 256) &&
+		typeof candidate.status === 'number' &&
+		Number.isInteger(candidate.status) &&
+		candidate.status >= 400 &&
+		candidate.status <= 599 &&
+		isBoundedString(candidate.detail, 4096) &&
+		isBoundedString(candidate.code, 64) &&
+		isBoundedString(candidate.request_id, 128) &&
+		isBoundedString(candidate.correlation_id, 128)
+	);
+}
+
+function isBoundedString(value: unknown, max: number): boolean {
+	return typeof value === 'string' && value.length > 0 && value.length <= max;
+}
+
+/**
+ * What to show a person for a problem.
+ *
+ * The server's `detail` is already written for a reader and is bounded by the
+ * catalog, so it is used as-is. The only substitutions are for the failures
+ * whose server-side wording is deliberately uninformative — the ones that
+ * refuse to tell a caller which of their guesses was structurally valid — and
+ * for the two the person can actually do something about.
+ */
+export function problemMessage(problem: Problem): string {
+	switch (problem.code) {
+		case problemCodes.permissionDenied:
+			return 'You do not have permission to do that.';
+		case problemCodes.crossSiteRequest:
+			return 'That request was refused for security reasons. Reload the page and try again.';
+		case problemCodes.cursorExpired:
+			return 'This list moved on while you were reading it. Start again from the first page.';
+		case problemCodes.internalServerError:
+			return 'Something went wrong on our side. Try again in a moment.';
+		default:
+			return problem.detail;
+	}
+}
+
+/**
+ * Whether retrying the identical request could plausibly succeed.
+ *
+ * It is deliberately narrow. A retry that cannot succeed is a second failure
+ * and a person's second wasted minute, so only the failures that are actually
+ * transient are named: the server's own, and the one that says a concurrent
+ * attempt with the same idempotency key is still running.
+ */
+export function isRetryable(problem: Problem): boolean {
+	return (
+		problem.code === problemCodes.internalServerError ||
+		problem.code === problemCodes.idempotencyConflict ||
+		problem.status === 503 ||
+		problem.status === 504
+	);
+}

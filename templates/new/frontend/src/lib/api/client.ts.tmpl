@@ -1,9 +1,41 @@
 // Generated once by nise; owned by this application. Nise will not overwrite it.
 
+// The typed API client.
+//
+// It is a small wrapper over `fetch` using the types generated from
+// api/openapi.yaml, not a client framework. Everything it does is something
+// every call would otherwise have to remember: the versioned base path, the
+// Accept header, same-origin credentials, the anti-forgery header on
+// state-changing requests, cancellation, and turning a failure into a typed
+// RFC 9457 Problem instead of an unparsed body.
+//
+// Extend it deliberately as the API grows. Do not add a second client beside
+// it, and do not let a component call `fetch` directly — that is how one
+// request ends up without the anti-forgery header, six months from now, in
+// the one place nobody re-reads.
+
+import { isProblem, problemMediaType, type Problem } from './problem';
 import type { paths } from './schema';
 
 const API_BASE_PATH = '/api/v1';
-const ACCEPT = 'application/json, application/problem+json';
+const ACCEPT = `application/json, ${problemMediaType}`;
+
+/**
+ * The anti-forgery cookie the server sets beside the session.
+ *
+ * It shares every attribute of the session cookie except HttpOnly, because
+ * this script has to read it and echo it in a header — and that is the entire
+ * mechanism: a form posted from another origin cannot set a request header.
+ * See docs/sessions.md.
+ */
+const CSRF_COOKIE = '__Host-session_csrf';
+const CSRF_HEADER = 'X-CSRF-Token';
+
+/** The header carrying a client-generated key for a sensitive command. */
+const IDEMPOTENCY_HEADER = 'Idempotency-Key';
+
+/** Methods that change state, and therefore carry the anti-forgery header. */
+const UNSAFE_METHODS = new Set(['post', 'put', 'patch', 'delete']);
 
 type HTTPMethod = 'get' | 'put' | 'post' | 'delete' | 'options' | 'head' | 'patch' | 'trace';
 type APIPath = Extract<keyof paths, string>;
@@ -30,49 +62,105 @@ type SuccessfulResult<Operation> = Operation extends { responses: infer Response
 		}[keyof Responses]
 	: never;
 
+/** The path parameters an operation declares, or never when it has none. */
+type PathParamsOf<Operation> = Operation extends { parameters: { path?: infer P } }
+	? P extends object
+		? P
+		: never
+	: never;
+
+/** The query parameters an operation declares, or never when it has none. */
+type QueryOf<Operation> = Operation extends { parameters: { query?: infer Q } }
+	? Q extends object
+		? Q
+		: never
+	: never;
+
+/** The request body an operation declares, or never when it has none. */
+type BodyOf<Operation> = Operation extends { requestBody: infer Request }
+	? NonNullable<Request> extends { content: infer Content }
+		? ContentValue<Content>
+		: never
+	: never;
+
+/**
+ * Whether an operation has this part at all.
+ *
+ * openapi-typescript spells "no path parameters" as `path?: undefined` rather
+ * than by omitting the member, so both `never` and `undefined` have to count
+ * as absent. Without the second case every read would be required to pass
+ * `body: undefined` explicitly.
+ */
+type Absent<Value> = [Value] extends [never] ? true : [Value] extends [undefined] ? true : false;
+
+/** Present the key only when the operation actually has that part. */
+type Part<Key extends string, Value> = Absent<Value> extends true
+	? { readonly [K in Key]?: undefined }
+	: { readonly [K in Key]: Value };
+
 export type APIFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-export interface APIRequestOptions {
+/** Everything a caller may pass with one request. */
+export type APIRequestOptions<Operation> = {
 	readonly signal?: AbortSignal;
-}
+	/**
+	 * The key that makes a sensitive command safe to retry. Reuse the same key
+	 * for every retry of one request and a new key for a new request; the
+	 * server refuses a key replayed with a different body.
+	 */
+	readonly idempotencyKey?: string;
+} & Part<'params', PathParamsOf<Operation>> &
+	Part<'query', QueryOf<Operation>> &
+	Part<'body', BodyOf<Operation>>;
 
 export interface APIClientOptions {
 	readonly fetch?: APIFetch;
+	/**
+	 * Where the anti-forgery token is read from. It defaults to this
+	 * document's cookies; a test supplies its own rather than writing to
+	 * document.cookie.
+	 */
+	readonly csrfToken?: () => string | null;
 }
 
-export interface APIClient {
-	request<Method extends HTTPMethod, Path extends PathsFor<Method>>(
-		method: Method,
-		path: Path,
-		options?: APIRequestOptions
-	): Promise<SuccessfulResult<OperationAt<Path, Method>>>;
-
-	get<Path extends PathsFor<'get'>>(
-		path: Path,
-		options?: APIRequestOptions
-	): Promise<SuccessfulResult<OperationAt<Path, 'get'>>>;
-}
-
-// APIError represents a completed HTTP exchange with a non-success status.
-// Its message is intentionally independent of the response body; render the
-// typed public problem fields explicitly once the API defines them.
+/**
+ * APIError is a completed HTTP exchange with a non-success status.
+ *
+ * Its `message` is deliberately independent of the response body — an
+ * unvalidated string from a response is exactly the shape of an injected
+ * message — and everything a caller should branch on is in `problem`, which
+ * is null when the body was not a valid Problem.
+ */
 export class APIError extends Error {
 	readonly status: number;
 	readonly requestID: string | null;
+	readonly problem: Problem | null;
 	readonly body: unknown;
 
 	constructor(response: Response, body: unknown) {
 		super(`API request failed with status ${response.status}`);
 		this.name = 'APIError';
 		this.status = response.status;
-		this.requestID = response.headers.get('x-request-id');
+		this.problem = isProblem(body) ? body : null;
+		// The problem carries the request id when the body parsed; the header
+		// is the fallback for a failure produced before the catalog was
+		// reached, such as a proxy's own error page.
+		this.requestID = this.problem?.request_id ?? response.headers.get('x-request-id');
 		this.body = body;
+	}
+
+	/** The catalog code, when the server sent a Problem. */
+	get code(): string | null {
+		return this.problem?.code ?? null;
 	}
 }
 
-// APITransportError represents a failure before a usable HTTP response was
-// available, including an invalid success body. The public message never
-// includes the wrapped cause; cancellation errors are preserved separately.
+/**
+ * APITransportError is a failure before a usable HTTP response existed,
+ * including a success body that did not parse. The public message never
+ * includes the wrapped cause; cancellation is not wrapped at all, so an
+ * aborted request still rejects with the caller's own AbortError.
+ */
 export class APITransportError extends Error {
 	readonly cause: unknown;
 
@@ -83,27 +171,96 @@ export class APITransportError extends Error {
 	}
 }
 
+export interface APIClient {
+	request<Method extends HTTPMethod, Path extends PathsFor<Method>>(
+		method: Method,
+		path: Path,
+		options?: APIRequestOptions<OperationAt<Path, Method>>
+	): Promise<SuccessfulResult<OperationAt<Path, Method>>>;
+
+	get<Path extends PathsFor<'get'>>(
+		path: Path,
+		options?: APIRequestOptions<OperationAt<Path, 'get'>>
+	): Promise<SuccessfulResult<OperationAt<Path, 'get'>>>;
+
+	post<Path extends PathsFor<'post'>>(
+		path: Path,
+		options?: APIRequestOptions<OperationAt<Path, 'post'>>
+	): Promise<SuccessfulResult<OperationAt<Path, 'post'>>>;
+
+	put<Path extends PathsFor<'put'>>(
+		path: Path,
+		options?: APIRequestOptions<OperationAt<Path, 'put'>>
+	): Promise<SuccessfulResult<OperationAt<Path, 'put'>>>;
+
+	patch<Path extends PathsFor<'patch'>>(
+		path: Path,
+		options?: APIRequestOptions<OperationAt<Path, 'patch'>>
+	): Promise<SuccessfulResult<OperationAt<Path, 'patch'>>>;
+
+	delete<Path extends PathsFor<'delete'>>(
+		path: Path,
+		options?: APIRequestOptions<OperationAt<Path, 'delete'>>
+	): Promise<SuccessfulResult<OperationAt<Path, 'delete'>>>;
+}
+
+type AnyOptions = {
+	signal?: AbortSignal;
+	idempotencyKey?: string;
+	params?: Record<string, string | number>;
+	query?: Record<string, unknown>;
+	body?: unknown;
+};
+
 class Client implements APIClient {
 	readonly #fetch: APIFetch;
+	readonly #csrfToken: () => string | null;
 
-	constructor(fetcher: APIFetch) {
+	constructor(fetcher: APIFetch, csrfToken: () => string | null) {
 		this.#fetch = fetcher;
+		this.#csrfToken = csrfToken;
 	}
 
 	async request<Method extends HTTPMethod, Path extends PathsFor<Method>>(
 		method: Method,
 		path: Path,
-		options: APIRequestOptions = {}
+		options: APIRequestOptions<OperationAt<Path, Method>> = {} as APIRequestOptions<
+			OperationAt<Path, Method>
+		>
 	): Promise<SuccessfulResult<OperationAt<Path, Method>>> {
+		const chosen = options as AnyOptions;
+		const headers: Record<string, string> = { Accept: ACCEPT };
+
+		if (UNSAFE_METHODS.has(method)) {
+			const token = this.#csrfToken();
+			// An absent token is not a client-side refusal. The server decides
+			// — an unauthenticated state change is protected by Origin and
+			// Fetch Metadata instead — and refusing here would turn a
+			// server-side policy into a second, divergent copy of itself.
+			if (token !== null) {
+				headers[CSRF_HEADER] = token;
+			}
+		}
+		if (chosen.idempotencyKey !== undefined) {
+			headers[IDEMPOTENCY_HEADER] = chosen.idempotencyKey;
+		}
+		if (chosen.body !== undefined) {
+			headers['Content-Type'] = 'application/json';
+		}
+
 		let response: Response;
 		try {
-			response = await this.#fetch(apiURL(path), {
+			response = await this.#fetch(apiURL(path, chosen.params, chosen.query), {
 				method: method.toUpperCase(),
 				credentials: 'same-origin',
-				headers: { Accept: ACCEPT },
-				signal: options.signal
+				headers,
+				body: chosen.body === undefined ? undefined : JSON.stringify(chosen.body),
+				signal: chosen.signal
 			});
 		} catch (error) {
+			// A cancellation is the caller's own decision arriving back at
+			// them. Wrapping it would make every call site unwrap a transport
+			// error to find out whether anything actually went wrong.
 			if (isAbortError(error)) {
 				throw error;
 			}
@@ -121,21 +278,102 @@ class Client implements APIClient {
 		}
 	}
 
-	get<Path extends PathsFor<'get'>>(
-		path: Path,
-		options?: APIRequestOptions
-	): Promise<SuccessfulResult<OperationAt<Path, 'get'>>> {
+	get<Path extends PathsFor<'get'>>(path: Path, options?: APIRequestOptions<OperationAt<Path, 'get'>>) {
 		return this.request('get', path, options);
+	}
+
+	post<Path extends PathsFor<'post'>>(path: Path, options?: APIRequestOptions<OperationAt<Path, 'post'>>) {
+		return this.request('post', path, options);
+	}
+
+	put<Path extends PathsFor<'put'>>(path: Path, options?: APIRequestOptions<OperationAt<Path, 'put'>>) {
+		return this.request('put', path, options);
+	}
+
+	patch<Path extends PathsFor<'patch'>>(path: Path, options?: APIRequestOptions<OperationAt<Path, 'patch'>>) {
+		return this.request('patch', path, options);
+	}
+
+	delete<Path extends PathsFor<'delete'>>(path: Path, options?: APIRequestOptions<OperationAt<Path, 'delete'>>) {
+		return this.request('delete', path, options);
 	}
 }
 
 export function createAPIClient(options: APIClientOptions = {}): APIClient {
 	const fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
-	return new Client(fetcher);
+	const csrfToken = options.csrfToken ?? readCSRFCookie;
+	return new Client(fetcher, csrfToken);
 }
 
-function apiURL(path: APIPath): string {
-	return path === '/' ? `${API_BASE_PATH}/` : `${API_BASE_PATH}${path}`;
+/** The application's client. */
+export const api = createAPIClient();
+
+/**
+ * Read the anti-forgery cookie.
+ *
+ * The name is matched exactly rather than by prefix: `__Host-session_csrf`
+ * and a cookie called `x__Host-session_csrf` are different cookies, and
+ * matching loosely is how a value an attacker could set gets echoed into the
+ * header the server trusts.
+ */
+export function readCSRFCookie(source: string | undefined = globalThis.document?.cookie): string | null {
+	if (!source) return null;
+	for (const pair of source.split(';')) {
+		const separator = pair.indexOf('=');
+		if (separator < 0) continue;
+		if (pair.slice(0, separator).trim() !== CSRF_COOKIE) continue;
+		const value = pair.slice(separator + 1).trim();
+		return value === '' ? null : value;
+	}
+	return null;
+}
+
+/**
+ * Build the request URL: the versioned base, the path with its parameters
+ * substituted, and the query.
+ *
+ * Path parameters are encoded with encodeURIComponent, so an identifier
+ * containing a slash cannot walk out of its own segment and address a
+ * different resource.
+ */
+function apiURL(
+	path: APIPath,
+	params?: Record<string, string | number>,
+	query?: Record<string, unknown>
+): string {
+	const filled = path.replace(/\{([^}]+)\}/g, (whole, name: string) => {
+		const value = params?.[name];
+		if (value === undefined) {
+			throw new Error(`API path ${path} needs the parameter ${name}`);
+		}
+		return encodeURIComponent(String(value));
+	});
+	const base = filled === '/' ? `${API_BASE_PATH}/` : `${API_BASE_PATH}${filled}`;
+	const search = searchParams(query);
+	return search === '' ? base : `${base}?${search}`;
+}
+
+/**
+ * Serialize the query.
+ *
+ * An undefined or null value is omitted rather than sent as the string
+ * "undefined", and an array becomes one repeated parameter per element, which
+ * is the form the strict server bindings parse.
+ */
+function searchParams(query?: Record<string, unknown>): string {
+	if (!query) return '';
+	const search = new URLSearchParams();
+	for (const [key, value] of Object.entries(query)) {
+		if (value === undefined || value === null) continue;
+		if (Array.isArray(value)) {
+			for (const element of value) {
+				if (element !== undefined && element !== null) search.append(key, String(element));
+			}
+			continue;
+		}
+		search.append(key, String(value));
+	}
+	return search.toString();
 }
 
 function isAbortError(error: unknown): boolean {

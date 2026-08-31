@@ -36,6 +36,31 @@ Successful single-resource calls resolve to the generated resource directly.
 Generated collection models have required `items` and `page` members; treat
 empty `items` as `[]`, never `null`, and do not add a client-side envelope.
 
+The client supplies, per request: the versioned base path, `Accept` for both
+media types, same-origin credentials, forwarded cancellation, the
+`X-CSRF-Token` header on state changes (read from `__Host-session_csrf`, whose
+name is matched exactly — matching loosely is how a value an attacker can set
+gets echoed into the header the server trusts), an optional `Idempotency-Key`,
+encoded path parameters, and a query serializer that omits absent values and
+repeats an array.
+
+**Do not call `fetch` from a component.** One request without the anti-forgery
+header, six months from now, in the one file nobody re-reads, is the defect
+this rule exists for.
+
+Failures are `APITransportError` (no usable response; a cancellation is not
+wrapped at all) or `APIError` (a completed exchange with a non-success status).
+`APIError.problem` is the RFC 9457 body **after validation** — every required
+member, the status inside the error range, the documented length bounds — and
+is `null` when the body did not validate. Nothing from an unvalidated body is
+ever displayed.
+
+Branch on `problem.code`, never on the status: the server has one catalog and
+`code` is a closed set, while a status is shared by unrelated failures and
+`detail` is prose that will be reworded. `ProblemAlert.svelte` renders any
+thrown value, shows the request id so a report can be matched to a log line,
+and offers a retry only when `isRetryable` says one could work.
+
 `pnpm build` and `pnpm check` both refuse stale models. The initial Vitest
 suite is Node-only and covers the fetch wrapper. Browser component and
 Playwright coverage arrive with the application-shell milestone.

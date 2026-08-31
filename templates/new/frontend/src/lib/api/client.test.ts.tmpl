@@ -6,8 +6,10 @@ import {
 	APIError,
 	APITransportError,
 	createAPIClient,
+	readCSRFCookie,
 	type APIFetch
 } from './client';
+import { problemCodes } from './problem';
 import type { components } from './schema';
 
 describe('API client', () => {
@@ -28,6 +30,7 @@ describe('API client', () => {
 			method: 'GET',
 			credentials: 'same-origin',
 			headers: { Accept: 'application/json, application/problem+json' },
+			body: undefined,
 			signal: controller.signal
 		});
 	});
@@ -157,5 +160,143 @@ describe('API client', () => {
 			// @ts-expect-error a report total is a number, never null for an empty report.
 			void ({ items: [], page: { page: 1, size: 25, total: null, total_pages: 0, has_more: false } } satisfies components['schemas']['APIRootReportCollection']);
 		}
+	});
+
+	it('parses a valid Problem body and exposes its code', async () => {
+		const problem: components['schemas']['Problem'] = {
+			type: '/problems/permission-denied',
+			title: 'Permission denied',
+			status: 403,
+			detail: 'This account may not perform that action.',
+			code: problemCodes.permissionDenied,
+			request_id: 'req_abc',
+			correlation_id: 'cor_abc'
+		};
+		const client = createAPIClient({
+			fetch: async () =>
+				new Response(JSON.stringify(problem), {
+					status: 403,
+					headers: { 'content-type': 'application/problem+json' }
+				})
+		});
+
+		const error = (await client.get('/').catch((caught: unknown) => caught)) as APIError;
+		expect(error.problem).toEqual(problem);
+		expect(error.code).toBe(problemCodes.permissionDenied);
+		// The problem's own request id wins over the header, and is present
+		// even when a proxy stripped the header.
+		expect(error.requestID).toBe('req_abc');
+	});
+
+	it('leaves problem null for a body that does not validate', async () => {
+		const client = createAPIClient({
+			fetch: async () =>
+				new Response(JSON.stringify({ title: 'Nope', status: 500 }), {
+					status: 500,
+					headers: { 'content-type': 'application/problem+json' }
+				})
+		});
+
+		const error = (await client.get('/').catch((caught: unknown) => caught)) as APIError;
+		expect(error.problem).toBeNull();
+		expect(error.code).toBeNull();
+		expect(error.status).toBe(500);
+	});
+
+	it('sends the anti-forgery header on a state-changing request and not on a read', async () => {
+		const calls: RequestInit[] = [];
+		const client = createAPIClient({
+			csrfToken: () => 'csrf-token-value',
+			fetch: async (_input, init) => {
+				calls.push(init ?? {});
+				return new Response(null, { status: 204 });
+			}
+		});
+
+		await client.get('/');
+		await client.request('delete' as never, '/' as never).catch(() => undefined);
+
+		expect((calls[0].headers as Record<string, string>)['X-CSRF-Token']).toBeUndefined();
+		expect((calls[1].headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-token-value');
+	});
+
+	it('does not refuse a state change locally when the anti-forgery cookie is missing', async () => {
+		// The server decides: an unauthenticated state change is protected by
+		// Origin and Fetch Metadata instead. Refusing here would be a second,
+		// divergent copy of a server-side policy.
+		const calls: RequestInit[] = [];
+		const client = createAPIClient({
+			csrfToken: () => null,
+			fetch: async (_input, init) => {
+				calls.push(init ?? {});
+				return new Response(null, { status: 204 });
+			}
+		});
+
+		await client.request('post' as never, '/' as never).catch(() => undefined);
+		expect(calls).toHaveLength(1);
+		expect((calls[0].headers as Record<string, string>)['X-CSRF-Token']).toBeUndefined();
+	});
+
+	it('sends an idempotency key and a JSON content type only when there is a body', async () => {
+		const calls: RequestInit[] = [];
+		const client = createAPIClient({
+			csrfToken: () => 'token',
+			fetch: async (_input, init) => {
+				calls.push(init ?? {});
+				return new Response(null, { status: 204 });
+			}
+		});
+
+		await client
+			.request('post' as never, '/' as never, {
+				idempotencyKey: 'key-0123456789',
+				body: { name: 'Ada' }
+			} as never)
+			.catch(() => undefined);
+
+		const headers = calls[0].headers as Record<string, string>;
+		expect(headers['Idempotency-Key']).toBe('key-0123456789');
+		expect(headers['Content-Type']).toBe('application/json');
+		expect(calls[0].body).toBe('{"name":"Ada"}');
+	});
+
+	it('builds the query, omitting absent values and repeating an array', async () => {
+		const urls: string[] = [];
+		const client = createAPIClient({
+			fetch: async (input) => {
+				urls.push(String(input));
+				return new Response(JSON.stringify({ version: 'v1' }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' }
+				});
+			}
+		});
+
+		await client.get('/', {
+			query: { limit: 25, after: undefined, status: ['open', 'closed'], q: null }
+		} as never);
+
+		expect(urls[0]).toBe('/api/v1/?limit=25&status=open&status=closed');
+	});
+});
+
+describe('readCSRFCookie', () => {
+	it('reads the anti-forgery cookie by exact name', () => {
+		expect(readCSRFCookie('__Host-session_csrf=abc123')).toBe('abc123');
+		expect(readCSRFCookie('other=1; __Host-session_csrf=abc123; more=2')).toBe('abc123');
+	});
+
+	it('does not match a cookie whose name merely ends with the right characters', () => {
+		// Matching loosely is how a value an attacker could set gets echoed
+		// into the header the server trusts.
+		expect(readCSRFCookie('x__Host-session_csrf=attacker')).toBeNull();
+		expect(readCSRFCookie('__Host-session_csrf_other=attacker')).toBeNull();
+	});
+
+	it('is null when there is no cookie, or it is empty', () => {
+		expect(readCSRFCookie('')).toBeNull();
+		expect(readCSRFCookie(undefined)).toBeNull();
+		expect(readCSRFCookie('__Host-session_csrf=')).toBeNull();
 	});
 });

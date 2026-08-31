@@ -32,7 +32,7 @@ func TestGeneratedProjectDefinesTypedFrontendClient(t *testing.T) {
 		"frontend/src/lib/api/client.ts": {
 			`import type { paths } from './schema'`,
 			"credentials: 'same-origin'",
-			"signal: options.signal",
+			"signal: chosen.signal",
 			"export class APIError extends Error",
 			"export class APITransportError extends Error",
 		},

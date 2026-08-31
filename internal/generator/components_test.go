@@ -22,6 +22,7 @@ var curatedComponents = []string{
 	"Input.svelte",
 	"Menu.svelte",
 	"Pagination.svelte",
+	"ProblemAlert.svelte",
 	"Select.svelte",
 	"Skeleton.svelte",
 	"Spinner.svelte",
