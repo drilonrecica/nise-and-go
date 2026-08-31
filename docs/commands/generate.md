@@ -141,6 +141,25 @@ Three properties are pinned by tests rather than promised:
 
 So the worst a wrong invocation can do is create files you delete.
 
+## Determinism
+
+Two runs with equal options produce byte-identical files with identical modes,
+whatever the machine, the working directory, the clock, the locale, or the
+umask says. Everything the output depends on is either typed by the person
+running the command or read from the project on disk — the module path from
+`go.mod`, the next migration number from `db/migrations` — and nothing is read
+from the environment, the clock, or the network.
+
+That property is what makes the refusal above useful advice rather than a
+guess: "this file already exists" only means something if the file that exists
+is the one this run would have written.
+
+It is pinned by `test/golden`: each variant is written twice into unrelated
+directories and compared as a whole tree, run again under a different working
+directory, time zone, and locale, and — on Unix — run again under `umask 077`,
+because a mode inherited from the umask is a difference two machines can have
+while their file contents are identical, which no content comparison can see.
+
 ## What it does not decide
 
 Generation invents no domain rules. A generated resource has an identifier, a

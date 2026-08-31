@@ -69,7 +69,7 @@ func Write(root string, plan Plan) ([]string, error) {
 	written := make([]string, 0, len(plan.Files))
 	for _, file := range plan.Files {
 		target := filepath.Join(root, filepath.FromSlash(file.Path))
-		if err := os.MkdirAll(filepath.Dir(target), generator.DirMode); err != nil {
+		if err := makeDirs(root, filepath.Dir(target)); err != nil {
 			return written, fmt.Errorf("creating the directory for %s: %w", file.Path, err)
 		}
 		// O_EXCL rather than a plain create: the stat above is a courtesy that
@@ -85,9 +85,18 @@ func Write(root string, plan Plan) ([]string, error) {
 			return written, fmt.Errorf("creating %s: %w", file.Path, err)
 		}
 		_, writeErr := handle.Write(file.Content)
+		// The mode is set explicitly rather than left to OpenFile's argument,
+		// which the process umask masks. A contributor running under
+		// `umask 077` would otherwise produce 0600 files where everybody else
+		// produces 0644 — two trees whose contents are identical and whose
+		// modes are not, which no content comparison can see.
+		chmodErr := handle.Chmod(generator.FileMode)
 		closeErr := handle.Close()
 		if writeErr != nil {
 			return written, fmt.Errorf("writing %s: %w", file.Path, writeErr)
+		}
+		if chmodErr != nil {
+			return written, fmt.Errorf("setting the mode of %s: %w", file.Path, chmodErr)
 		}
 		if closeErr != nil {
 			return written, fmt.Errorf("closing %s: %w", file.Path, closeErr)
@@ -153,4 +162,35 @@ func NextMigrationVersion(root string) (int, error) {
 		return 0, fmt.Errorf("%w: db/migrations holds no numbered migration", ErrNotAProject)
 	}
 	return highest + 1, nil
+}
+
+// makeDirs creates every missing directory between root and target, giving
+// each the fixed mode.
+//
+// MkdirAll's mode is masked by the process umask, and a directory it did not
+// create keeps whatever mode it had — which is right: a directory the project
+// already owns is not this command's to change.
+func makeDirs(root, target string) error {
+	relative, err := filepath.Rel(root, target)
+	if err != nil {
+		return err
+	}
+	current := root
+	for _, part := range strings.Split(filepath.ToSlash(relative), "/") {
+		if part == "." || part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		switch err := os.Mkdir(current, generator.DirMode); {
+		case err == nil:
+			if err := os.Chmod(current, generator.DirMode); err != nil {
+				return err
+			}
+		case errors.Is(err, os.ErrExist):
+			// Already there, and not this command's to re-mode.
+		default:
+			return err
+		}
+	}
+	return nil
 }
