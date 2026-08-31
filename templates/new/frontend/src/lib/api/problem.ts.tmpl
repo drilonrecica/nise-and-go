@@ -45,6 +45,12 @@ export const problemCodes = {
 	idempotencyConflict: 'idempotency_conflict',
 	idempotencyKeyReuse: 'idempotency_key_reuse',
 	permissionDenied: 'permission_denied',
+	authenticationRequired: 'authentication_required',
+	invalidCredentials: 'invalid_credentials',
+	secondFactorRequired: 'second_factor_required',
+	tooManyAttempts: 'too_many_attempts',
+	invitationInvalid: 'invitation_invalid',
+	passwordRejected: 'password_rejected',
 	crossSiteRequest: 'cross_site_request',
 	unsupportedMediaType: 'unsupported_media_type',
 	internalServerError: 'internal_server_error'
@@ -97,6 +103,8 @@ export function problemMessage(problem: Problem): string {
 	switch (problem.code) {
 		case problemCodes.permissionDenied:
 			return 'You do not have permission to do that.';
+		case problemCodes.authenticationRequired:
+			return 'Sign in to continue.';
 		case problemCodes.crossSiteRequest:
 			return 'That request was refused for security reasons. Reload the page and try again.';
 		case problemCodes.cursorExpired:

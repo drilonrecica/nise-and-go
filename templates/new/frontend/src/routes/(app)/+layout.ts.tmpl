@@ -1,0 +1,25 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { redirect } from '@sveltejs/kit';
+
+import { session } from '$lib/session.svelte';
+
+import type { LayoutLoad } from './$types';
+
+// Every route in this group needs a session, so the check is here rather than
+// in each page: a page cannot forget a guard it does not have to remember.
+//
+// It is a courtesy, not a control. The server refuses an unauthenticated
+// request whatever this does, and an attacker skips a browser guard by not
+// running it. What it buys is that a person who is signed out lands on the
+// sign-in form instead of on a shell full of failed requests.
+export const load: LayoutLoad = async ({ url, fetch }) => {
+	const current = await session.load(fetch);
+	if (!current) {
+		// Where they were going travels as a parameter and is validated on the
+		// way back out, because a redirect target somebody else can choose is
+		// an open redirect.
+		redirect(307, `/sign-in?next=${encodeURIComponent(url.pathname + url.search)}`);
+	}
+	return { session: current };
+};

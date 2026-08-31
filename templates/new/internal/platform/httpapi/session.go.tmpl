@@ -1,0 +1,410 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpapi
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"time"
+
+	"{{.ModulePath}}/internal/features/auth"
+	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
+	"{{.ModulePath}}/internal/platform/httpapi/problem"
+	"{{.ModulePath}}/internal/platform/httpauth"
+	"{{.ModulePath}}/internal/platform/passwords"
+)
+
+// This file is the HTTP surface of the authentication feature: sign in, sign
+// out, the second step, the account's own session list, its password, and
+// turning an invitation into an account.
+//
+// It contains no rules. Every decision — whether a password is right, whether
+// a session is still alive, what a failure is called, what a password change
+// does to other sessions — belongs to the use cases in internal/features/auth,
+// and this file translates between those and the wire. When something here
+// looks like it is deciding, it is a bug.
+//
+// Two properties are load-bearing and easy to lose:
+//
+//   - The session token is never in a response body. It is written to the
+//     hardened cookie and exists nowhere else, which is why the cookie writes
+//     happen in the response wrappers at the bottom of this file rather than
+//     being something a handler could forget to do after building its JSON.
+//
+//   - Every refusal that could tell an unauthenticated caller something about
+//     the directory answers with one code. Which of the possible failures
+//     actually happened is in the audit record.
+
+// requireSession returns the session making the request, or the public
+// "sign in first" refusal.
+//
+// It is not authorization. It answers "is anybody there", and a use case still
+// decides what that somebody may do.
+func requireSession(ctx context.Context) (sessionRecord, error) {
+	record, ok := httpauth.FromContext(ctx)
+	if !ok {
+		return sessionRecord{}, problem.Fail(problem.AuthenticationRequired())
+	}
+	return sessionRecord{ID: record.ID, UserID: record.UserID, ExpiresAt: record.ExpiresAt, ProvenAt: record.ProvenAt}, nil
+}
+
+// sessionRecord is the part of the resolved session this file uses.
+type sessionRecord struct {
+	ID        string
+	UserID    string
+	ExpiresAt time.Time
+	ProvenAt  time.Time
+}
+
+// GetCurrentSession describes the session making the request.
+func (s *Server) GetCurrentSession(ctx context.Context, _ openapigen.GetCurrentSessionRequestObject) (openapigen.GetCurrentSessionResponseObject, error) {
+	current, err := requireSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	account, err := s.accounts.FindByID(ctx, current.UserID)
+	if err != nil {
+		// A resolved session whose account has gone is not a 404 for the
+		// caller to reason about; it is a credential that no longer means
+		// anything, so it reads as unauthenticated.
+		return nil, problem.Wrap(problem.AuthenticationRequired(), err)
+	}
+	return openapigen.GetCurrentSession200JSONResponse(sessionResource(account, current)), nil
+}
+
+// SignIn exchanges an address and password for a session, or for a second-factor
+// challenge when the application has one and the account uses it.
+func (s *Server) SignIn(ctx context.Context, request openapigen.SignInRequestObject) (openapigen.SignInResponseObject, error) {
+	login, err := s.credentials.Authenticate(ctx, request.Body.Email, request.Body.Password)
+	switch {
+	case errors.Is(err, auth.ErrThrottled):
+		return nil, problem.Wrap(problem.TooManyAttempts(), err)
+	case errors.Is(err, auth.ErrSecondFactorRequired):
+		return signInChallenge{challenge: login.Challenge}, nil
+	case err != nil:
+		// Every remaining failure is one code. An address with no account, a
+		// wrong password, and a disabled account are each a fact the caller
+		// would like to learn, and a sign-in form is the cheapest place to
+		// ask; the audit record holds which one it was.
+		return nil, problem.Wrap(problem.InvalidCredentials(), err)
+	}
+	return s.signedIn(login), nil
+}
+
+// CompleteSecondFactor finishes a sign-in that opened a challenge.
+func (s *Server) CompleteSecondFactor(ctx context.Context, request openapigen.CompleteSecondFactorRequestObject) (openapigen.CompleteSecondFactorResponseObject, error) {
+	login, err := s.credentials.CompleteSecondFactor(ctx, request.Body.ChallengeToken, request.Body.Code)
+	switch {
+	case errors.Is(err, auth.ErrThrottled):
+		return nil, problem.Wrap(problem.TooManyAttempts(), err)
+	case err != nil:
+		// Including auth.ErrNoSecondFactor, which is what an application
+		// without the module answers. A caller learning that this deployment
+		// has no second factor learns nothing it could not learn by signing
+		// in, and merging it here keeps one refusal for the whole step.
+		return nil, problem.Wrap(problem.InvalidCredentials(), err)
+	}
+	account, err := s.accounts.FindByID(ctx, login.Session.Record.UserID)
+	if err != nil {
+		return nil, err
+	}
+	return withSecondFactorCookies{
+		cookies: s.cookies,
+		issued:  login.Session,
+		inner: openapigen.CompleteSecondFactor200JSONResponse(
+			sessionResource(account, recordOf(login.Session)),
+		),
+	}, nil
+}
+
+// SignOut ends the session making the request.
+//
+// It is idempotent by construction: a caller with no session gets the same
+// cleared cookies as one whose session was just revoked, because "sign me out"
+// asked for a state, not for a transition.
+func (s *Server) SignOut(ctx context.Context, _ openapigen.SignOutRequestObject) (openapigen.SignOutResponseObject, error) {
+	if current, ok := httpauth.FromContext(ctx); ok {
+		if err := s.sessions.Revoke(ctx, current.ID, "signed out"); err != nil && !errors.Is(err, auth.ErrSessionNotFound) {
+			return nil, err
+		}
+	}
+	return clearedSession{cookies: s.cookies}, nil
+}
+
+// ListSessions lists the account's own live sessions.
+func (s *Server) ListSessions(ctx context.Context, _ openapigen.ListSessionsRequestObject) (openapigen.ListSessionsResponseObject, error) {
+	current, err := requireSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	summaries, err := s.sessions.List(ctx, current.UserID, current.ID, maxListedSessions)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]openapigen.SessionSummary, 0, len(summaries))
+	for _, summary := range summaries {
+		items = append(items, openapigen.SessionSummary{
+			Id:         summary.ID,
+			CreatedAt:  summary.CreatedAt,
+			LastSeenAt: summary.LastSeenAt,
+			ExpiresAt:  summary.ExpiresAt,
+			Current:    summary.Current,
+		})
+	}
+	return openapigen.ListSessions200JSONResponse{
+		Items: items,
+		Page:  openapigen.Page{HasMore: len(items) == maxListedSessions},
+	}, nil
+}
+
+// maxListedSessions bounds the account's own session list. It is a fixed
+// ceiling rather than a page: an account with more live sessions than this has
+// a problem the list is not going to help with, and the honest answer is to
+// end them all.
+const maxListedSessions = 100
+
+// RevokeSession ends one of the account's own sessions.
+//
+// The account is part of the lookup rather than checked afterwards, so a
+// well-formed identifier belonging to somebody else is a 404 and reveals
+// nothing about whether that session exists.
+func (s *Server) RevokeSession(ctx context.Context, request openapigen.RevokeSessionRequestObject) (openapigen.RevokeSessionResponseObject, error) {
+	current, err := requireSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	summaries, err := s.sessions.List(ctx, current.UserID, current.ID, maxListedSessions)
+	if err != nil {
+		return nil, err
+	}
+	target := request.SessionId
+	if !ownsSession(summaries, target) {
+		return nil, problem.Fail(problem.NotFound())
+	}
+	if err := s.sessions.Revoke(ctx, target, "revoked by holder"); err != nil {
+		if errors.Is(err, auth.ErrSessionNotFound) {
+			return nil, problem.Wrap(problem.NotFound(), err)
+		}
+		return nil, err
+	}
+	// Ending the session that is asking is allowed, and its cookies go with
+	// it: leaving them set would mean the browser kept presenting a
+	// credential the server has already refused.
+	if target == current.ID {
+		return clearedSession{cookies: s.cookies}, nil
+	}
+	return openapigen.RevokeSession204Response{}, nil
+}
+
+// RevokeOtherSessions ends every session except the one asking.
+func (s *Server) RevokeOtherSessions(ctx context.Context, _ openapigen.RevokeOtherSessionsRequestObject) (openapigen.RevokeOtherSessionsResponseObject, error) {
+	current, err := requireSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	revoked, err := s.sessions.RevokeOtherSessions(ctx, current.UserID, current.ID, "signed out everywhere else")
+	if err != nil {
+		return nil, err
+	}
+	return openapigen.RevokeOtherSessions200JSONResponse{Revoked: revoked}, nil
+}
+
+// ChangePassword replaces the account's password.
+//
+// The current password is the proof, which is why this action is not in the
+// reauthentication matrix: it carries its own, and asking for the same
+// password twice in one form teaches people to type it wherever they are
+// asked. The use case ends every other session and rotates this one.
+func (s *Server) ChangePassword(ctx context.Context, request openapigen.ChangePasswordRequestObject) (openapigen.ChangePasswordResponseObject, error) {
+	current, err := requireSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rotated, err := s.credentials.ChangePassword(
+		ctx, current.UserID, request.Body.CurrentPassword, request.Body.NewPassword, s.compromised, current.ID,
+	)
+	switch {
+	case errors.Is(err, auth.ErrInvalidCredentials):
+		return nil, problem.Wrap(problem.AuthenticationRequired(), err)
+	case isPasswordRefusal(err):
+		return nil, problem.Wrap(problem.PasswordRejected(), err)
+	case err != nil:
+		return nil, err
+	}
+	return withPasswordCookies{
+		cookies: s.cookies,
+		issued:  rotated,
+		inner:   openapigen.ChangePassword204Response{},
+	}, nil
+}
+
+// AcceptInvitation turns an invitation into an account.
+//
+// It answers with the address rather than with a session. Signing somebody in
+// as a side effect of enrollment would make the enrollment token a way to
+// obtain a session without ever presenting the password that was just set, and
+// the sign-in that follows is one form away.
+func (s *Server) AcceptInvitation(ctx context.Context, request openapigen.AcceptInvitationRequestObject) (openapigen.AcceptInvitationResponseObject, error) {
+	account, err := s.invitations.Accept(ctx, request.Body.Token, request.Body.Password)
+	switch {
+	case isPasswordRefusal(err):
+		return nil, problem.Wrap(problem.PasswordRejected(), err)
+	case err != nil:
+		// One code for unknown, expired, already accepted, revoked, and
+		// malformed. An invitation token is a credential, and telling a
+		// holder which of their guesses was structurally valid is how the
+		// guessing gets cheaper.
+		return nil, problem.Wrap(problem.InvitationInvalid(), err)
+	}
+	return openapigen.AcceptInvitation201JSONResponse{Email: account.Email}, nil
+}
+
+// isPasswordRefusal reports whether err is the password policy refusing a
+// proposed password, as opposed to anything else that can go wrong while
+// setting one. The distinction matters to the caller: one is fixable by
+// choosing another password, and the rest are not.
+//
+// ErrCheckUnavailable is deliberately not in this list. It means the
+// compromised-password source could not answer, which is a server failure, and
+// reporting it as "choose another password" would send somebody round a loop
+// no password can end.
+func isPasswordRefusal(err error) bool {
+	return errors.Is(err, passwords.ErrTooShort) ||
+		errors.Is(err, passwords.ErrTooLong) ||
+		errors.Is(err, passwords.ErrCompromised) ||
+		errors.Is(err, passwords.ErrDerivedFromAddress)
+}
+
+// sessionResource builds the public view of an account and its session. The
+// token is deliberately absent: it exists in the cookie and nowhere else.
+func sessionResource(account auth.Account, current sessionRecord) openapigen.Session {
+	return openapigen.Session{
+		Account: openapigen.Account{
+			Id:     account.ID,
+			Email:  account.Email,
+			Status: openapigen.AccountStatus(account.Status),
+		},
+		SessionId: current.ID,
+		ExpiresAt: current.ExpiresAt,
+		ProvenAt:  current.ProvenAt,
+	}
+}
+
+func recordOf(issued auth.Issued) sessionRecord {
+	return sessionRecord{
+		ID:        issued.Record.ID,
+		UserID:    issued.Record.UserID,
+		ExpiresAt: issued.Record.ExpiresAt,
+		ProvenAt:  issued.Record.ProvenAt,
+	}
+}
+
+func ownsSession(summaries []auth.Summary, id string) bool {
+	for _, summary := range summaries {
+		if summary.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// signedIn builds the finished-sign-in response, including its cookies.
+func (s *Server) signedIn(login auth.Login) openapigen.SignInResponseObject {
+	resource := sessionResource(login.Account, recordOf(login.Session))
+	return withSignInCookies{
+		cookies: s.cookies,
+		issued:  login.Session,
+		inner: openapigen.SignIn200JSONResponse{
+			Status:  openapigen.SignedIn,
+			Session: &resource,
+		},
+	}
+}
+
+// The response wrappers below are how a cookie reaches the response from a
+// strict handler, which never sees the ResponseWriter itself. Each one sets
+// its cookies and then delegates to the generated response, so a handler
+// cannot build the right JSON and forget the credential that goes with it.
+
+type signInChallenge struct {
+	challenge auth.Challenge
+}
+
+func (r signInChallenge) VisitSignInResponse(w http.ResponseWriter, validator func(int) error) error {
+	return openapigen.SignIn200JSONResponse{
+		Status: openapigen.SecondFactorRequired,
+		Challenge: &openapigen.SecondFactorChallenge{
+			Token:     r.challenge.Token,
+			ExpiresAt: r.challenge.ExpiresAt,
+		},
+	}.VisitSignInResponse(w, validator)
+}
+
+type withSignInCookies struct {
+	cookies *httpauth.Cookies
+	issued  auth.Issued
+	inner   openapigen.SignIn200JSONResponse
+}
+
+func (r withSignInCookies) VisitSignInResponse(w http.ResponseWriter, validator func(int) error) error {
+	writeSessionCookies(w, r.cookies, r.issued)
+	return r.inner.VisitSignInResponse(w, validator)
+}
+
+type withSecondFactorCookies struct {
+	cookies *httpauth.Cookies
+	issued  auth.Issued
+	inner   openapigen.CompleteSecondFactor200JSONResponse
+}
+
+func (r withSecondFactorCookies) VisitCompleteSecondFactorResponse(w http.ResponseWriter, validator func(int) error) error {
+	writeSessionCookies(w, r.cookies, r.issued)
+	return r.inner.VisitCompleteSecondFactorResponse(w, validator)
+}
+
+type withPasswordCookies struct {
+	cookies *httpauth.Cookies
+	issued  auth.Issued
+	inner   openapigen.ChangePassword204Response
+}
+
+func (r withPasswordCookies) VisitChangePasswordResponse(w http.ResponseWriter, validator func(int) error) error {
+	writeSessionCookies(w, r.cookies, r.issued)
+	return r.inner.VisitChangePasswordResponse(w, validator)
+}
+
+// clearedSession answers 204 and takes both cookies with it. It serves the
+// two operations that end the asking session — signing out, and revoking the
+// session that is asking — because leaving the cookies set would mean the
+// browser kept presenting a credential the server has already refused.
+type clearedSession struct {
+	cookies *httpauth.Cookies
+}
+
+func (r clearedSession) clear(w http.ResponseWriter) error {
+	r.cookies.Clear(w)
+	r.cookies.ClearCSRFCookie(w)
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (r clearedSession) VisitSignOutResponse(w http.ResponseWriter, _ func(int) error) error {
+	return r.clear(w)
+}
+
+func (r clearedSession) VisitRevokeSessionResponse(w http.ResponseWriter, _ func(int) error) error {
+	return r.clear(w)
+}
+
+// writeSessionCookies sets both cookies for a newly issued session.
+//
+// Both, always: the anti-forgery cookie is derived from the session token, so
+// a response that set the session and left a previous session's anti-forgery
+// value in place would make the very next state-changing request fail the
+// guard for a reason nobody could see.
+func writeSessionCookies(w http.ResponseWriter, cookies *httpauth.Cookies, issued auth.Issued) {
+	now := time.Now()
+	cookies.Write(w, issued.Token, issued.Record.ExpiresAt, now)
+	cookies.WriteCSRFCookie(w, issued.Token, issued.Record.ExpiresAt, now)
+}

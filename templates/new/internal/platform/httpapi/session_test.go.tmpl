@@ -1,0 +1,299 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/password"
+	rtsession "github.com/drilonrecica/nise-and-go/runtime/session"
+
+	"{{.ModulePath}}/internal/features/auth"
+	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
+	"{{.ModulePath}}/internal/platform/httpapi/problem"
+	"{{.ModulePath}}/internal/platform/httpauth"
+)
+
+// This suite covers the authentication surface's transport contract: what a
+// caller with no session sees, what a body carries, and what never appears in
+// one. The behavior behind it — whether a password is right, what a password
+// change does to other sessions — is decided by internal/features/auth and is
+// tested there against real PostgreSQL.
+//
+// The use cases are reached through the four interfaces this package declares,
+// so the fakes below can refuse to be called at all. That is what turns "no
+// handler touches a use case before checking for a session" from a review
+// comment into a test that fails.
+
+// TestUnauthenticatedRequestsAreRefusedWithoutReachingAUseCase asserts every
+// authenticated operation answers 401 with the public code, and does so
+// before consulting anything.
+func TestUnauthenticatedRequestsAreRefusedWithoutReachingAUseCase(t *testing.T) {
+	t.Parallel()
+
+	deps, _, _ := routerTestDeps(t)
+	server, err := NewServer(refusingServerDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	deps.RegisterAPI = server.Register
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for _, target := range []string{"/api/v1/session", "/api/v1/sessions"} {
+		response := serveRouter(handler, target)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("GET %s status = %d, want 401; body %s", target, response.Code, response.Body)
+		}
+		if got := response.Header().Get("Content-Type"); !strings.HasPrefix(got, problem.MediaType) {
+			t.Errorf("GET %s content type = %q, want %s", target, got, problem.MediaType)
+		}
+
+		var body map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatalf("GET %s decoding the problem: %v", target, err)
+		}
+		if body["code"] != "authentication_required" {
+			t.Errorf("GET %s code = %v, want authentication_required", target, body["code"])
+		}
+		for _, required := range []string{"type", "title", "status", "detail", "request_id", "correlation_id"} {
+			if body[required] == nil {
+				t.Errorf("GET %s problem is missing %s: %v", target, required, body)
+			}
+		}
+	}
+}
+
+// TestAuthenticatedReadsDoNotCarryACredential is the standing check that the
+// session token stays in the cookie.
+//
+// The token exists in the issued value and in Set-Cookie and nowhere else. A
+// body carrying it would be recorded by every proxy in front of this
+// application, and once one handler had done it nobody would find it again.
+func TestAuthenticatedReadsDoNotCarryACredential(t *testing.T) {
+	t.Parallel()
+
+	const token = "st_1_thisisthesessiontokenvalue"
+	fake := &fakeDirectory{
+		account: auth.Account{ID: "11111111-1111-1111-1111-111111111111", Email: "ada@example.test", Status: "active"},
+		summaries: []auth.Summary{
+			{ID: "22222222-2222-2222-2222-222222222222", Current: true},
+		},
+	}
+	deps, _, _ := routerTestDeps(t)
+	serverDeps := testServerDeps(t)
+	serverDeps.Accounts = fake
+	serverDeps.Sessions = fake
+	server, err := NewServer(serverDeps)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	deps.RegisterAPI = server.Register
+	deps.Middleware.API = []Middleware{withResolvedSession(fake.account.ID, "22222222-2222-2222-2222-222222222222")}
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for _, target := range []string{"/api/v1/session", "/api/v1/sessions"} {
+		response := serveRouter(handler, target)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200; body %s", target, response.Code, response.Body)
+		}
+		body := response.Body.String()
+		if strings.Contains(body, token) {
+			t.Errorf("GET %s answered with the session token in the body: %s", target, body)
+		}
+		for _, forbidden := range []string{`"token"`, `"password"`, `"password_hash"`} {
+			if strings.Contains(strings.ToLower(body), forbidden) {
+				t.Errorf("GET %s body carries a %s member: %s", target, forbidden, body)
+			}
+		}
+	}
+}
+
+// TestSignOutClearsBothCookiesWithoutASession asserts signing out is a state
+// rather than a transition: a caller whose session has already gone gets the
+// same cleared cookies and the same 204.
+//
+// Both cookies go. The anti-forgery value is derived from the session token,
+// so leaving it behind would have the browser presenting half a credential.
+func TestSignOutClearsBothCookiesWithoutASession(t *testing.T) {
+	t.Parallel()
+
+	deps, _, _ := routerTestDeps(t)
+	server, err := NewServer(refusingServerDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	deps.RegisterAPI = server.Register
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	response := serveRouterMethod(handler, http.MethodDelete, "/api/v1/session")
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body %s", response.Code, response.Body)
+	}
+	cleared := map[string]bool{}
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.MaxAge < 0 && cookie.Value == "" {
+			cleared[cookie.Name] = true
+		}
+	}
+	if len(cleared) != 2 {
+		t.Errorf("cleared %v, want both the session and anti-forgery cookies", cleared)
+	}
+}
+
+// TestProblemErrorCarriesItsOwnStatusAndHidesItsCause covers the mechanism the
+// whole surface depends on. Without it every refusal in this file would be a
+// 500 and would look like a server defect to every caller.
+func TestProblemErrorCarriesItsOwnStatusAndHidesItsCause(t *testing.T) {
+	t.Parallel()
+
+	var named *problem.Error
+	if !errors.As(problem.Fail(problem.AuthenticationRequired()), &named) {
+		t.Fatal("problem.Fail did not produce a *problem.Error")
+	}
+	if got := named.Definition().Status(); got != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", got)
+	}
+	if got := named.Definition().Code(); got != "authentication_required" {
+		t.Errorf("code = %q, want authentication_required", got)
+	}
+
+	cause := errors.New("account 41 is disabled")
+	wrapped := problem.Wrap(problem.InvalidCredentials(), cause)
+	// The message reaches the server's log. A log line quoting a wrapped
+	// internal error beside a public code is how the two get confused.
+	if strings.Contains(wrapped.Error(), "disabled") {
+		t.Errorf("the error message leaks its cause: %q", wrapped.Error())
+	}
+	if !errors.Is(wrapped, cause) {
+		t.Error("the cause is not reachable through errors.Is")
+	}
+}
+
+// TestSignInRefusalsAreOneCode asserts the sign-in surface answers with one
+// public code for an unknown address, a wrong password, and a disabled
+// account. Each of those is a fact an unauthenticated caller would like to
+// learn, and a sign-in form is the cheapest place to ask.
+func TestSignInRefusalsAreOneCode(t *testing.T) {
+	t.Parallel()
+
+	for name, failure := range map[string]error{
+		"no account":       auth.ErrInvalidCredentials,
+		"wrong password":   auth.ErrInvalidCredentials,
+		"disabled account": auth.ErrAccountNotFound,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			serverDeps := testServerDeps(t)
+			serverDeps.Credentials = &fakeCredentials{signIn: failure}
+			server, err := NewServer(serverDeps)
+			if err != nil {
+				t.Fatalf("NewServer: %v", err)
+			}
+			_, err = server.SignIn(context.Background(), signInRequest())
+			var named *problem.Error
+			if !errors.As(err, &named) {
+				t.Fatalf("SignIn error = %v, want a *problem.Error", err)
+			}
+			if got := named.Definition().Code(); got != "invalid_credentials" {
+				t.Errorf("code = %q, want invalid_credentials", got)
+			}
+		})
+	}
+
+	t.Run("throttled", func(t *testing.T) {
+		t.Parallel()
+
+		serverDeps := testServerDeps(t)
+		serverDeps.Credentials = &fakeCredentials{signIn: auth.ErrThrottled}
+		server, err := NewServer(serverDeps)
+		if err != nil {
+			t.Fatalf("NewServer: %v", err)
+		}
+		_, err = server.SignIn(context.Background(), signInRequest())
+		var named *problem.Error
+		if !errors.As(err, &named) {
+			t.Fatalf("SignIn error = %v, want a *problem.Error", err)
+		}
+		// The throttle is the one refusal a caller can act on, so it is its
+		// own code and its own status.
+		if got := named.Definition().Status(); got != http.StatusTooManyRequests {
+			t.Errorf("status = %d, want 429", got)
+		}
+	})
+}
+
+// signInRequest is one well-formed sign-in body. The values are irrelevant:
+// these tests are about how a refusal is reported, and the use case behind the
+// interface decides everything else.
+func signInRequest() openapigen.SignInRequestObject {
+	return openapigen.SignInRequestObject{
+		Body: &openapigen.SignInJSONRequestBody{Email: "ada@example.test", Password: "correct horse battery staple"},
+	}
+}
+
+// withResolvedSession is the middleware a test uses in place of the real
+// resolver: it asserts a session without a database behind it.
+func withResolvedSession(userID, sessionID string) Middleware {
+	record := rtsession.Record{
+		ID:        sessionID,
+		UserID:    userID,
+		ExpiresAt: time.Now().Add(time.Hour),
+		ProvenAt:  time.Now(),
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(httpauth.WithSession(r.Context(), record)))
+		})
+	}
+}
+
+// fakeDirectory answers the two read paths this suite exercises.
+type fakeDirectory struct {
+	account   auth.Account
+	summaries []auth.Summary
+}
+
+func (f *fakeDirectory) FindByID(context.Context, string) (auth.Account, error) {
+	return f.account, nil
+}
+
+func (f *fakeDirectory) List(context.Context, string, string, int) ([]auth.Summary, error) {
+	return f.summaries, nil
+}
+
+func (f *fakeDirectory) Revoke(context.Context, string, string) error { return nil }
+
+func (f *fakeDirectory) RevokeOtherSessions(context.Context, string, string, string) (int64, error) {
+	return 0, nil
+}
+
+// fakeCredentials fails sign-in with a chosen error.
+type fakeCredentials struct{ signIn error }
+
+func (f *fakeCredentials) Authenticate(context.Context, string, string) (auth.Login, error) {
+	return auth.Login{}, f.signIn
+}
+
+func (f *fakeCredentials) CompleteSecondFactor(context.Context, string, string) (auth.Login, error) {
+	return auth.Login{}, f.signIn
+}
+
+func (f *fakeCredentials) ChangePassword(context.Context, string, string, string, password.Compromised, string) (auth.Issued, error) {
+	return auth.Issued{}, f.signIn
+}

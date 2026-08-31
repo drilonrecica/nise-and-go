@@ -1,0 +1,173 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Who is signed in, according to the server.
+//
+// The browser holds no credential it can read: the session token is in a
+// HttpOnly cookie and this module has never seen it. What it holds is the
+// server's answer to "who am I", refreshed by asking. That is the whole
+// reason there is nothing here that decides whether somebody is signed in —
+// only something that records what the server said.
+//
+// Nothing here is a security boundary. Hiding a page from a caller the server
+// would refuse is a courtesy; the server refuses it either way, and a guard
+// in the browser is one an attacker skips by not running it.
+
+import { APIError, api, createAPIClient, type APIClient } from '$lib/api/client';
+import { problemCodes } from '$lib/api/problem';
+import type { components } from '$lib/api/schema';
+
+/** The signed-in account, as the API describes it. */
+export type Account = components['schemas']['Account'];
+
+/** The current session, as the API describes it. */
+export type CurrentSession = components['schemas']['Session'];
+
+/** One row of the account's own session list. */
+export type SessionSummary = components['schemas']['SessionSummary'];
+
+/** An unfinished sign-in waiting for a second factor. */
+export type SecondFactorChallenge = components['schemas']['SecondFactorChallenge'];
+
+class Session {
+	#current = $state<CurrentSession | null>(null);
+	#loaded = $state(false);
+
+	/** The session, or null when nobody is signed in. */
+	get current(): CurrentSession | null {
+		return this.#current;
+	}
+
+	/** The signed-in account, or null. */
+	get account(): Account | null {
+		return this.#current?.account ?? null;
+	}
+
+	/** Whether the server has been asked at least once. */
+	get loaded(): boolean {
+		return this.#loaded;
+	}
+
+	/**
+	 * Ask the server who is signed in.
+	 *
+	 * A 401 is an answer, not a failure: it means nobody is, and it is the
+	 * ordinary case on a first visit. Every other failure is left to throw,
+	 * because "the server is unreachable" and "you are signed out" call for
+	 * different screens and merging them would sign people out during an
+	 * outage.
+	 */
+	async load(fetcher?: typeof fetch): Promise<CurrentSession | null> {
+		try {
+			this.#current = await client(fetcher).get('/session');
+		} catch (error) {
+			if (isUnauthenticated(error)) {
+				this.#current = null;
+			} else {
+				throw error;
+			}
+		}
+		this.#loaded = true;
+		return this.#current;
+	}
+
+	/**
+	 * Sign in. Returns the challenge when the account has a second factor and
+	 * the sign-in is not finished.
+	 *
+	 * The two outcomes are distinguished by the server's own status
+	 * discriminator rather than by the shape of the body, so a caller cannot
+	 * read a challenge as a session by looking at the wrong member.
+	 */
+	async signIn(email: string, password: string): Promise<SecondFactorChallenge | null> {
+		const result = await api.post('/session', { body: { email, password } });
+		if (result.status === 'second_factor_required') {
+			this.#current = null;
+			// The server promises a challenge with this status; a response
+			// that lacks one is a contract violation rather than a state to
+			// render.
+			if (!result.challenge) {
+				throw new Error('the server asked for a second factor without sending a challenge');
+			}
+			return result.challenge;
+		}
+		this.#current = result.session ?? null;
+		this.#loaded = true;
+		return null;
+	}
+
+	/** Finish a sign-in that opened a challenge. */
+	async completeSecondFactor(challengeToken: string, code: string): Promise<void> {
+		this.#current = await api.post('/session/second-factor', {
+			body: { challenge_token: challengeToken, code }
+		});
+		this.#loaded = true;
+	}
+
+	/**
+	 * Sign out.
+	 *
+	 * The local state is cleared whatever the server said. A sign-out that
+	 * left the interface showing an account because the request failed would
+	 * be the worst of both: the person believes they are out, and the screen
+	 * says otherwise.
+	 */
+	async signOut(): Promise<void> {
+		try {
+			await api.delete('/session');
+		} finally {
+			this.#current = null;
+			this.#loaded = true;
+		}
+	}
+
+	/** Forget the local answer, so the next load asks again. */
+	clear(): void {
+		this.#current = null;
+		this.#loaded = false;
+	}
+}
+
+/** The application's session state. */
+export const session = new Session();
+
+/** Whether a thrown value is the server saying nobody is signed in. */
+export function isUnauthenticated(error: unknown): boolean {
+	return (
+		error instanceof APIError &&
+		(error.code === problemCodes.authenticationRequired || error.status === 401)
+	);
+}
+
+/**
+ * A client bound to a specific fetch.
+ *
+ * SvelteKit hands `load` its own fetch, and using it is what lets a load
+ * function be traced, deduplicated, and cancelled with the navigation that
+ * started it. Everything outside a load uses the shared client. The last one
+ * is remembered so a navigation does not build a client per call.
+ */
+let bound: { fetcher: typeof fetch; client: APIClient } | null = null;
+
+function client(fetcher?: typeof fetch): APIClient {
+	if (!fetcher) return api;
+	if (bound?.fetcher !== fetcher) {
+		bound = { fetcher, client: createAPIClient({ fetch: fetcher }) };
+	}
+	return bound.client;
+}
+
+/**
+ * Where to go after signing in.
+ *
+ * A `next` parameter is a redirect somebody else can choose, so it is
+ * accepted only when it is a path on this origin: one leading slash, and not
+ * two, because `//example.test` is a protocol-relative URL that leaves this
+ * application entirely. Anything else falls back to the root rather than
+ * being rejected with an error nobody can act on.
+ */
+export function safeNext(next: string | null, fallback = '/'): string {
+	if (!next || !next.startsWith('/') || next.startsWith('//')) {
+		return fallback;
+	}
+	return next;
+}

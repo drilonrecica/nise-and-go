@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/oapi-codegen/runtime"
 )
 
 // Defines values for APIRootVersion.
@@ -23,6 +25,42 @@ const (
 func (e APIRootVersion) Valid() bool {
 	switch e {
 	case V1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AccountStatus.
+const (
+	Active   AccountStatus = "active"
+	Disabled AccountStatus = "disabled"
+)
+
+// Valid indicates whether the value is a known member of the AccountStatus enum.
+func (e AccountStatus) Valid() bool {
+	switch e {
+	case Active:
+		return true
+	case Disabled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SignInResultStatus.
+const (
+	SecondFactorRequired SignInResultStatus = "second_factor_required"
+	SignedIn             SignInResultStatus = "signed_in"
+)
+
+// Valid indicates whether the value is a known member of the SignInResultStatus enum.
+func (e SignInResultStatus) Valid() bool {
+	switch e {
+	case SecondFactorRequired:
+		return true
+	case SignedIn:
 		return true
 	default:
 		return false
@@ -59,6 +97,33 @@ type APIRootReportCollection struct {
 
 	// Page Offset reporting pagination metadata, for reports where a page number is something a person quotes and a total is something they need. It is a separate contract from CursorPage, never a variant of it.
 	Page ReportPage `json:"page"`
+}
+
+// AcceptInvitationRequest defines model for AcceptInvitationRequest.
+type AcceptInvitationRequest struct {
+	Password string `json:"password"`
+	Token    string `json:"token"`
+}
+
+// AcceptedInvitation defines model for AcceptedInvitation.
+type AcceptedInvitation struct {
+	Email string `json:"email"`
+}
+
+// Account One identity, without its credential.
+type Account struct {
+	Email  string        `json:"email"`
+	Id     string        `json:"id"`
+	Status AccountStatus `json:"status"`
+}
+
+// AccountStatus defines model for Account.Status.
+type AccountStatus string
+
+// ChangePasswordRequest defines model for ChangePasswordRequest.
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
 }
 
 // Cursor An opaque authenticated position token. Return it verbatim in after or before; never parse, construct, or store it beyond the current listing.
@@ -101,6 +166,72 @@ type ReportPage struct {
 	TotalPages int64 `json:"total_pages"`
 }
 
+// RevocationResult defines model for RevocationResult.
+type RevocationResult struct {
+	Revoked int64 `json:"revoked"`
+}
+
+// SecondFactorChallenge An unfinished sign-in. The token identifies that attempt and nothing else: it is not a session, it authenticates no other request, and it is spent by the first correct answer.
+type SecondFactorChallenge struct {
+	ExpiresAt time.Time `json:"expires_at"`
+	Token     string    `json:"token"`
+}
+
+// SecondFactorRequest defines model for SecondFactorRequest.
+type SecondFactorRequest struct {
+	ChallengeToken string `json:"challenge_token"`
+	Code           string `json:"code"`
+}
+
+// Session The signed-in account and the session carrying it. The session token itself is never in a body: it is written to a hardened cookie and exists nowhere else.
+type Session struct {
+	// Account One identity, without its credential.
+	Account   Account   `json:"account"`
+	ExpiresAt time.Time `json:"expires_at"`
+
+	// ProvenAt When the holder last proved their identity with a password.
+	ProvenAt  time.Time `json:"proven_at"`
+	SessionId string    `json:"session_id"`
+}
+
+// SessionSummary One row of the account's own session list.
+type SessionSummary struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// Current Whether this is the session making the request.
+	Current    bool      `json:"current"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	Id         string    `json:"id"`
+	LastSeenAt time.Time `json:"last_seen_at"`
+}
+
+// SessionSummaryCollection defines model for SessionSummaryCollection.
+type SessionSummaryCollection struct {
+	Items []SessionSummary `json:"items"`
+
+	// Page Neutral pagination metadata for a collection with no paging strategy of its own.
+	Page Page `json:"page"`
+}
+
+// SignInRequest defines model for SignInRequest.
+type SignInRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// SignInResult What a correct password produced. status is required and is the only member a client may read unconditionally.
+type SignInResult struct {
+	// Challenge An unfinished sign-in. The token identifies that attempt and nothing else: it is not a session, it authenticates no other request, and it is spent by the first correct answer.
+	Challenge *SecondFactorChallenge `json:"challenge,omitempty"`
+
+	// Session The signed-in account and the session carrying it. The session token itself is never in a body: it is written to a hardened cookie and exists nowhere else.
+	Session *Session           `json:"session,omitempty"`
+	Status  SignInResultStatus `json:"status"`
+}
+
+// SignInResultStatus defines model for SignInResult.Status.
+type SignInResultStatus string
+
 // CursorAfter An opaque authenticated position token. Return it verbatim in after or before; never parse, construct, or store it beyond the current listing.
 type CursorAfter = Cursor
 
@@ -119,11 +250,50 @@ type ReportPageNumber = int32
 // ReportPageSize defines model for ReportPageSize.
 type ReportPageSize = int32
 
+// ChangePasswordJSONRequestBody defines body for ChangePassword for application/json ContentType.
+type ChangePasswordJSONRequestBody = ChangePasswordRequest
+
+// AcceptInvitationJSONRequestBody defines body for AcceptInvitation for application/json ContentType.
+type AcceptInvitationJSONRequestBody = AcceptInvitationRequest
+
+// SignInJSONRequestBody defines body for SignIn for application/json ContentType.
+type SignInJSONRequestBody = SignInRequest
+
+// CompleteSecondFactorJSONRequestBody defines body for CompleteSecondFactor for application/json ContentType.
+type CompleteSecondFactorJSONRequestBody = SecondFactorRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// GetAPIIndex Describe the versioned API boundary
 	// (GET /)
 	GetAPIIndex(w http.ResponseWriter, r *http.Request)
+	// ChangePassword Change the signed-in account's password
+	// (POST /account/password)
+	ChangePassword(w http.ResponseWriter, r *http.Request)
+	// AcceptInvitation Turn an invitation into an account
+	// (POST /invitations/accept)
+	AcceptInvitation(w http.ResponseWriter, r *http.Request)
+	// SignOut End the session making this request
+	// (DELETE /session)
+	SignOut(w http.ResponseWriter, r *http.Request)
+	// GetCurrentSession Describe the session making this request
+	// (GET /session)
+	GetCurrentSession(w http.ResponseWriter, r *http.Request)
+	// SignIn Exchange an address and password for a session
+	// (POST /session)
+	SignIn(w http.ResponseWriter, r *http.Request)
+	// CompleteSecondFactor Finish a sign-in that opened a second-factor challenge
+	// (POST /session/second-factor)
+	CompleteSecondFactor(w http.ResponseWriter, r *http.Request)
+	// RevokeOtherSessions End every session except the one making this request
+	// (DELETE /sessions)
+	RevokeOtherSessions(w http.ResponseWriter, r *http.Request)
+	// ListSessions List the signed-in account's own sessions
+	// (GET /sessions)
+	ListSessions(w http.ResponseWriter, r *http.Request)
+	// RevokeSession End one of the signed-in account's sessions
+	// (DELETE /sessions/{sessionId})
+	RevokeSession(w http.ResponseWriter, r *http.Request, sessionId string)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -133,6 +303,60 @@ type Unimplemented struct{}
 // GetAPIIndex Describe the versioned API boundary
 // (GET /)
 func (_ Unimplemented) GetAPIIndex(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ChangePassword Change the signed-in account's password
+// (POST /account/password)
+func (_ Unimplemented) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// AcceptInvitation Turn an invitation into an account
+// (POST /invitations/accept)
+func (_ Unimplemented) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// SignOut End the session making this request
+// (DELETE /session)
+func (_ Unimplemented) SignOut(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetCurrentSession Describe the session making this request
+// (GET /session)
+func (_ Unimplemented) GetCurrentSession(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// SignIn Exchange an address and password for a session
+// (POST /session)
+func (_ Unimplemented) SignIn(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// CompleteSecondFactor Finish a sign-in that opened a second-factor challenge
+// (POST /session/second-factor)
+func (_ Unimplemented) CompleteSecondFactor(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RevokeOtherSessions End every session except the one making this request
+// (DELETE /sessions)
+func (_ Unimplemented) RevokeOtherSessions(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListSessions List the signed-in account's own sessions
+// (GET /sessions)
+func (_ Unimplemented) ListSessions(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RevokeSession End one of the signed-in account's sessions
+// (DELETE /sessions/{sessionId})
+func (_ Unimplemented) RevokeSession(w http.ResponseWriter, r *http.Request, sessionId string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -150,6 +374,144 @@ func (siw *ServerInterfaceWrapper) GetAPIIndex(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetAPIIndex(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ChangePassword operation middleware
+func (siw *ServerInterfaceWrapper) ChangePassword(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ChangePassword(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AcceptInvitation operation middleware
+func (siw *ServerInterfaceWrapper) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AcceptInvitation(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SignOut operation middleware
+func (siw *ServerInterfaceWrapper) SignOut(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SignOut(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetCurrentSession operation middleware
+func (siw *ServerInterfaceWrapper) GetCurrentSession(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetCurrentSession(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SignIn operation middleware
+func (siw *ServerInterfaceWrapper) SignIn(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SignIn(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CompleteSecondFactor operation middleware
+func (siw *ServerInterfaceWrapper) CompleteSecondFactor(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CompleteSecondFactor(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeOtherSessions operation middleware
+func (siw *ServerInterfaceWrapper) RevokeOtherSessions(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeOtherSessions(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListSessions operation middleware
+func (siw *ServerInterfaceWrapper) ListSessions(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSessions(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeSession operation middleware
+func (siw *ServerInterfaceWrapper) RevokeSession(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "sessionId" -------------
+	var sessionId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sessionId", chi.URLParam(r, "sessionId"), &sessionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sessionId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeSession(w, r, sessionId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -275,6 +637,33 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/", wrapper.GetAPIIndex)
 	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/session", wrapper.SignOut)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/session", wrapper.GetCurrentSession)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/session", wrapper.SignIn)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/session/second-factor", wrapper.CompleteSecondFactor)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/sessions", wrapper.RevokeOtherSessions)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/sessions", wrapper.ListSessions)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/sessions/{sessionId}", wrapper.RevokeSession)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/account/password", wrapper.ChangePassword)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/invitations/accept", wrapper.AcceptInvitation)
+	})
 
 	return r
 }
@@ -305,11 +694,488 @@ func (response GetAPIIndex200JSONResponse) VisitGetAPIIndexResponse(w http.Respo
 	return err
 }
 
+type ChangePasswordRequestObject struct {
+	Body *ChangePasswordJSONRequestBody
+}
+
+type ChangePasswordResponseObject interface {
+	VisitChangePasswordResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error
+}
+
+type ChangePassword204Response struct {
+}
+
+func (response ChangePassword204Response) VisitChangePasswordResponse(w http.ResponseWriter, _ func(size int) error) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type ChangePassword401ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response ChangePassword401ApplicationProblemPlusJSONResponse) VisitChangePasswordResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ChangePassword422ApplicationProblemPlusJSONResponse Problem
+
+func (response ChangePassword422ApplicationProblemPlusJSONResponse) VisitChangePasswordResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcceptInvitationRequestObject struct {
+	Body *AcceptInvitationJSONRequestBody
+}
+
+type AcceptInvitationResponseObject interface {
+	VisitAcceptInvitationResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error
+}
+
+type AcceptInvitation201JSONResponse AcceptedInvitation
+
+func (response AcceptInvitation201JSONResponse) VisitAcceptInvitationResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcceptInvitation400ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response AcceptInvitation400ApplicationProblemPlusJSONResponse) VisitAcceptInvitationResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AcceptInvitation422ApplicationProblemPlusJSONResponse Problem
+
+func (response AcceptInvitation422ApplicationProblemPlusJSONResponse) VisitAcceptInvitationResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SignOutRequestObject struct {
+}
+
+type SignOutResponseObject interface {
+	VisitSignOutResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error
+}
+
+type SignOut204Response struct {
+}
+
+func (response SignOut204Response) VisitSignOutResponse(w http.ResponseWriter, _ func(size int) error) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type SignOut401ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response SignOut401ApplicationProblemPlusJSONResponse) VisitSignOutResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetCurrentSessionRequestObject struct {
+}
+
+type GetCurrentSessionResponseObject interface {
+	VisitGetCurrentSessionResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error
+}
+
+type GetCurrentSession200JSONResponse Session
+
+func (response GetCurrentSession200JSONResponse) VisitGetCurrentSessionResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetCurrentSession401ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response GetCurrentSession401ApplicationProblemPlusJSONResponse) VisitGetCurrentSessionResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SignInRequestObject struct {
+	Body *SignInJSONRequestBody
+}
+
+type SignInResponseObject interface {
+	VisitSignInResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error
+}
+
+type SignIn200JSONResponse SignInResult
+
+func (response SignIn200JSONResponse) VisitSignInResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SignIn401ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response SignIn401ApplicationProblemPlusJSONResponse) VisitSignInResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SignIn429ApplicationProblemPlusJSONResponse Problem
+
+func (response SignIn429ApplicationProblemPlusJSONResponse) VisitSignInResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteSecondFactorRequestObject struct {
+	Body *CompleteSecondFactorJSONRequestBody
+}
+
+type CompleteSecondFactorResponseObject interface {
+	VisitCompleteSecondFactorResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error
+}
+
+type CompleteSecondFactor200JSONResponse Session
+
+func (response CompleteSecondFactor200JSONResponse) VisitCompleteSecondFactorResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteSecondFactor401ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteSecondFactor401ApplicationProblemPlusJSONResponse) VisitCompleteSecondFactorResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteSecondFactor429ApplicationProblemPlusJSONResponse Problem
+
+func (response CompleteSecondFactor429ApplicationProblemPlusJSONResponse) VisitCompleteSecondFactorResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeOtherSessionsRequestObject struct {
+}
+
+type RevokeOtherSessionsResponseObject interface {
+	VisitRevokeOtherSessionsResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error
+}
+
+type RevokeOtherSessions200JSONResponse RevocationResult
+
+func (response RevokeOtherSessions200JSONResponse) VisitRevokeOtherSessionsResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeOtherSessions401ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response RevokeOtherSessions401ApplicationProblemPlusJSONResponse) VisitRevokeOtherSessionsResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSessionsRequestObject struct {
+}
+
+type ListSessionsResponseObject interface {
+	VisitListSessionsResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error
+}
+
+type ListSessions200JSONResponse SessionSummaryCollection
+
+func (response ListSessions200JSONResponse) VisitListSessionsResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSessions401ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response ListSessions401ApplicationProblemPlusJSONResponse) VisitListSessionsResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeSessionRequestObject struct {
+	SessionId string `json:"sessionId"`
+}
+
+type RevokeSessionResponseObject interface {
+	VisitRevokeSessionResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error
+}
+
+type RevokeSession204Response struct {
+}
+
+func (response RevokeSession204Response) VisitRevokeSessionResponse(w http.ResponseWriter, _ func(size int) error) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type RevokeSession401ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response RevokeSession401ApplicationProblemPlusJSONResponse) VisitRevokeSessionResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeSession404ApplicationProblemPlusJSONResponse Problem
+
+func (response RevokeSession404ApplicationProblemPlusJSONResponse) VisitRevokeSessionResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// GetAPIIndex Describe the versioned API boundary
 	// (GET /)
 	GetAPIIndex(ctx context.Context, request GetAPIIndexRequestObject) (GetAPIIndexResponseObject, error)
+	// ChangePassword Change the signed-in account's password
+	// (POST /account/password)
+	ChangePassword(ctx context.Context, request ChangePasswordRequestObject) (ChangePasswordResponseObject, error)
+	// AcceptInvitation Turn an invitation into an account
+	// (POST /invitations/accept)
+	AcceptInvitation(ctx context.Context, request AcceptInvitationRequestObject) (AcceptInvitationResponseObject, error)
+	// SignOut End the session making this request
+	// (DELETE /session)
+	SignOut(ctx context.Context, request SignOutRequestObject) (SignOutResponseObject, error)
+	// GetCurrentSession Describe the session making this request
+	// (GET /session)
+	GetCurrentSession(ctx context.Context, request GetCurrentSessionRequestObject) (GetCurrentSessionResponseObject, error)
+	// SignIn Exchange an address and password for a session
+	// (POST /session)
+	SignIn(ctx context.Context, request SignInRequestObject) (SignInResponseObject, error)
+	// CompleteSecondFactor Finish a sign-in that opened a second-factor challenge
+	// (POST /session/second-factor)
+	CompleteSecondFactor(ctx context.Context, request CompleteSecondFactorRequestObject) (CompleteSecondFactorResponseObject, error)
+	// RevokeOtherSessions End every session except the one making this request
+	// (DELETE /sessions)
+	RevokeOtherSessions(ctx context.Context, request RevokeOtherSessionsRequestObject) (RevokeOtherSessionsResponseObject, error)
+	// ListSessions List the signed-in account's own sessions
+	// (GET /sessions)
+	ListSessions(ctx context.Context, request ListSessionsRequestObject) (ListSessionsResponseObject, error)
+	// RevokeSession End one of the signed-in account's sessions
+	// (DELETE /sessions/{sessionId})
+	RevokeSession(ctx context.Context, request RevokeSessionRequestObject) (RevokeSessionResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -406,6 +1272,256 @@ func (sh *strictHandler) GetAPIIndex(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetAPIIndexResponseObject); ok {
 		if err := validResponse.VisitGetAPIIndexResponse(w, sh.options.JSONResponseSizeChecker); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ChangePassword operation middleware
+func (sh *strictHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	var request ChangePasswordRequestObject
+
+	var body ChangePasswordJSONRequestBody
+	_ = json.Valid // Keep the generator-selected JSON import when responses have no JSON body.
+	if err := sh.options.JSONBodyDecoder(w, r, "application/json", &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ChangePassword(ctx, request.(ChangePasswordRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ChangePassword")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ChangePasswordResponseObject); ok {
+		if err := validResponse.VisitChangePasswordResponse(w, sh.options.JSONResponseSizeChecker); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AcceptInvitation operation middleware
+func (sh *strictHandler) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
+	var request AcceptInvitationRequestObject
+
+	var body AcceptInvitationJSONRequestBody
+	_ = json.Valid // Keep the generator-selected JSON import when responses have no JSON body.
+	if err := sh.options.JSONBodyDecoder(w, r, "application/json", &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AcceptInvitation(ctx, request.(AcceptInvitationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AcceptInvitation")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AcceptInvitationResponseObject); ok {
+		if err := validResponse.VisitAcceptInvitationResponse(w, sh.options.JSONResponseSizeChecker); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SignOut operation middleware
+func (sh *strictHandler) SignOut(w http.ResponseWriter, r *http.Request) {
+	var request SignOutRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SignOut(ctx, request.(SignOutRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SignOut")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SignOutResponseObject); ok {
+		if err := validResponse.VisitSignOutResponse(w, sh.options.JSONResponseSizeChecker); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetCurrentSession operation middleware
+func (sh *strictHandler) GetCurrentSession(w http.ResponseWriter, r *http.Request) {
+	var request GetCurrentSessionRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetCurrentSession(ctx, request.(GetCurrentSessionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetCurrentSession")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetCurrentSessionResponseObject); ok {
+		if err := validResponse.VisitGetCurrentSessionResponse(w, sh.options.JSONResponseSizeChecker); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SignIn operation middleware
+func (sh *strictHandler) SignIn(w http.ResponseWriter, r *http.Request) {
+	var request SignInRequestObject
+
+	var body SignInJSONRequestBody
+	_ = json.Valid // Keep the generator-selected JSON import when responses have no JSON body.
+	if err := sh.options.JSONBodyDecoder(w, r, "application/json", &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SignIn(ctx, request.(SignInRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SignIn")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SignInResponseObject); ok {
+		if err := validResponse.VisitSignInResponse(w, sh.options.JSONResponseSizeChecker); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CompleteSecondFactor operation middleware
+func (sh *strictHandler) CompleteSecondFactor(w http.ResponseWriter, r *http.Request) {
+	var request CompleteSecondFactorRequestObject
+
+	var body CompleteSecondFactorJSONRequestBody
+	_ = json.Valid // Keep the generator-selected JSON import when responses have no JSON body.
+	if err := sh.options.JSONBodyDecoder(w, r, "application/json", &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CompleteSecondFactor(ctx, request.(CompleteSecondFactorRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CompleteSecondFactor")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CompleteSecondFactorResponseObject); ok {
+		if err := validResponse.VisitCompleteSecondFactorResponse(w, sh.options.JSONResponseSizeChecker); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RevokeOtherSessions operation middleware
+func (sh *strictHandler) RevokeOtherSessions(w http.ResponseWriter, r *http.Request) {
+	var request RevokeOtherSessionsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokeOtherSessions(ctx, request.(RevokeOtherSessionsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokeOtherSessions")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokeOtherSessionsResponseObject); ok {
+		if err := validResponse.VisitRevokeOtherSessionsResponse(w, sh.options.JSONResponseSizeChecker); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListSessions operation middleware
+func (sh *strictHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
+	var request ListSessionsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListSessions(ctx, request.(ListSessionsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListSessions")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListSessionsResponseObject); ok {
+		if err := validResponse.VisitListSessionsResponse(w, sh.options.JSONResponseSizeChecker); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RevokeSession operation middleware
+func (sh *strictHandler) RevokeSession(w http.ResponseWriter, r *http.Request, sessionId string) {
+	var request RevokeSessionRequestObject
+
+	request.SessionId = sessionId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokeSession(ctx, request.(RevokeSessionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokeSession")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokeSessionResponseObject); ok {
+		if err := validResponse.VisitRevokeSessionResponse(w, sh.options.JSONResponseSizeChecker); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

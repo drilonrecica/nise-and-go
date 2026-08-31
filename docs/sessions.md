@@ -253,10 +253,58 @@ Every refusal is one public code — `403 cross_site_request` on the API surface
 because which of a caller's guesses was structurally valid is not something to
 tell them. Which check failed is in the server's log.
 
-## Not yet here
+## The HTTP surface
 
-There is no login endpoint yet: resolving a session says who is asking, and the
-HTTP surface that issues one arrives with the authentication screens.
+`internal/platform/httpapi/session.go` is the transport for all of it, and it
+contains no rules: every decision belongs to `internal/features/auth`, and the
+file's job is translating between those use cases and the wire.
+
+| Operation | What it does |
+|---|---|
+| `POST /api/v1/session` | Sign in. Answers 200 with a required `status` discriminator: `signed_in` carries the session, `second_factor_required` carries the challenge. |
+| `POST /api/v1/session/second-factor` | Finish a sign-in that opened a challenge. |
+| `GET /api/v1/session` | Who is signed in. |
+| `DELETE /api/v1/session` | Sign out. |
+| `GET /api/v1/sessions` | The account's own live sessions. |
+| `DELETE /api/v1/sessions/{sessionId}` | End one of them. |
+| `DELETE /api/v1/sessions` | End every one except the caller's. |
+| `POST /api/v1/account/password` | Change the password; the current one is the proof. |
+| `POST /api/v1/invitations/accept` | Turn an invitation into an account. |
+
+Three properties hold across the whole surface:
+
+- **No response body ever carries a session token.** It is written to the
+  hardened cookie and exists nowhere else. That is enforced structurally: the
+  cookie writes live in response wrappers, so a handler cannot build the right
+  JSON and forget the credential, or the reverse.
+- **Both cookies move together.** The anti-forgery value is derived from the
+  session token, so issuing one and leaving the other in place would make the
+  next state-changing request fail the guard for a reason nobody could see.
+- **Every refusal that could tell an unauthenticated caller something about
+  the directory is one code.** An unknown address, a wrong password, and a
+  disabled account are all `invalid_credentials`; every reason an invitation
+  is unusable is `invitation_invalid`. The audit record holds which it was.
+
+The second-factor operation exists in **every** generated application, whether
+or not the TOTP module was selected. The sign-in *protocol* — a correct
+password may not finish the sign-in — is core; the second factor itself is the
+module. An application without one never issues a challenge, and the
+completion operation refuses. Making the operation conditional would mean
+enabling a compile-time module changed the public API contract, which is a
+worse trade than one operation that is honestly unreachable.
+
+`ChangePassword` is not in the reauthentication matrix, and that is deliberate:
+the action carries its own proof. Asking for the same password twice in one
+form teaches people to type it wherever they are asked.
+
+A handler answers with a public problem by returning
+`problem.Fail(definition)` or `problem.Wrap(definition, cause)`. The strict
+server's response-error handler unwraps it; anything else is a defect and gets
+the generic 500 rather than a status the caller might trust. The error's own
+message names the public code and never the cause, because that string reaches
+the server's log.
+
+## Not yet here
 
 **Device tokens for native clients are designed and deliberately not built.** A
 generated application has exactly one API credential — the session cookie — and

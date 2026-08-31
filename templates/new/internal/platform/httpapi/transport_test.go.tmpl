@@ -162,7 +162,11 @@ func newTransportProbe(t *testing.T) (http.Handler, *transportProbe) {
 	}
 
 	deps, _, _ := routerTestDeps(t)
-	apiServer, err := NewServer(probe.cursors)
+	serverDeps := testServerDeps(t)
+	// The probe mints cursors with its own codec, so the server has to verify
+	// against that same one.
+	serverDeps.Cursors = probe.cursors
+	apiServer, err := NewServer(serverDeps)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -615,7 +619,7 @@ func TestTransportContractRefusesCrossSiteStateChanges(t *testing.T) {
 		t.Fatalf("NewReportLimits: %v", err)
 	}
 	probe := &transportProbe{cursors: testCursorCodec(t), limits: limits, reportLimits: reportLimits}
-	apiServer, err := NewServer(probe.cursors)
+	apiServer, err := NewServer(testServerDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

@@ -1,0 +1,246 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { goto } from '$app/navigation';
+
+	import { api } from '$lib/api/client';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import Input from '$lib/components/ui/Input.svelte';
+	import ProblemAlert from '$lib/components/ui/ProblemAlert.svelte';
+	import Skeleton from '$lib/components/ui/Skeleton.svelte';
+	import Table from '$lib/components/ui/Table.svelte';
+	import { toaster } from '$lib/components/ui/toast.svelte';
+	import { session, type SessionSummary } from '$lib/session.svelte';
+
+	let sessions = $state<SessionSummary[] | null>(null);
+	let listFailure = $state<unknown>(null);
+
+	let currentPassword = $state('');
+	let newPassword = $state('');
+	let confirmation = $state('');
+	let changing = $state(false);
+	let changeFailure = $state<unknown>(null);
+
+	let confirmRevokeOthers = $state(false);
+	let revoking = $state(false);
+
+	const mismatch = $derived(confirmation !== '' && confirmation !== newPassword);
+
+	async function loadSessions() {
+		listFailure = null;
+		try {
+			sessions = (await api.get('/sessions')).items;
+		} catch (error) {
+			listFailure = error;
+		}
+	}
+
+	$effect(() => void loadSessions());
+
+	async function changePassword(event: SubmitEvent) {
+		event.preventDefault();
+		if (mismatch) return;
+		changing = true;
+		changeFailure = null;
+		try {
+			await api.post('/account/password', {
+				body: { current_password: currentPassword, new_password: newPassword }
+			});
+			currentPassword = '';
+			newPassword = '';
+			confirmation = '';
+			toaster.success('Password changed', 'Every other session has been signed out.');
+			await loadSessions();
+		} catch (error) {
+			changeFailure = error;
+		} finally {
+			changing = false;
+		}
+	}
+
+	async function revokeOne(summary: SessionSummary) {
+		try {
+			await api.delete('/sessions/{sessionId}', { params: { sessionId: summary.id } });
+			if (summary.current) {
+				// Ending your own session ends the page you are on. Going to
+				// the sign-in form is the honest next screen.
+				session.clear();
+				await goto('/sign-in');
+				return;
+			}
+			toaster.success('Session ended');
+			await loadSessions();
+		} catch (error) {
+			listFailure = error;
+		}
+	}
+
+	async function revokeOthers() {
+		revoking = true;
+		try {
+			const result = await api.delete('/sessions');
+			confirmRevokeOthers = false;
+			toaster.success(
+				result.revoked === 1 ? '1 session ended' : `${result.revoked} sessions ended`
+			);
+			await loadSessions();
+		} catch (error) {
+			listFailure = error;
+		} finally {
+			revoking = false;
+		}
+	}
+
+	function when(value: string): string {
+		return new Date(value).toLocaleString();
+	}
+</script>
+
+<svelte:head>
+	<title>Account · {{.AppName}}</title>
+</svelte:head>
+
+<div class="mx-auto max-w-3xl space-y-8 px-4 py-8 sm:px-6">
+	<div>
+		<h1 class="text-2xl font-semibold tracking-tight text-text">Account</h1>
+		<p class="mt-2 text-sm text-text-muted">{session.account?.email}</p>
+	</div>
+
+	<section class="rounded-lg border border-line bg-surface p-5 shadow-raised">
+		<h2 class="text-sm font-medium text-text">Change password</h2>
+		<p class="mt-1 text-sm text-text-muted">
+			Your current password is the proof, so there is nothing else to confirm. Changing it signs
+			out every other session.
+		</p>
+
+		{#if changeFailure}
+			<div class="mt-4">
+				<ProblemAlert error={changeFailure} />
+			</div>
+		{/if}
+
+		<form class="mt-4 max-w-sm space-y-4" onsubmit={changePassword}>
+			<Field id="current-password" label="Current password" required>
+				{#snippet children({ describedBy, invalid })}
+					<Input
+						id="current-password"
+						type="password"
+						autocomplete="current-password"
+						required
+						bind:value={currentPassword}
+						{describedBy}
+						{invalid}
+					/>
+				{/snippet}
+			</Field>
+			<Field
+				id="account-new-password"
+				label="New password"
+				description="At least 12 characters, and not one that has appeared in a known breach."
+				required
+			>
+				{#snippet children({ describedBy, invalid })}
+					<Input
+						id="account-new-password"
+						type="password"
+						autocomplete="new-password"
+						required
+						bind:value={newPassword}
+						{describedBy}
+						{invalid}
+					/>
+				{/snippet}
+			</Field>
+			<Field
+				id="account-confirm-password"
+				label="Confirm new password"
+				error={mismatch ? 'The two passwords do not match.' : undefined}
+				required
+			>
+				{#snippet children({ describedBy, invalid })}
+					<Input
+						id="account-confirm-password"
+						type="password"
+						autocomplete="new-password"
+						required
+						bind:value={confirmation}
+						{describedBy}
+						{invalid}
+					/>
+				{/snippet}
+			</Field>
+			<Button type="submit" variant="primary" loading={changing} loadingLabel="Changing" disabled={mismatch}>
+				Change password
+			</Button>
+		</form>
+	</section>
+
+	<section>
+		<div class="flex flex-wrap items-center justify-between gap-3">
+			<div>
+				<h2 class="text-sm font-medium text-text">Signed-in sessions</h2>
+				<p class="mt-1 text-sm text-text-muted">
+					Every browser and device holding a live session for this account.
+				</p>
+			</div>
+			<Button size="sm" variant="danger" onclick={() => (confirmRevokeOthers = true)}>
+				Sign out everywhere else
+			</Button>
+		</div>
+
+		{#if listFailure}
+			<div class="mt-4">
+				<ProblemAlert error={listFailure} onretry={loadSessions} />
+			</div>
+		{:else if sessions === null}
+			<div class="mt-4 space-y-2" aria-busy="true">
+				<Skeleton class="h-10 w-full" />
+				<Skeleton class="h-10 w-full" />
+			</div>
+		{:else}
+			<div class="mt-4">
+				<Table caption="Sessions for this account">
+					<thead class="border-b border-line bg-surface-muted text-left">
+						<tr>
+							<th scope="col" class="px-4 py-2 font-medium text-text-muted">Started</th>
+							<th scope="col" class="px-4 py-2 font-medium text-text-muted">Last seen</th>
+							<th scope="col" class="px-4 py-2 font-medium text-text-muted">Expires</th>
+							<th scope="col" class="px-4 py-2"><span class="sr-only">Actions</span></th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each sessions as summary (summary.id)}
+							<tr class="border-b border-line last:border-0">
+								<td class="px-4 py-2">
+									{when(summary.created_at)}
+									{#if summary.current}
+										<Badge tone="info">This device</Badge>
+									{/if}
+								</td>
+								<td class="px-4 py-2 text-text-muted">{when(summary.last_seen_at)}</td>
+								<td class="px-4 py-2 text-text-muted">{when(summary.expires_at)}</td>
+								<td class="px-4 py-2 text-right">
+									<Button size="sm" variant="ghost" onclick={() => revokeOne(summary)}>
+										{summary.current ? 'Sign out' : 'End session'}
+									</Button>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</Table>
+			</div>
+		{/if}
+	</section>
+</div>
+
+<ConfirmDialog
+	bind:open={confirmRevokeOthers}
+	title="Sign out everywhere else"
+	description="Every other browser and device holding a session for this account will have to sign in again. This one stays signed in."
+	confirmLabel="Sign out everywhere else"
+	destructive
+	pending={revoking}
+	onconfirm={revokeOthers}
+/>

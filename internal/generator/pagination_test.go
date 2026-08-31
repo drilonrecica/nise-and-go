@@ -48,7 +48,7 @@ func TestGeneratedProjectDefinesPaginationContracts(t *testing.T) {
 		},
 		"internal/platform/httpapi/api.go": {
 			`"github.com/drilonrecica/nise-and-go/runtime/pagination"`,
-			"func NewServer(cursors *pagination.Codec) (*Server, error)",
+			"func NewServer(deps ServerDeps) (*Server, error)",
 			"func cursorBinding(r *http.Request, resource string) pagination.Binding",
 			"case pagination.LimitParam, pagination.AfterParam, pagination.BeforeParam:",
 			"func issueCursorPage(",
@@ -73,7 +73,7 @@ func TestGeneratedProjectDefinesPaginationContracts(t *testing.T) {
 			"TestCursorBindingIgnoresOnlyThePaginationParameters",
 			"TestIssueCursorPage",
 			"TestPaginationProblemMapsEveryFailureToTheClient",
-			"TestNewServerRequiresACursorCodec",
+			"TestNewServerRequiresEveryDependency",
 			"TestReportCollectionResponseShape",
 			"TestReportPageEchoesTheRequestedPage",
 			"TestReportRefusesDepthAndMixedPagination",
@@ -96,7 +96,7 @@ func TestGeneratedProjectDefinesPaginationContracts(t *testing.T) {
 		},
 		"internal/app/app.go": {
 			"pagination.NewCodec(cfg.CursorKeys, cfg.CursorTTL)",
-			"httpapi.NewServer(cursors)",
+			"Cursors:     cursors,",
 		},
 		".env.example": {
 			"CURSOR_SIGNING_KEY=",

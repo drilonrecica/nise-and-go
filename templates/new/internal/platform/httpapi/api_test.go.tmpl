@@ -3,6 +3,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,11 +18,15 @@ import (
 
 	"github.com/drilonrecica/nise-and-go/runtime/logging"
 	"github.com/drilonrecica/nise-and-go/runtime/pagination"
+	"github.com/drilonrecica/nise-and-go/runtime/password"
 	"github.com/drilonrecica/nise-and-go/runtime/secure"
+	"github.com/drilonrecica/nise-and-go/runtime/session"
 
+	"{{.ModulePath}}/internal/features/auth"
 	"{{.ModulePath}}/internal/platform/httpapi/httpjson"
 	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
 	"{{.ModulePath}}/internal/platform/httpapi/problem"
+	"{{.ModulePath}}/internal/platform/httpauth"
 	"{{.ModulePath}}/internal/platform/idempotency"
 )
 
@@ -96,11 +101,32 @@ func TestCollectionResponseShape(t *testing.T) {
 	}
 }
 
-func TestNewServerRequiresACursorCodec(t *testing.T) {
+// TestNewServerRequiresEveryDependency asserts the surface refuses to be
+// built incomplete. Each of these would otherwise produce a server that looks
+// fine until the first request that needs the missing piece — and for the
+// authentication dependencies, one that appears to work until somebody tries
+// to sign in.
+func TestNewServerRequiresEveryDependency(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NewServer(nil); err == nil {
-		t.Fatal("NewServer accepted a nil cursor codec")
+	for name, mutate := range map[string]func(*ServerDeps){
+		"cursor codec": func(d *ServerDeps) { d.Cursors = nil },
+		"credentials":  func(d *ServerDeps) { d.Credentials = nil },
+		"sessions":     func(d *ServerDeps) { d.Sessions = nil },
+		"accounts":     func(d *ServerDeps) { d.Accounts = nil },
+		"invitations":  func(d *ServerDeps) { d.Invitations = nil },
+		"cookies":      func(d *ServerDeps) { d.Cookies = nil },
+		"compromised":  func(d *ServerDeps) { d.Compromised = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testServerDeps(t)
+			mutate(&deps)
+			if _, err := NewServer(deps); err == nil {
+				t.Fatalf("NewServer accepted a nil %s", name)
+			}
+		})
 	}
 }
 
@@ -611,10 +637,104 @@ func testReportLimits(t *testing.T) pagination.ReportLimits {
 	return limits
 }
 
+// testServerDeps builds a complete, usable ServerDeps for a hermetic test.
+//
+// The authentication dependencies are the refusing fakes below: a test that
+// needs one to answer replaces just that field, and every other test gets a
+// dependency that fails loudly if a handler reaches it when it should not
+// have.
+func testServerDeps(t *testing.T) ServerDeps {
+	t.Helper()
+
+	policy, err := session.NewCookiePolicy(true)
+	if err != nil {
+		t.Fatalf("NewCookiePolicy: %v", err)
+	}
+	cookies, err := httpauth.NewCookies(policy)
+	if err != nil {
+		t.Fatalf("NewCookies: %v", err)
+	}
+	return ServerDeps{
+		Cursors:     testCursorCodec(t),
+		Credentials: refusingAuth{t: t},
+		Sessions:    refusingAuth{t: t},
+		Accounts:    refusingAuth{t: t},
+		Invitations: refusingAuth{t: t},
+		Cookies:     cookies,
+		Compromised: refusingAuth{t: t},
+	}
+}
+
+// refusingServerDeps is testServerDeps under its intent-revealing name, for
+// the tests whose whole point is that no use case is consulted.
+func refusingServerDeps(t *testing.T) ServerDeps {
+	t.Helper()
+	return testServerDeps(t)
+}
+
+// refusingAuth implements every port this package declares and fails the test
+// if any of them is called. It is what makes "the guard runs first" provable
+// rather than asserted.
+type refusingAuth struct{ t *testing.T }
+
+func (r refusingAuth) refuse(name string) {
+	r.t.Helper()
+	r.t.Fatalf("a handler called %s before it should have", name)
+}
+
+func (r refusingAuth) Authenticate(context.Context, string, string) (auth.Login, error) {
+	r.refuse("Authenticate")
+	return auth.Login{}, nil
+}
+
+func (r refusingAuth) CompleteSecondFactor(context.Context, string, string) (auth.Login, error) {
+	r.refuse("CompleteSecondFactor")
+	return auth.Login{}, nil
+}
+
+func (r refusingAuth) ChangePassword(context.Context, string, string, string, password.Compromised, string) (auth.Issued, error) {
+	r.refuse("ChangePassword")
+	return auth.Issued{}, nil
+}
+
+func (r refusingAuth) List(context.Context, string, string, int) ([]auth.Summary, error) {
+	r.refuse("List")
+	return nil, nil
+}
+
+func (r refusingAuth) Revoke(context.Context, string, string) error {
+	r.refuse("Revoke")
+	return nil
+}
+
+func (r refusingAuth) RevokeOtherSessions(context.Context, string, string, string) (int64, error) {
+	r.refuse("RevokeOtherSessions")
+	return 0, nil
+}
+
+func (r refusingAuth) Accept(context.Context, string, string) (auth.Account, error) {
+	r.refuse("Accept")
+	return auth.Account{}, nil
+}
+
+func (r refusingAuth) FindByID(context.Context, string) (auth.Account, error) {
+	r.refuse("FindByID")
+	return auth.Account{}, nil
+}
+
+// IsCompromised lets the same value stand in for the compromised-password
+// source, which no handler consults directly: it is handed to the use case
+// that chooses a password, and reaching it from here would mean a handler had
+// started making that decision itself.
+func (r refusingAuth) IsCompromised(context.Context, string) (bool, error) {
+	r.refuse("IsCompromised")
+	return false, nil
+}
+
 func testServer(t *testing.T) *Server {
 	t.Helper()
 
-	server, err := NewServer(testCursorCodec(t))
+	server, err := NewServer(testServerDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

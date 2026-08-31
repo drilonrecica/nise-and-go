@@ -1,0 +1,33 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { describe, expect, it } from 'vitest';
+
+import { safeNext } from './session.svelte';
+
+describe('safeNext', () => {
+	it('keeps a path on this origin', () => {
+		expect(safeNext('/invoices')).toBe('/invoices');
+		expect(safeNext('/invoices?status=open')).toBe('/invoices?status=open');
+	});
+
+	it('refuses anything that could leave this application', () => {
+		// A `next` parameter is a redirect somebody else chooses. The
+		// protocol-relative form is the one that gets missed: it starts with a
+		// slash and still leaves the origin.
+		for (const hostile of [
+			'//example.test/phishing',
+			'https://example.test',
+			'http://example.test',
+			'javascript:alert(1)',
+			'invoices',
+			''
+		]) {
+			expect(safeNext(hostile)).toBe('/');
+		}
+	});
+
+	it('falls back rather than failing when there is no parameter', () => {
+		expect(safeNext(null)).toBe('/');
+		expect(safeNext(null, '/dashboard')).toBe('/dashboard');
+	});
+});
