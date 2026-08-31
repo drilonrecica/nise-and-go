@@ -1,0 +1,171 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package sse
+
+import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+// unflushable is a ResponseWriter with no Flush method, which is what a
+// middleware that wraps the writer without preserving http.Flusher produces.
+type unflushable struct{ header http.Header }
+
+func (u *unflushable) Header() http.Header       { return u.header }
+func (*unflushable) Write(b []byte) (int, error) { return len(b), nil }
+func (*unflushable) WriteHeader(int)             {}
+
+// TestOpenRefusesAWriterThatCannotFlush is the failure that looks like
+// success. Without flushing the response arrives all at once when the handler
+// returns, which passes a test and never delivers a live event.
+func TestOpenRefusesAWriterThatCannotFlush(t *testing.T) {
+	t.Parallel()
+
+	if _, err := Open(&unflushable{header: http.Header{}}); !errors.Is(err, ErrNotStreamable) {
+		t.Fatalf("Open = %v, want ErrNotStreamable", err)
+	}
+}
+
+func TestOpenSetsTheHeadersThatMakeStreamingWork(t *testing.T) {
+	t.Parallel()
+
+	recorder := httptest.NewRecorder()
+	if _, err := Open(recorder); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	want := map[string]string{
+		"Content-Type":      "text/event-stream",
+		"X-Accel-Buffering": "no",
+	}
+	for name, value := range want {
+		if got := recorder.Header().Get(name); got != value {
+			t.Errorf("%s = %q, want %q", name, got, value)
+		}
+	}
+	if !strings.Contains(recorder.Header().Get("Cache-Control"), "no-cache") {
+		t.Errorf("Cache-Control = %q", recorder.Header().Get("Cache-Control"))
+	}
+}
+
+// TestAMultilinePayloadBecomesSeveralDataLines covers the most common SSE
+// bug: a raw payload containing a newline truncates the event there and
+// leaves the rest to be read as stray fields.
+func TestAMultilinePayloadBecomesSeveralDataLines(t *testing.T) {
+	t.Parallel()
+
+	recorder := httptest.NewRecorder()
+	stream, err := Open(recorder)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := stream.Event("message", []byte("first\nsecond\r\nthird")); err != nil {
+		t.Fatalf("Event: %v", err)
+	}
+
+	body := recorder.Body.String()
+	for _, want := range []string{"event: message\n", "data: first\n", "data: second\n", "data: third\n"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the stream lacks %q:\n%q", want, body)
+		}
+	}
+	if strings.Contains(body, "data: first\nsecond") {
+		t.Error("the payload was written raw, so the event truncates at its first newline")
+	}
+	if !strings.HasSuffix(body, "\n\n") {
+		t.Errorf("the event is not terminated by a blank line:\n%q", body)
+	}
+}
+
+func TestEveryWriteFlushes(t *testing.T) {
+	t.Parallel()
+
+	recorder := httptest.NewRecorder()
+	stream, err := Open(recorder)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	recorder.Flushed = false
+	if err := stream.Event("message", []byte("x")); err != nil {
+		t.Fatalf("Event: %v", err)
+	}
+	if !recorder.Flushed {
+		t.Error("Event did not flush, so the client sees nothing until the handler returns")
+	}
+
+	recorder.Flushed = false
+	if err := stream.Heartbeat(); err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+	if !recorder.Flushed {
+		t.Error("Heartbeat did not flush, so it keeps nothing alive")
+	}
+}
+
+func TestHeartbeatIsAComment(t *testing.T) {
+	t.Parallel()
+
+	recorder := httptest.NewRecorder()
+	stream, _ := Open(recorder)
+	if err := stream.Heartbeat(); err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+	if !strings.HasPrefix(recorder.Body.String(), ":") {
+		t.Errorf("a heartbeat is not a comment line: %q", recorder.Body.String())
+	}
+}
+
+func TestRetryIsWrittenInMilliseconds(t *testing.T) {
+	t.Parallel()
+
+	recorder := httptest.NewRecorder()
+	stream, _ := Open(recorder)
+	if err := stream.Retry(5 * time.Second); err != nil {
+		t.Fatalf("Retry: %v", err)
+	}
+	if !strings.Contains(recorder.Body.String(), "retry: 5000\n") {
+		t.Errorf("Retry wrote %q", recorder.Body.String())
+	}
+	if err := stream.Retry(0); err == nil {
+		t.Error("Retry accepted a non-positive delay")
+	}
+}
+
+// TestAnEventNameCannotInjectAField covers the one caller-supplied value that
+// becomes a protocol field.
+func TestAnEventNameCannotInjectAField(t *testing.T) {
+	t.Parallel()
+
+	recorder := httptest.NewRecorder()
+	stream, _ := Open(recorder)
+	if err := stream.Event("message\ndata: injected", []byte("x")); err == nil {
+		t.Fatal("Event accepted a name containing a line break")
+	}
+}
+
+func TestAnOversizedEventIsRefused(t *testing.T) {
+	t.Parallel()
+
+	recorder := httptest.NewRecorder()
+	stream, _ := Open(recorder)
+	err := stream.Event("message", make([]byte, MaxEventBytes+1))
+	if !errors.Is(err, ErrEventTooLarge) {
+		t.Fatalf("Event = %v, want ErrEventTooLarge", err)
+	}
+}
+
+func TestJSONWritesAnEncodedEvent(t *testing.T) {
+	t.Parallel()
+
+	recorder := httptest.NewRecorder()
+	stream, _ := Open(recorder)
+	if err := stream.JSON("unread", map[string]int{"count": 3}); err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if !strings.Contains(recorder.Body.String(), `data: {"count":3}`) {
+		t.Errorf("JSON wrote %q", recorder.Body.String())
+	}
+}

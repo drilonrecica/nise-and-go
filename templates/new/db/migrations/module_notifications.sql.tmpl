@@ -88,7 +88,42 @@ CREATE TABLE notification_deliveries (
 
 CREATE INDEX notification_deliveries_notification_idx ON notification_deliveries (notification_id);
 
+-- Live delivery.
+--
+-- PostgreSQL's NOTIFY is transactional: a notification queued inside a
+-- transaction is delivered when that transaction commits, and discarded when
+-- it rolls back. That is exactly the semantics this needs, and it is why the
+-- live update needs no outbox table and no polling loop of its own — the
+-- database already guarantees that a listener hears about a row if and only
+-- if that row exists.
+--
+-- The payload carries only the recipient. It is deliberately not the
+-- notification: a NOTIFY payload is capped at 8000 bytes, it is visible to
+-- anything with permission to LISTEN on the channel, and a client that has
+-- been told "something changed" can fetch it through the ordinary authorized
+-- read. Sending the content here would put a person's notification text on a
+-- channel and skip the authorization the read performs.
+
+-- +goose StatementBegin
+CREATE OR REPLACE FUNCTION notify_notification_recipient()
+    RETURNS TRIGGER
+    AS $$
+BEGIN
+    PERFORM pg_notify('notification', json_build_object('recipient_id', NEW.recipient_id)::text);
+    RETURN NULL;
+END;
+$$
+LANGUAGE plpgsql;
+-- +goose StatementEnd
+
+CREATE TRIGGER notifications_notify
+    AFTER INSERT ON notifications
+    FOR EACH ROW
+    EXECUTE FUNCTION notify_notification_recipient();
+
 -- +goose Down
+DROP TRIGGER notifications_notify ON notifications;
+DROP FUNCTION notify_notification_recipient;
 DROP TABLE notification_deliveries;
 DROP TYPE notification_delivery_state;
 DROP TABLE notifications;

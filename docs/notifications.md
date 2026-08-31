@@ -125,3 +125,79 @@ the more useful fact.
 an offset. An offset skips or repeats rows when a new notification arrives
 between two pages — which, for a notification list, is the single most likely
 thing to happen.
+
+## Live updates, and the polling fallback
+
+`GET /api/v1/notifications/stream` is a server-sent-event stream carrying one
+event kind:
+
+```
+event: unread
+data: {"count":3}
+```
+
+**It carries no content.** A live event says "something changed for you"; the
+client then performs the ordinary authorized read. That is not a
+simplification — it is what keeps the authorization check in one place. A
+stream that pushed the notification itself would be a second read path with
+its own permission logic, and the two would eventually disagree.
+
+### How it works
+
+The notifications migration installs an `AFTER INSERT` trigger that calls
+`pg_notify('notification', …)` with the recipient's id and nothing else.
+
+PostgreSQL's `NOTIFY` is **transactional**: a notification queued inside a
+transaction is delivered when that transaction commits and discarded when it
+rolls back. That is exactly the semantics needed here, and it is why live
+delivery needs no outbox table, no polling loop, and no reconciliation — the
+database already guarantees a listener hears about a row if and only if that
+row exists.
+
+The payload is only the recipient because a `NOTIFY` payload is capped at 8000
+bytes, is visible to anything permitted to `LISTEN` on the channel, and would
+skip the authorization the read performs.
+
+One process holds **one** `LISTEN` connection and fans out to its own
+subscribers. A connection per client would cap concurrent viewers at the
+database's connection limit — a much smaller number than a deployment expects
+to serve — and would spend a pooled connection on waiting.
+
+### What it deliberately does
+
+- **Ends every stream after thirty minutes.** A stream that never ends is a
+  stream that never re-authenticates: a session revoked while a tab is open
+  would keep receiving updates for as long as that tab stayed open. The client
+  reconnects, and the reconnection goes through the ordinary session check.
+- **Sends the current count immediately on connect**, so a client connecting
+  after a notification arrived is not left waiting for the next one.
+- **Drops a signal rather than blocking** when a subscriber's buffer is full.
+  The signal carries no content, so a client that missed three and receives
+  the fourth performs exactly the same read — and a listener that could block
+  would let one slow client stop delivery for everybody.
+- **Reconnects rather than failing** when the database connection drops. A
+  live update is the least important thing in the process to lose: every
+  client falls back to polling on its own, having noticed nothing.
+- **Refuses a response writer that cannot flush**, with a 501. Without
+  flushing the response arrives all at once when the handler returns — which
+  looks like a working endpoint in a test and never delivers a live event.
+
+### Turning it off
+
+`NOTIFICATIONS_SSE=false` is a **supported configuration, not a degraded
+one**. The polling endpoints carry exactly the same information, and the
+stream is then not mounted at all — so a client gets a 404 and falls back
+immediately, rather than holding open a connection that delivers nothing.
+
+### Why it is not in the OpenAPI document
+
+An OpenAPI document describes request and response *bodies*. A server-sent
+event stream has no body in that sense: it has an unbounded sequence of framed
+events over one response. Every attempt to express that in OpenAPI produces a
+description generated code cannot use and a reader cannot trust.
+
+So the stream is mounted beside the generated operations, in
+`internal/app/notifications.go`, and documented here. The polling endpoints
+that serve the same information are in the document as usual — which is the
+point: the contract a client can generate against covers everything, and the
+stream is an optimisation on top of it.

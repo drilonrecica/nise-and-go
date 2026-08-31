@@ -1,0 +1,156 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package sse writes server-sent events.
+//
+// It is deliberately small: SSE is a line-oriented text format over an
+// ordinary HTTP response, and the whole of it is "field: value" lines
+// separated by blank lines. What this package adds is the three things that
+// are easy to get wrong.
+//
+// **Flushing.** An event that sits in a buffer has not been sent. Every write
+// here flushes, because the entire point of the transport is that the client
+// sees the event now rather than when some buffer happens to fill.
+//
+// **Heartbeats.** A connection with no traffic is indistinguishable from a
+// dead one, and the things between a browser and this process — a load
+// balancer, a reverse proxy, a phone's radio — will close an idle connection
+// without telling either end. A comment line every so often keeps it open and
+// makes a broken one detectable.
+//
+// **Framing.** Data containing a newline must be split across several `data:`
+// lines, or the receiver sees a truncated event and a stray line it cannot
+// parse. That is one loop, and forgetting it is the most common SSE bug.
+package sse
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// DefaultHeartbeat is how often a comment line is written to an idle stream.
+//
+// Fifteen seconds is comfortably inside the idle timeout of every proxy this
+// application is likely to sit behind — nginx and most cloud load balancers
+// default to sixty — and infrequent enough that an idle connection costs
+// almost nothing.
+const DefaultHeartbeat = 15 * time.Second
+
+// MaxEventBytes bounds one event's data. A payload larger than this is a
+// design mistake in the caller: SSE is for telling a client that something
+// changed, so it can fetch it — not for shipping the thing itself.
+const MaxEventBytes = 64 << 10
+
+// ErrNotStreamable reports a ResponseWriter that cannot flush.
+//
+// Without flushing there is no streaming, only a response that arrives all at
+// once when the handler returns — which looks like a working SSE endpoint in
+// a test and never delivers a live event in production. It is an error rather
+// than a silent degradation for exactly that reason.
+var ErrNotStreamable = errors.New("sse: this response writer cannot flush, so nothing would be streamed")
+
+// ErrEventTooLarge reports data over MaxEventBytes.
+var ErrEventTooLarge = errors.New("sse: the event payload is too large")
+
+// Stream writes events to one client.
+type Stream struct {
+	writer  http.ResponseWriter
+	flusher http.Flusher
+}
+
+// Open writes the SSE response headers and returns a stream.
+//
+// The headers are not decoration. `text/event-stream` is what makes the
+// browser's EventSource accept the response at all; `no-cache` stops an
+// intermediate from serving a stale copy of an infinite response; and
+// `X-Accel-Buffering: no` is the one nginx honours to stop it buffering the
+// stream into uselessness, which is the single most common reason a working
+// SSE endpoint delivers nothing in production.
+func Open(w http.ResponseWriter) (*Stream, error) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return nil, ErrNotStreamable
+	}
+
+	header := w.Header()
+	header.Set("Content-Type", "text/event-stream")
+	header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	header.Set("Connection", "keep-alive")
+	header.Set("X-Accel-Buffering", "no")
+
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+	return &Stream{writer: w, flusher: flusher}, nil
+}
+
+// Event writes one named event carrying data, and flushes.
+func (s *Stream) Event(name string, data []byte) error {
+	if len(data) > MaxEventBytes {
+		return fmt.Errorf("%w: %d bytes, the limit is %d", ErrEventTooLarge, len(data), MaxEventBytes)
+	}
+	if strings.ContainsAny(name, "\r\n") {
+		return errors.New("sse: an event name cannot contain a line break")
+	}
+
+	var b strings.Builder
+	if name != "" {
+		b.WriteString("event: ")
+		b.WriteString(name)
+		b.WriteString("\n")
+	}
+	// One data: line per line of payload. A receiver joins them with
+	// newlines, so this round-trips; writing the raw payload instead would
+	// truncate the event at its first newline and leave the remainder to be
+	// read as stray fields.
+	for line := range strings.SplitSeq(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		b.WriteString("data: ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	if _, err := s.writer.Write([]byte(b.String())); err != nil {
+		return err
+	}
+	s.flusher.Flush()
+	return nil
+}
+
+// JSON marshals value and writes it as a named event.
+func (s *Stream) JSON(name string, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("sse: encoding a %s event: %w", name, err)
+	}
+	return s.Event(name, data)
+}
+
+// Heartbeat writes a comment line, which a client ignores and a proxy counts
+// as traffic.
+func (s *Stream) Heartbeat() error {
+	if _, err := s.writer.Write([]byte(": keep-alive\n\n")); err != nil {
+		return err
+	}
+	s.flusher.Flush()
+	return nil
+}
+
+// Retry tells the client how long to wait before reconnecting.
+//
+// Worth setting explicitly: the browser default is three seconds, and a
+// deployment restarting with a few thousand connected clients gets all of
+// them back within three seconds of each other. A longer value with the
+// client's own jitter spreads the reconnection.
+func (s *Stream) Retry(after time.Duration) error {
+	if after <= 0 {
+		return errors.New("sse: a retry delay must be positive")
+	}
+	if _, err := fmt.Fprintf(s.writer, "retry: %d\n\n", after.Milliseconds()); err != nil {
+		return err
+	}
+	s.flusher.Flush()
+	return nil
+}
