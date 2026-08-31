@@ -10,7 +10,7 @@
 .nise dir 0755
 .nise/architecture.json file 0644 2c1b7fa51a2f42102a4cc0ee94e4f3ab46fafa949c4bcfb6cd4c8ddbff1b6eaa
 AGENTS.md file 0644 1a53a2c39c6f292c18ed89e1c6095758f0d0e7d8ad2b5e439cfd87e7a3c7a76c
-Makefile file 0644 804b5c59d4cbeedf9a6e21265e60a703a760eab677d60a8702604f5f1425e5d5
+Makefile file 0644 bd3eaadd9e7190519da25ed7ad9b0292e666b5648e367d59a7e1648af3c6b6e1
 README.md file 0644 3c2c53af13d7ab43efb23f3fedf6ec8338cc673a22fea8cf82da417ce5e4d431
 api dir 0755
 api/README.md file 0644 fba9f6667e73ebeef26daaf09e235bef9ac18d4f5167d838b1280d8794a49c8d
@@ -42,7 +42,7 @@ frontend/.gitignore file 0644 eb010afc393f40f48ed0ae314791412f77516e00fb4dae5182
 frontend/README.md file 0644 77dae261d467ec50d4f68a39d1ecc30c02c35837bb26628096985db3236fbadc
 frontend/messages dir 0755
 frontend/messages/en.json file 0644 6b33bd279db3620e1adbe5e0c91d06930f7b5b1fd2988b27709abbac959aebcc
-frontend/package.json file 0644 5b7f7edb104ed6d624e36613ec2bb8ae992435f65a3bb99da7b6cf2af67fa284
+frontend/package.json file 0644 57dc122d27d88468d5dee99bbc8cf6e8250701572ed8bed87801f190f2ed1ec4
 frontend/project.inlang dir 0755
 frontend/project.inlang/settings.json file 0644 eb47d55cb1f7fba1f8ec9db09de790361da295135fabe2cb73ebb1677eba4a5c
 frontend/scripts dir 0755
@@ -53,6 +53,7 @@ frontend/src/app.css file 0644 1bf683dcbcd9795546cfd69d83bcbd8011a6f84d629a6e19b
 frontend/src/app.d.ts file 0644 d231593a748a2379dc8248d2a06d2d8ef723c8e8f8a4a3b18291444dac38f861
 frontend/src/app.html file 0644 2d34de7c7e3337aa7fe687bd9c6450da3dea0731fe0222b969be642a5e088b2e
 frontend/src/lib dir 0755
+frontend/src/lib/a11y.ts file 0644 1e7c2f11d72cb2c526740a006d32740cd5b6639e7e05a3843ef5a14acdfdd32e
 frontend/src/lib/api dir 0755
 frontend/src/lib/api/client.test.ts file 0644 36096cc0043e747e968f94fc81049c2a5ae83eda6be17459461b25285aa159a8
 frontend/src/lib/api/client.ts file 0644 c0c2aee1d64c938ed6564304226dc263ff3e5c3dae917154c485408d5b87ef48
@@ -79,10 +80,14 @@ frontend/src/lib/components/ui/ConfirmDialog.svelte file 0644 97c0e52e5a0ae8fc34
 frontend/src/lib/components/ui/DataTable.svelte file 0644 6e7480f96c3188071ae4e813164f3622107c792036cf3673d221cb0fabcb6875
 frontend/src/lib/components/ui/Dialog.svelte file 0644 0278321ebe59512fc1bcb0ab39fc791c6bf0e34ced364cb3affcd84b3c598c86
 frontend/src/lib/components/ui/EmptyState.svelte file 0644 d3098ef9d6ea7f92cb1be809c3101a4ca83844f9ae6bce11bcc91a14d96d8b3f
+frontend/src/lib/components/ui/Field.browser.test.ts file 0644 803a87860857ea1d91249cfc07b54055aec1ce12f99c4028d96512f1f4803080
 frontend/src/lib/components/ui/Field.svelte file 0644 a4eae224e7af685cba83b2202ea3ed66fb76ec105f58e4f2b7ca9a683460996a
+frontend/src/lib/components/ui/FieldProbe.svelte file 0644 72b3b2c94d2a2958201fe86980f373869dc718c70fba1180fcbd5bdbaa1d74f2
 frontend/src/lib/components/ui/Icon.svelte file 0644 88175bfa382279c4ebe682d0b755e78c8394468db9901165b0fa47f100d1a74a
 frontend/src/lib/components/ui/Input.svelte file 0644 90fca93ab8fc1007f016be331332430aaec012ad39dd5e85c465261c3601d305
+frontend/src/lib/components/ui/Menu.browser.test.ts file 0644 5c2001b37cc3b521cfd87c931ac0754a64afa52fe2b63fac6693e3e2f9fb38c7
 frontend/src/lib/components/ui/Menu.svelte file 0644 5d5172030bbf7ff3314c270f7edce862841370965b3f82cc5cf891c3121506b6
+frontend/src/lib/components/ui/MenuProbe.svelte file 0644 4a1b4b114961511ef0249e4c1ebae9b5960d67ceed129c8e90d231051772bfdd
 frontend/src/lib/components/ui/Pagination.svelte file 0644 b9c48e6d27981c1bedd4f8c13df10247c87238f5a09b5ea90c02e5905c47f774
 frontend/src/lib/components/ui/ProblemAlert.svelte file 0644 ba6de817d23728cc3f16fed3ed04a70de5fb8d1ad0fa39a9b7b7a5b0a59ec0f5
 frontend/src/lib/components/ui/Select.svelte file 0644 d030e1a1396645336bf4191cabf004c4d2ef198ff63f2e7aaac6e94b70219835
@@ -138,7 +143,7 @@ frontend/static/favicon.svg file 0644 eb78958ea23231a46ef84123653ecbeb7eda847b77
 frontend/svelte.config.js file 0644 d290c5b3e673ab33a1b79e093db8acd30dac7cc3b56c90bd5452f1da0e2d3af1
 frontend/tsconfig.json file 0644 d8a3f998af73617b07026a41adfbf33f7004647bc4a6759c00d7cc8b06c29e2a
 frontend/vite.config.ts file 0644 fa607392dd5733209992684aef317e8bff614bcd3bf18ab8513b80e6fc1e158a
-frontend/vitest.config.ts file 0644 a4746c6c2e536dacf48fa3e3bdb390cdf76d60d1fd2a003224b0474d1c78af5e
+frontend/vitest.config.ts file 0644 2c2c3c6fb967d63ceca6a9573b493cb49eb8f000fd5789515b184414a8d6d97c
 go.mod file 0644 b79a68cf369fcca7aef313df1c98499bb2b1568207193aeef6dd31aefb440ede
 internal dir 0755
 internal/app dir 0755

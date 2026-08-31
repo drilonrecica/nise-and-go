@@ -1,0 +1,57 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { render } from 'vitest-browser-svelte';
+import { describe, expect, it } from 'vitest';
+
+import { expectNoViolations } from '$lib/a11y';
+
+import FieldProbe from './FieldProbe.svelte';
+
+// A component's contract is what a browser does with it. These assertions are
+// about the accessibility tree and the focus model, and a simulated DOM
+// answers several of them differently from every real browser — which is
+// worse than not answering them.
+
+describe('Field', () => {
+	it('wires the label, the help text, and the error to the control', async () => {
+		render(FieldProbe, { error: 'Enter a valid email address.' });
+		const input = document.querySelector<HTMLInputElement>('#probe');
+		expect(input).not.toBeNull();
+
+		// The label is the accessible name, not a paragraph that happens to sit
+		// above the input.
+		expect(document.querySelector('label[for="probe"]')?.textContent).toContain('Email');
+
+		// Both the description and the error are announced with the field.
+		// Doing this wiring per form is how a form ends up with an error that
+		// is visible and unannounced.
+		const describedBy = input!.getAttribute('aria-describedby')?.split(' ') ?? [];
+		expect(describedBy).toContain('probe-description');
+		expect(describedBy).toContain('probe-error');
+		expect(input!.getAttribute('aria-invalid')).toBe('true');
+
+		await expectNoViolations();
+	});
+
+	it('describes only what exists when the field is valid', async () => {
+		render(FieldProbe, {});
+		const input = document.querySelector<HTMLInputElement>('#probe')!;
+
+		const describedBy = input.getAttribute('aria-describedby')?.split(' ') ?? [];
+		expect(describedBy).toContain('probe-description');
+		// A dangling aria-describedby pointing at an element that is not there
+		// is silence, not a message.
+		expect(describedBy).not.toContain('probe-error');
+		expect(input.getAttribute('aria-invalid')).toBeNull();
+
+		await expectNoViolations();
+	});
+
+	it('states that a field is required in words, not only in colour', async () => {
+		render(FieldProbe, { required: true });
+		// An asterisk carries no meaning to a screen reader, and colour carries
+		// none to anybody who cannot distinguish it (WCAG 2.2 SC 1.4.1).
+		expect(document.querySelector('label[for="probe"]')?.textContent).toContain('required');
+		await expectNoViolations();
+	});
+});

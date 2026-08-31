@@ -1,0 +1,16 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import Field from '$lib/components/ui/Field.svelte';
+	import Input from '$lib/components/ui/Input.svelte';
+
+	// A test fixture. Field takes a snippet, and a snippet cannot be passed
+	// from a test file's props, so the pairing under test lives here — which
+	// is also the pairing every real form uses.
+	let { error, required = false }: { error?: string; required?: boolean } = $props();
+</script>
+
+<Field id="probe" label="Email" description="We only use this to sign you in." {error} {required}>
+	{#snippet children({ describedBy, invalid })}
+		<Input id="probe" type="email" {describedBy} {invalid} />
+	{/snippet}
+</Field>

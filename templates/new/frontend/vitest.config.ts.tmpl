@@ -2,27 +2,61 @@
 
 import { fileURLToPath } from 'node:url';
 
+import { playwright } from '@vitest/browser-playwright';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig } from 'vitest/config';
 
-// The Svelte plugin is here for the `.svelte.ts` modules, not for components:
-// a file whose name carries `.svelte.` is compiled, which is what makes the
-// runes inside it real signals rather than syntax errors. Component tests run
-// in a browser and arrive with their own configuration.
+// Two suites, one configuration.
 //
-// The $lib alias is declared rather than inherited: SvelteKit's own plugin is
-// deliberately not loaded here, and without this a module under test that
-// imports `$lib/...` — which every module in this project may — fails to
-// resolve with an error that looks like a missing file.
-export default defineConfig({
+//   unit    — Node. The `.svelte.ts` modules and the plain TypeScript around
+//             them: schemas, URL state, the API client, the session module.
+//             Fast enough to run on every save.
+//   browser — a real Chromium. Components, because a component's contract is
+//             what a browser does with it: focus order, what `<dialog>` puts
+//             in the top layer, what a screen reader would be handed. A
+//             simulated DOM answers some of those questions differently from
+//             every real browser, which is worse than not answering them.
+//
+// The Svelte plugin is needed by both: a file whose name carries `.svelte.`
+// is compiled, which is what makes the runes inside it real signals rather
+// than syntax errors.
+//
+// The $lib alias is declared rather than inherited, because SvelteKit's own
+// plugin is deliberately not loaded here.
+const shared = {
 	plugins: [svelte()],
 	resolve: {
 		alias: {
 			$lib: fileURLToPath(new URL('./src/lib', import.meta.url))
 		}
-	},
+	}
+};
+
+export default defineConfig({
 	test: {
-		environment: 'node',
-		include: ['src/**/*.test.ts']
+		projects: [
+			{
+				...shared,
+				test: {
+					name: 'unit',
+					environment: 'node',
+					include: ['src/**/*.test.ts'],
+					exclude: ['src/**/*.browser.test.ts']
+				}
+			},
+			{
+				...shared,
+				test: {
+					name: 'browser',
+					include: ['src/**/*.browser.test.ts'],
+					browser: {
+						enabled: true,
+						provider: playwright(),
+						headless: true,
+						instances: [{ browser: 'chromium' }]
+					}
+				}
+			}
+		]
 	}
 });

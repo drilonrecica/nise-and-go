@@ -16,7 +16,10 @@
     "check:runes": "node scripts/check-runes.mjs src",
     "check:contrast": "node scripts/check-contrast.mjs src/app.css",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "test:unit": "pnpm run messages:compile && svelte-kit sync && vitest run",
+    "test:unit": "pnpm run messages:compile && svelte-kit sync && vitest run --project unit",
+    "test:browser": "pnpm run messages:compile && svelte-kit sync && vitest run --project browser",
+    "test:component": "pnpm run messages:compile && svelte-kit sync && vitest run",
+    "test:browser:install": "playwright install chromium",
     "api:generate": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts",
     "api:check": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts --check"
   },
@@ -29,14 +32,19 @@
     "@sveltejs/kit": "2.70.3",
     "@sveltejs/vite-plugin-svelte": "7.3.0",
     "@tailwindcss/vite": "4.3.3",
+    "@vitest/browser": "4.1.11",
+    "@vitest/browser-playwright": "4.1.11",
+    "axe-core": "4.13.0",
     "@inlang/paraglide-js": "2.25.0",
     "@inlang/plugin-message-format": "4.1.0",
     "openapi-typescript": "7.13.0",
+    "playwright": "1.62.1",
     "svelte": "5.56.10",
     "svelte-check": "4.7.6",
     "tailwindcss": "4.3.3",
     "typescript": "5.9.3",
     "vite": "8.2.2",
-    "vitest": "4.1.11"
+    "vitest": "4.1.11",
+    "vitest-browser-svelte": "3.0.0"
   }
 }

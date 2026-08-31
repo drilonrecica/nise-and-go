@@ -93,6 +93,19 @@ const (
 	// frontend's application-owned TypeScript contracts.
 	VitestVersion = "4.1.11"
 
+	// PlaywrightVersion pins the browser driver behind both the component
+	// suite's browser mode and the end-to-end suite. One pin for both, so a
+	// project cannot end up driving two different browsers.
+	PlaywrightVersion = "1.62.1"
+
+	// AxeCoreVersion pins the accessibility rule engine the component suite
+	// asserts against. It is a test dependency: nothing from it ships.
+	AxeCoreVersion = "4.13.0"
+
+	// VitestBrowserSvelteVersion pins the renderer that mounts a Svelte 5
+	// component inside browser mode.
+	VitestBrowserSvelteVersion = "3.0.0"
+
 	// ValibotVersion pins the schema library the generated forms validate
 	// with in the browser. It is the generated frontend's first package that
 	// ships in the bundle rather than only building it.
@@ -154,15 +167,20 @@ var frontendDependencies = []Dependency{
 	{Name: "@sveltejs/kit", Version: "2.70.3"},
 	{Name: "@sveltejs/vite-plugin-svelte", Version: "7.3.0"},
 	{Name: "@tailwindcss/vite", Version: "4.3.3"},
+	{Name: "@vitest/browser", Version: VitestVersion},
+	{Name: "@vitest/browser-playwright", Version: VitestVersion},
+	{Name: "axe-core", Version: AxeCoreVersion},
 	{Name: "@inlang/paraglide-js", Version: ParaglideVersion},
 	{Name: "@inlang/plugin-message-format", Version: MessageFormatPluginVersion},
 	{Name: "openapi-typescript", Version: OpenAPITypescriptVersion},
+	{Name: "playwright", Version: PlaywrightVersion},
 	{Name: "svelte", Version: "5.56.10"},
 	{Name: "svelte-check", Version: "4.7.6"},
 	{Name: "tailwindcss", Version: "4.3.3"},
 	{Name: "typescript", Version: TypeScriptVersion},
 	{Name: "vite", Version: "8.2.2"},
 	{Name: "vitest", Version: VitestVersion},
+	{Name: "vitest-browser-svelte", Version: VitestBrowserSvelteVersion},
 }
 
 // FrontendDependencies returns the pinned frontend packages, in the order
