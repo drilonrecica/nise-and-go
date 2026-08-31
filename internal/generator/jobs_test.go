@@ -126,8 +126,11 @@ func TestJobMigrationIsNumberedAfterTheCoreHistory(t *testing.T) {
 	if content["db/migrations/00010_notifications.sql"] == "" {
 		t.Error("the notifications module migration does not follow the core history at 00010")
 	}
-	if content["db/migrations/00011_totp.sql"] == "" {
-		t.Error("the TOTP module migration does not follow the notifications one at 00011")
+	if content["db/migrations/00011_organizations.sql"] == "" {
+		t.Error("the organizations module migration does not follow the notifications one at 00011")
+	}
+	if content["db/migrations/00012_totp.sql"] == "" {
+		t.Error("the TOTP module migration does not follow the organizations one at 00012")
 	}
 }
 
@@ -500,10 +503,10 @@ func TestTheUploadLifecycleTrustsNothingTheClientSent(t *testing.T) {
 	// The declared values are recorded beside the measured ones, so a lie
 	// is visible rather than merely refused.
 	// Module migrations are numbered contiguously after the core history in
-	// module order: notifications, then TOTP, then uploads.
-	migration := content["db/migrations/00012_uploads.sql"]
+	// module order: notifications, organizations, TOTP, uploads.
+	migration := content["db/migrations/00013_uploads.sql"]
 	if migration == "" {
-		t.Fatal("the uploads migration is not numbered after the notifications and TOTP ones")
+		t.Fatal("the uploads migration is not numbered last among the module migrations")
 	}
 	for _, column := range []string{"declared_type", "declared_size", "content_type", "size", "checksum"} {
 		if !strings.Contains(migration, column) {
@@ -650,5 +653,77 @@ func TestLiveUpdatesCarryNoContentAndFallBackToPolling(t *testing.T) {
 	}
 	if !strings.Contains(content[".env.example"], "NOTIFICATIONS_SSE=true") {
 		t.Error(".env.example does not document the toggle")
+	}
+}
+
+// TestRowLevelSecurityIsConfiguredTheOnlyWayThatWorks pins M8-011. Every
+// assertion here is one of the three facts that decide whether the module is
+// a boundary or decoration.
+func TestRowLevelSecurityIsConfiguredTheOnlyWayThatWorks(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, allModulesOptions())
+	migration := content["db/migrations/00011_organizations.sql"]
+	if migration == "" {
+		t.Fatal("the organizations migration is not numbered after the notifications one")
+	}
+
+	// FORCE, not just ENABLE. ENABLE does not apply to a table's owner, and
+	// migrations run as the owner — so a schema with only ENABLE has
+	// policies that are never consulted.
+	for _, table := range []string{"organizations", "organization_members"} {
+		for _, statement := range []string{
+			"ALTER TABLE " + table + " ENABLE ROW LEVEL SECURITY;",
+			"ALTER TABLE " + table + " FORCE ROW LEVEL SECURITY;",
+		} {
+			if !strings.Contains(migration, statement) {
+				t.Errorf("the migration lacks %q", statement)
+			}
+		}
+	}
+
+	// WITH CHECK as well as USING. Without it a tenant can write a row
+	// belonging to another tenant and merely not read it back.
+	if strings.Count(migration, "WITH CHECK (") != 2 {
+		t.Errorf("not every policy carries WITH CHECK; a tenant could write into another tenant's rows")
+	}
+
+	// missing_ok, so an unset tenant returns NULL and matches nothing
+	// rather than raising.
+	if !strings.Contains(migration, "current_setting('app.current_org_id', true)") {
+		t.Error("the tenant function does not tolerate an unset setting, so a forgotten tenant raises instead of returning nothing")
+	}
+
+	// SET LOCAL, through set_config's is_local argument. A plain SET would
+	// persist on the pooled connection.
+	transaction := content["internal/platform/database/transaction.go"]
+	if !strings.Contains(transaction, `set_config('app.current_org_id', $1, true)`) {
+		t.Error("the tenant is not established with SET LOCAL, so it would survive on a pooled connection")
+	}
+	if !strings.Contains(transaction, "func (t *Transactor) WithinNewTenant(") {
+		t.Error("there is no way to create an organization without exempting the insert from its own policy")
+	}
+
+	// The connecting role must not bypass policies, and production must
+	// refuse rather than warn.
+	if !strings.Contains(content["internal/platform/database/compatibility.go"], "rolsuper, rolbypassrls") {
+		t.Error("nothing checks whether row-level security applies to the connecting role")
+	}
+	app := content["internal/app/app.go"]
+	if !strings.Contains(app, "database.CheckTenantIsolation(ctx, pool)") {
+		t.Error("the application does not check tenant isolation at startup")
+	}
+	if !strings.Contains(app, "connect as a role that is neither a superuser nor BYPASSRLS") {
+		t.Error("production does not refuse to start when row-level security cannot apply")
+	}
+
+	// And the tests must run as a role that cannot bypass, or they pass
+	// vacuously.
+	orgTest := content["internal/features/organizations/organizations_test.go"]
+	if !strings.Contains(orgTest, "testDatabase.Restricted(t)") {
+		t.Error("the isolation tests run as the administrative role, so they would pass against no policies at all")
+	}
+	if !strings.Contains(orgTest, "every isolation test below would pass vacuously") {
+		t.Error("the isolation tests do not check their own premise")
 	}
 }

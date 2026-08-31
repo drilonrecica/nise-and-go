@@ -88,6 +88,28 @@ func Run(ctx context.Context, modeOverride string) error {
 			slog.String("fix", "run the explicit database migration command before enabling features that need the pending schema"))
 	}
 
+{{- if .HasOrganizations }}
+	// Row-level security is only a boundary if it applies to this role. A
+	// superuser — or any role with BYPASSRLS — bypasses every policy, and
+	// FORCE ROW LEVEL SECURITY does not change that: it removes the table
+	// owner's exemption, not the superuser's. A deployment connecting as
+	// `postgres` therefore has tenant isolation that looks complete in the
+	// schema and enforces nothing.
+	isolation, err := database.CheckTenantIsolation(ctx, pool)
+	if err != nil {
+		return fmt.Errorf("checking tenant isolation: %w", err)
+	}
+	if !isolation.Enforced() {
+		detail := fmt.Sprintf("row-level security does not apply to the database role %q: %s", isolation.Role, isolation.Reason())
+		if cfg.Env == rtconfig.Production {
+			return fmt.Errorf("%s; connect as a role that is neither a superuser nor BYPASSRLS", detail)
+		}
+		logger.Warn("tenant isolation is not enforced",
+			slog.String("detail", detail),
+			slog.String("fix", "connect as a role that is neither a superuser nor BYPASSRLS; production refuses to start without one"))
+	}
+{{- end }}
+
 	// Fail closed in production: a production binary with no frontend
 	// build embedded would serve the development placeholder to real
 	// users, so it refuses to start instead.

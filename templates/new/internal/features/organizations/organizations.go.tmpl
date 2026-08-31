@@ -1,0 +1,386 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package organizations is multitenancy.
+//
+// Every read and write of tenant-scoped data goes through a transaction that
+// established its tenant, and PostgreSQL — not this package — is what refuses
+// the ones that did not. That distinction is the point of the whole module.
+//
+// # Two layers, and why both
+//
+// The application checks membership before it acts, because a person who is
+// not in an organization should get a clear refusal rather than an empty
+// list. Row-level security refuses regardless, because the application's
+// check is code somebody can forget to write and the database's is not.
+//
+// Neither is redundant. A permission check without RLS means every new query
+// is a chance to leak; RLS without a permission check means a missing tenant
+// context looks like an empty organization instead of a mistake. The first is
+// a breach and the second is a bug report, which is the correct asymmetry.
+//
+// # The failure mode is empty, not everything
+//
+// `current_tenant()` is NULL when nothing established a tenant, every policy
+// compares against it, and a comparison with NULL is not true. So a query
+// that forgot its tenant context returns no rows.
+//
+// That direction was chosen. A forgotten `SET LOCAL` produces an empty page,
+// which somebody notices and reports; the other direction produces another
+// tenant's data, which nobody notices at all.
+package organizations
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/features/organizations/store"
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// Bounds, matching the schema's own constraints so a violation is reported
+// here with a readable message rather than by PostgreSQL with a constraint
+// name.
+const (
+	MaxNameBytes = 200
+	MinSlugBytes = 2
+	MaxSlugBytes = 64
+	MaxRoleBytes = 32
+	// DefaultMemberPageSize and MaxMemberPageSize bound a member listing.
+	DefaultMemberPageSize = 50
+	MaxMemberPageSize     = 200
+)
+
+// RoleOwner is the role the creator of an organization receives.
+//
+// An organization with no owner is one nobody can administer, so creation
+// assigns it in the same transaction rather than leaving it to a caller who
+// might not.
+const RoleOwner = "owner"
+
+// Errors this package returns.
+var (
+	// ErrNotFound reports an organization that does not exist, or one this
+	// transaction's tenant is not. The two are the same value: whether an
+	// identifier exists is itself information, and across a tenant boundary
+	// it is the information most worth withholding.
+	ErrNotFound = errors.New("organizations: no such organization")
+	// ErrNotMember reports a user who is not in the organization.
+	ErrNotMember = errors.New("organizations: not a member of this organization")
+	// ErrInvalid reports input that does not satisfy the schema.
+	ErrInvalid = errors.New("organizations: invalid organization")
+	// ErrLastOwner reports removing the only owner, which would leave an
+	// organization nobody can administer.
+	ErrLastOwner = errors.New("organizations: an organization must keep at least one owner")
+)
+
+// Organization is one tenant.
+type Organization struct {
+	ID        string
+	Name      string
+	Slug      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Member is one person's membership of one organization.
+type Member struct {
+	OrgID    string
+	UserID   string
+	Role     string
+	JoinedAt time.Time
+}
+
+// Organizations is the use case.
+type Organizations struct {
+	transactor *database.Transactor
+}
+
+// New builds it.
+func New(transactor *database.Transactor) (*Organizations, error) {
+	if transactor == nil {
+		return nil, errors.New("organizations: a transaction runner is required")
+	}
+	return &Organizations{transactor: transactor}, nil
+}
+
+// Create makes an organization and puts its creator in it as owner.
+//
+// It is the one operation whose tenant does not exist when it starts, and the
+// resolution is not an exemption. The identifier is minted inside the
+// transaction and established as the tenant before anything is written, so
+// the ordinary policy applies to every statement and the organization it
+// creates is the only row it can create. See Transactor.WithinNewTenant.
+//
+// Ownership is established in the same transaction, so a failure after the
+// first statement cannot leave an organization nobody can administer.
+func (o *Organizations) Create(ctx context.Context, name, slug, creatorUserID string) (Organization, error) {
+	if err := validateName(name); err != nil {
+		return Organization{}, err
+	}
+	if err := validateSlug(slug); err != nil {
+		return Organization{}, err
+	}
+	creator, err := parseUUID(creatorUserID)
+	if err != nil {
+		return Organization{}, fmt.Errorf("%w: %s", ErrInvalid, err)
+	}
+
+	var row store.Organization
+	err = o.transactor.WithinNewTenant(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx, orgID string) error {
+		id, parseErr := parseUUID(orgID)
+		if parseErr != nil {
+			return parseErr
+		}
+		queries := store.New(tx)
+		created, createErr := queries.CreateOrganization(ctx, store.CreateOrganizationParams{ID: id, Name: name, Slug: slug})
+		if createErr != nil {
+			return createErr
+		}
+		if _, memberErr := queries.AddMember(ctx, store.AddMemberParams{
+			OrgID:  created.ID,
+			UserID: creator,
+			Role:   RoleOwner,
+		}); memberErr != nil {
+			return memberErr
+		}
+		row = created
+		return nil
+	})
+	if err != nil {
+		return Organization{}, fmt.Errorf("organizations: creating: %w", err)
+	}
+	return toOrganization(row), nil
+}
+
+// Get returns one organization, from inside it.
+func (o *Organizations) Get(ctx context.Context, orgID string) (Organization, error) {
+	id, err := parseUUID(orgID)
+	if err != nil {
+		return Organization{}, ErrNotFound
+	}
+	var row store.Organization
+	err = o.transactor.WithinTenant(ctx, orgID, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		row, txErr = store.New(tx).GetOrganization(ctx, store.GetOrganizationParams{ID: id})
+		return txErr
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Organization{}, ErrNotFound
+		}
+		return Organization{}, fmt.Errorf("organizations: reading: %w", err)
+	}
+	return toOrganization(row), nil
+}
+
+// Rename changes an organization's display name, from inside it.
+func (o *Organizations) Rename(ctx context.Context, orgID, name string) (Organization, error) {
+	if err := validateName(name); err != nil {
+		return Organization{}, err
+	}
+	id, err := parseUUID(orgID)
+	if err != nil {
+		return Organization{}, ErrNotFound
+	}
+	var row store.Organization
+	err = o.transactor.WithinTenant(ctx, orgID, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		row, txErr = store.New(tx).RenameOrganization(ctx, store.RenameOrganizationParams{ID: id, Name: name})
+		return txErr
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Organization{}, ErrNotFound
+		}
+		return Organization{}, fmt.Errorf("organizations: renaming: %w", err)
+	}
+	return toOrganization(row), nil
+}
+
+// AddMember puts a user in an organization, or changes their role.
+func (o *Organizations) AddMember(ctx context.Context, orgID, userID, role string) (Member, error) {
+	if err := validateRole(role); err != nil {
+		return Member{}, err
+	}
+	org, err := parseUUID(orgID)
+	if err != nil {
+		return Member{}, ErrNotFound
+	}
+	user, err := parseUUID(userID)
+	if err != nil {
+		return Member{}, fmt.Errorf("%w: %s", ErrInvalid, err)
+	}
+
+	var row store.OrganizationMember
+	err = o.transactor.WithinTenant(ctx, orgID, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		row, txErr = store.New(tx).AddMember(ctx, store.AddMemberParams{OrgID: org, UserID: user, Role: role})
+		return txErr
+	})
+	if err != nil {
+		return Member{}, fmt.Errorf("organizations: adding a member: %w", err)
+	}
+	return toMember(row), nil
+}
+
+// RemoveMember takes a user out of an organization.
+//
+// Removing the last owner is refused. An organization with no owner is one
+// nobody can administer and nobody can repair through the application, so it
+// becomes a support request that ends in somebody running SQL by hand.
+func (o *Organizations) RemoveMember(ctx context.Context, orgID, userID string) error {
+	org, err := parseUUID(orgID)
+	if err != nil {
+		return ErrNotFound
+	}
+	user, err := parseUUID(userID)
+	if err != nil {
+		return ErrNotMember
+	}
+
+	return o.transactor.WithinTenant(ctx, orgID, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := store.New(tx)
+		existing, readErr := queries.GetMember(ctx, store.GetMemberParams{OrgID: org, UserID: user})
+		if readErr != nil {
+			if errors.Is(readErr, pgx.ErrNoRows) {
+				return ErrNotMember
+			}
+			return readErr
+		}
+		if existing.Role == RoleOwner {
+			owners, countErr := countOwners(ctx, tx, org)
+			if countErr != nil {
+				return countErr
+			}
+			if owners <= 1 {
+				return ErrLastOwner
+			}
+		}
+		removed, removeErr := queries.RemoveMember(ctx, store.RemoveMemberParams{OrgID: org, UserID: user})
+		if removeErr != nil {
+			return removeErr
+		}
+		if removed == 0 {
+			return ErrNotMember
+		}
+		return nil
+	})
+}
+
+// Members lists an organization's membership, from inside it.
+func (o *Organizations) Members(ctx context.Context, orgID string, limit int) ([]Member, error) {
+	org, err := parseUUID(orgID)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	if limit <= 0 {
+		limit = DefaultMemberPageSize
+	}
+	if limit > MaxMemberPageSize {
+		limit = MaxMemberPageSize
+	}
+
+	var rows []store.OrganizationMember
+	err = o.transactor.WithinTenant(ctx, orgID, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		rows, txErr = store.New(tx).ListMembers(ctx, store.ListMembersParams{OrgID: org, Limit: int32(limit)})
+		return txErr
+	})
+	if err != nil {
+		return nil, fmt.Errorf("organizations: listing members: %w", err)
+	}
+	out := make([]Member, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toMember(row))
+	}
+	return out, nil
+}
+
+// MemberOf reports a user's membership of an organization.
+//
+// This is the check a request performs before it establishes tenant context,
+// so it deliberately does not run inside a tenant — the tenant is what it is
+// deciding. It reads one row by primary key and nothing else, which is the
+// narrowest read that answers the question.
+func (o *Organizations) MemberOf(ctx context.Context, orgID, userID string) (Member, error) {
+	org, err := parseUUID(orgID)
+	if err != nil {
+		return Member{}, ErrNotMember
+	}
+	user, err := parseUUID(userID)
+	if err != nil {
+		return Member{}, ErrNotMember
+	}
+
+	var row store.OrganizationMember
+	err = o.transactor.WithinTenant(ctx, orgID, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		row, txErr = store.New(tx).GetMember(ctx, store.GetMemberParams{OrgID: org, UserID: user})
+		return txErr
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Member{}, ErrNotMember
+		}
+		return Member{}, fmt.Errorf("organizations: reading a membership: %w", err)
+	}
+	return toMember(row), nil
+}
+
+// countOwners counts an organization's owners inside the caller's
+// transaction, which is already tenant-scoped.
+func countOwners(ctx context.Context, tx pgx.Tx, org pgtype.UUID) (int64, error) {
+	var owners int64
+	err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM organization_members WHERE org_id = $1 AND role = $2`,
+		org, RoleOwner).Scan(&owners)
+	return owners, err
+}
+
+func validateName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" || len(trimmed) > MaxNameBytes {
+		return fmt.Errorf("%w: a name is 1 to %d bytes", ErrInvalid, MaxNameBytes)
+	}
+	return nil
+}
+
+// validateSlug mirrors the schema's slug constraint. The slug appears in URLs
+// and in log lines, so it is restricted to what is unambiguous in both.
+func validateSlug(slug string) error {
+	if len(slug) < MinSlugBytes || len(slug) > MaxSlugBytes {
+		return fmt.Errorf("%w: a slug is %d to %d characters", ErrInvalid, MinSlugBytes, MaxSlugBytes)
+	}
+	for i, r := range slug {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r == '-' && i > 0 && i < len(slug)-1:
+		default:
+			return fmt.Errorf("%w: a slug is lowercase letters, digits, and interior hyphens", ErrInvalid)
+		}
+	}
+	return nil
+}
+
+func validateRole(role string) error {
+	if role == "" || len(role) > MaxRoleBytes {
+		return fmt.Errorf("%w: a role is 1 to %d bytes", ErrInvalid, MaxRoleBytes)
+	}
+	for i, r := range role {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case (r >= '0' && r <= '9' || r == '_') && i > 0:
+		default:
+			return fmt.Errorf("%w: a role is lowercase letters, digits, and underscores", ErrInvalid)
+		}
+	}
+	return nil
+}

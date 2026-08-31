@@ -5,8 +5,14 @@ package database
 import (
 	"context"
 	"errors"
+{{- if .HasOrganizations }}
+	"fmt"
+{{- end }}
 
 	"github.com/jackc/pgx/v5"
+{{- if .HasOrganizations }}
+	"github.com/jackc/pgx/v5/pgtype"
+{{- end }}
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/drilonrecica/nise-and-go/runtime/transaction"
@@ -41,6 +47,117 @@ func (t *Transactor) Within(ctx context.Context, options transaction.Options, wo
 	}
 	return t.runner.Within(ctx, options, work)
 }
+
+{{- if .HasOrganizations }}
+
+// TenantKeyLength is the number of characters in the identifier WithinTenant
+// accepts. It is a UUID's canonical form.
+const TenantKeyLength = 36
+
+// ErrTenant reports an organization identifier this package will not put into
+// a SET LOCAL.
+var ErrTenant = errors.New("tenant identifier is not a UUID")
+
+// WithinTenant runs one use-case-owned transaction with the row-level
+// security tenant established.
+//
+// The setting is written with SET LOCAL, and that word is the whole design.
+// SET LOCAL is reverted when the transaction ends — by commit, by rollback,
+// by an error, by anything — so a pooled connection handed to the next
+// request cannot still be carrying the previous request's tenant. The
+// alternative, a plain SET, persists on the connection for as long as the
+// pool keeps it, and the first time somebody forgets to clear it one tenant
+// reads another's data through a connection that was simply reused.
+//
+// There is deliberately no way to clear the tenant and keep the transaction,
+// and no way to change it partway through. A transaction belongs to one
+// tenant; needing two means needing two transactions.
+func (t *Transactor) WithinTenant(ctx context.Context, orgID string, options transaction.Options, work func(context.Context, pgx.Tx) error) error {
+	if t == nil || t.runner == nil {
+		return errors.New("transactor must not be nil")
+	}
+	if err := validateTenant(orgID); err != nil {
+		return err
+	}
+	return t.runner.Within(ctx, options, func(ctx context.Context, tx pgx.Tx) error {
+		// set_config with is_local = true is SET LOCAL as a function call,
+		// which is what allows the value to be a bound parameter. The
+		// statement form takes a literal only, so building it would mean
+		// interpolating an identifier into SQL — and an identifier that
+		// reached this from a request is exactly the value that must never
+		// be interpolated. validateTenant already refuses anything that is
+		// not a UUID; this makes the refusal redundant rather than
+		// load-bearing, which is the right relationship between the two.
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.current_org_id', $1, true)`, orgID); err != nil {
+			return fmt.Errorf("establishing tenant context: %w", err)
+		}
+		return work(ctx, tx)
+	})
+}
+
+// WithinNewTenant runs one transaction inside a tenant it is creating.
+//
+// It exists because of a genuine ordering problem rather than a convenience.
+// A policy of the form `id = current_tenant()` refuses an INSERT that has no
+// tenant established — correctly, and including the insert that creates the
+// tenant itself. The alternatives are all worse: a permissive policy for
+// INSERT would open the one statement that decides who owns what, and a
+// privileged escape hatch would be a second write path with no policy on it.
+//
+// So the identifier is minted first, inside the transaction, and established
+// as the tenant before anything is written. The transaction genuinely *is* in
+// that tenant, the ordinary policy applies to every statement, and the
+// organization it creates is the only row it can create.
+//
+// work receives the identifier it must use.
+func (t *Transactor) WithinNewTenant(ctx context.Context, options transaction.Options, work func(context.Context, pgx.Tx, string) error) error {
+	if t == nil || t.runner == nil {
+		return errors.New("transactor must not be nil")
+	}
+	return t.runner.Within(ctx, options, func(ctx context.Context, tx pgx.Tx) error {
+		var orgID string
+		if err := tx.QueryRow(ctx, `SELECT gen_random_uuid()::text`).Scan(&orgID); err != nil {
+			return fmt.Errorf("minting a tenant identifier: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.current_org_id', $1, true)`, orgID); err != nil {
+			return fmt.Errorf("establishing tenant context: %w", err)
+		}
+		return work(ctx, tx, orgID)
+	})
+}
+
+// validateTenant refuses an identifier that is not a UUID in canonical form.
+//
+// The parameter is bound rather than interpolated, so this is not what stands
+// between the application and injection. It does two other things.
+//
+// It stops a malformed value from being written into the setting at all,
+// where it would make every policy comparison fail with a cast error instead
+// of returning no rows — turning a default-deny into a 500.
+//
+// And it requires the *canonical* form, which matters more than it looks.
+// pgtype accepts a UUID with the hyphens omitted and with uppercase hex, so
+// three different strings would otherwise name one tenant. That is the same
+// "two spellings, one object" hazard that makes an authorization check
+// unreliable: a decision made about one spelling, applied to another.
+func validateTenant(orgID string) error {
+	if len(orgID) != TenantKeyLength {
+		return fmt.Errorf("%w: %q", ErrTenant, orgID)
+	}
+	var parsed pgtype.UUID
+	if err := parsed.Scan(orgID); err != nil || !parsed.Valid {
+		return fmt.Errorf("%w: %q", ErrTenant, orgID)
+	}
+	canonical, err := parsed.Value()
+	if err != nil {
+		return fmt.Errorf("%w: %q", ErrTenant, orgID)
+	}
+	if text, ok := canonical.(string); !ok || text != orgID {
+		return fmt.Errorf("%w: %q is not in canonical form", ErrTenant, orgID)
+	}
+	return nil
+}
+{{- end }}
 
 func pgxTransactionOptions(options transaction.Options) pgx.TxOptions {
 	var result pgx.TxOptions
