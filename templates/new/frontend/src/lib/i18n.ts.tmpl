@@ -1,0 +1,57 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Internationalization, in one place.
+//
+// Messages are compiled, not looked up: `messages/en.json` becomes real
+// functions in `src/lib/paraglide/`, so a message that does not exist is a
+// build error rather than a key rendered raw on a page, and a message nothing
+// imports is not in the bundle. The compiled directory is generated output —
+// it is gitignored, and `pnpm build` and `pnpm dev` both regenerate it through
+// the Vite plugin.
+//
+// Adding a language is two edits: a locale in `project.inlang/settings.json`
+// and a `messages/<locale>.json` beside the English one. Nothing in the
+// application needs to change, which is the point of compiling rather than
+// resolving at runtime.
+
+import { getLocale, locales, setLocale, type Locale } from '$lib/paraglide/runtime';
+
+/** Every locale this application was compiled with. */
+export const availableLocales = locales;
+
+/** A locale this application was compiled with. */
+export type { Locale };
+
+/**
+ * What each locale is called, in that locale.
+ *
+ * A language list written in the reader's *current* language is a list a
+ * person who cannot read the current language cannot use — which is precisely
+ * the person reaching for it.
+ */
+export const localeNames: Record<string, string> = {
+	en: 'English'
+};
+
+/** The locale in force. */
+export function currentLocale(): Locale {
+	return getLocale();
+}
+
+/**
+ * Choose a locale.
+ *
+ * Paraglide reloads the page, and that is the right behaviour rather than a
+ * limitation: messages are compiled into the modules that use them, so a
+ * language change is a different bundle, not a different value. The reload is
+ * also what makes `lang` on `<html>` correct for the whole document, which a
+ * live swap would leave stale.
+ */
+export function chooseLocale(locale: Locale): void {
+	setLocale(locale);
+}
+
+/** Whether this application has more than one language to offer. */
+export function hasMultipleLocales(): boolean {
+	return availableLocales.length > 1;
+}

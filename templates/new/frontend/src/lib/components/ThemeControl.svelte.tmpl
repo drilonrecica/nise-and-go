@@ -1,13 +1,14 @@
 <!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
 <script lang="ts">
+	import { m } from '$lib/paraglide/messages';
 	import { preferences, themePreferences, type ThemePreference } from '$lib/theme.svelte';
 
 	let { id = 'theme-control' }: { id?: string } = $props();
 
 	const labels: Record<ThemePreference, string> = {
-		light: 'Light',
-		dark: 'Dark',
-		system: 'System'
+		light: m.theme_light(),
+		dark: m.theme_dark(),
+		system: m.theme_system()
 	};
 </script>
 

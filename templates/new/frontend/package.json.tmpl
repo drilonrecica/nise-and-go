@@ -10,12 +10,13 @@
   "scripts": {
     "dev": "vite dev",
     "build": "pnpm run api:check && vite build",
+    "messages:compile": "paraglide-js compile --project ./project.inlang --outdir ./src/lib/paraglide --strategy localStorage preferredLanguage baseLocale --disable-async-local-storage",
     "preview": "vite preview",
-    "check": "pnpm run api:check && pnpm run check:runes && pnpm run check:contrast && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check": "pnpm run api:check && pnpm run messages:compile && pnpm run check:runes && pnpm run check:contrast && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:runes": "node scripts/check-runes.mjs src",
     "check:contrast": "node scripts/check-contrast.mjs src/app.css",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "test:unit": "svelte-kit sync && vitest run",
+    "test:unit": "pnpm run messages:compile && svelte-kit sync && vitest run",
     "api:generate": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts",
     "api:check": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts --check"
   },

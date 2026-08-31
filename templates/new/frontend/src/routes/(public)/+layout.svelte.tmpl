@@ -1,5 +1,6 @@
 <!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
 <script lang="ts">
+	import LocaleControl from '$lib/components/LocaleControl.svelte';
 	import ThemeControl from '$lib/components/ThemeControl.svelte';
 	import Toaster from '$lib/components/ui/Toaster.svelte';
 
@@ -14,7 +15,10 @@
 <div class="flex min-h-dvh flex-col bg-canvas text-text">
 	<header class="flex h-14 shrink-0 items-center justify-between px-4">
 		<span class="text-sm font-semibold tracking-tight">{{.AppName}}</span>
-		<ThemeControl id="public-theme" />
+		<div class="flex items-center gap-2">
+			<LocaleControl id="public-locale" />
+			<ThemeControl id="public-theme" />
+		</div>
 	</header>
 
 	<main id="main" class="flex flex-1 items-start justify-center px-4 py-8 sm:items-center">

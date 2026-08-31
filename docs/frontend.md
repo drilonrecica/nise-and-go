@@ -104,6 +104,18 @@ Branch on `code`, not on the status. The server has one catalog of problems and 
 
 Field-level validation errors are not in the contract: the `Problem` schema is `additionalProperties: false` and carries no per-field member. Client-side field validation is Valibot's job, and the server remains authoritative.
 
+### Language
+
+Messages are compiled, not looked up. `messages/en.json` becomes real functions under `src/lib/paraglide/`, so a message that does not exist is a build error rather than a key rendered raw on a page, and a message nothing imports is not in the bundle. That directory is generated output: it is gitignored, and `pnpm build`, `pnpm dev`, `pnpm check`, and `pnpm test:unit` all regenerate it.
+
+Adding a language is two edits — a locale in `project.inlang/settings.json` and a `messages/<locale>.json` beside the English one — and nothing in the application changes. That is the point of compiling rather than resolving at runtime.
+
+There is no locale in the URL. This is one single-page application served from one path by the Go binary; a URL strategy would mean every route existed once per language and every link had to know which one it was in. The choice is stored in the browser, falling back to what the browser asks for and then to the base locale.
+
+Choosing a language reloads the page, which is correct rather than a limitation: messages are compiled into the modules that use them, so a language change is a different bundle rather than a different value, and the reload is what makes `lang` on `<html>` right for the whole document.
+
+`localeNames` lists each language in **its own** language. A language list written in the reader's current language is a list the person reaching for it cannot read. The control is absent rather than disabled when there is only one locale, because a control with one option says "you may not change this", which is not what a single-language application means.
+
 ### Lists: the URL is the state
 
 Search, sort, filters, and the page a person is on live in the query string and nowhere else, and `src/lib/table/list-state.ts` is the only thing that reads or writes them. That is not tidiness: it is what makes a filtered list something somebody can bookmark, send to a colleague, and reach again with the back button. State held in a component instead disappears on reload and cannot be shared.

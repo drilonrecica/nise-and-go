@@ -1,9 +1,32 @@
 // Generated once by nise; owned by this application. Nise will not overwrite it.
 
+import { paraglideVitePlugin } from '@inlang/paraglide-js';
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-	plugins: [tailwindcss(), sveltekit()]
+	plugins: [
+		// Messages are compiled into src/lib/paraglide/ on every dev start and
+		// every build. That directory is generated output and is gitignored;
+		// the sources are messages/*.json and project.inlang/settings.json.
+		paraglideVitePlugin({
+			project: './project.inlang',
+			outdir: './src/lib/paraglide',
+			// No locale in the URL. This application is one single-page
+			// application served from one path by the Go binary, and a URL
+			// strategy would mean every route existed once per language and
+			// every link had to know which one it was in. The choice is stored
+			// in this browser instead, falling back to what the browser asks
+			// for and then to the base locale.
+			strategy: ['localStorage', 'preferredLanguage', 'baseLocale'],
+			// There is no server. The generated server helper would otherwise
+			// import node:async_hooks, which a browser bundle has no use for
+			// and which a type check in a project with no Node types cannot
+			// resolve.
+			disableAsyncLocalStorage: true
+		}),
+		tailwindcss(),
+		sveltekit()
+	]
 });

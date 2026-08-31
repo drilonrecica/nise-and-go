@@ -1,0 +1,35 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import Select from '$lib/components/ui/Select.svelte';
+	import {
+		availableLocales,
+		chooseLocale,
+		currentLocale,
+		hasMultipleLocales,
+		localeNames,
+		type Locale
+	} from '$lib/i18n';
+	import { m } from '$lib/paraglide/messages';
+
+	let { id = 'locale-control' }: { id?: string } = $props();
+</script>
+
+<!--
+	Absent rather than disabled when there is one language. A control with one
+	option is a control that says "you may not change this", which is not what
+	an application with a single locale means.
+-->
+{#if hasMultipleLocales()}
+	<div class="flex items-center gap-2">
+		<label for={id} class="sr-only">{m.language_label()}</label>
+		<Select
+			{id}
+			value={currentLocale()}
+			onchange={(event) => chooseLocale((event.currentTarget as HTMLSelectElement).value as Locale)}
+		>
+			{#each availableLocales as locale (locale)}
+				<option value={locale}>{localeNames[locale] ?? locale}</option>
+			{/each}
+		</Select>
+	</div>
+{/if}
