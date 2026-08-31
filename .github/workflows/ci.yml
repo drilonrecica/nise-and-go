@@ -77,6 +77,33 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
+      # Ubuntu 23.10 and later restrict unprivileged user namespaces through
+      # AppArmor, and GitHub's hosted ubuntu-24.04 image ships that
+      # restriction on. Under it `unshare --user --net` still creates the
+      # namespace and then fails the uid_map write that makes it usable:
+      #
+      #   unshare: write failed /proc/self/uid_map: Operation not permitted
+      #
+      # That is exactly the silent loss of coverage NISE_REQUIRE_NETNS (see
+      # the next step) exists to turn into a failure, and restoring the
+      # capability is the first of that comment's two sanctioned responses.
+      # It is the better one: the netns proof is the only one of
+      # test/nonetwork's three that catches a raw net.Dial ignoring
+      # HTTP_PROXY, so recording its loss would mean giving that up.
+      #
+      # The sysctl is guarded, because the knob is Ubuntu-specific and a
+      # future image may not carry it. The `unshare` that follows is not,
+      # and is the actual gate: it fails here, under this step's name,
+      # rather than leaving the Go suite to discover the same thing further
+      # down a much longer log.
+      - name: Restore unprivileged user namespaces
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --user --net --map-root-user -- true
+
       # NISE_REQUIRE_NETNS turns test/nonetwork's network-namespace proof from
       # a graceful skip into a hard failure. That proof is the only one of the
       # three that catches a raw net.Dial ignoring HTTP_PROXY, and it skips
