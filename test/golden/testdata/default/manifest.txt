@@ -5,7 +5,7 @@
 # <path> dir <mode>
 # <path> file <mode> <sha256>
 .dockerignore file 0644 e67c07ed17a9271672b7bac7dd99034f3f55e864a847558d67481a4f31e8a392
-.env.example file 0644 4408d5ad28fa044e25f29d10632cd58bd46feb63e3060f71efd874936b97f08c
+.env.example file 0644 00e76ab5e2e0d0493e4e37f75ce65d9378fd69e538e7e085ed3950e2e9b77905
 .gitignore file 0644 ccc454e599a681107318bf8e887057052022fe2f44dc80a4267d879ae7fc8e21
 .nise dir 0755
 .nise/architecture.json file 0644 2c1b7fa51a2f42102a4cc0ee94e4f3ab46fafa949c4bcfb6cd4c8ddbff1b6eaa
@@ -82,8 +82,8 @@ internal/features/auth/store/sessions.sql.go file 0644 129ae5839087c62fb376e951f
 internal/features/auth/store/users.sql.go file 0644 359ffe2c0924479596ea4962c2135ef6272de18ba4e9cc4e27c866b9c3d10a5c
 internal/platform dir 0755
 internal/platform/config dir 0755
-internal/platform/config/config.go file 0644 7b53c889f22d9ed4a8a8584419f76f3fa49b3d47f403ff4e3e49284cd56357e8
-internal/platform/config/config_test.go file 0644 f307615522c51dd686ec44dd6867b530ac87226ea067b49f1b17a8c32385a220
+internal/platform/config/config.go file 0644 fe647bfd588f99271dfcb44b5fc46f30688702a1730ad7201715440fdb85318b
+internal/platform/config/config_test.go file 0644 642ba205ec4c98eccd68d91ffabec4b6fb571847b28c01a30140d6e2417bc43c
 internal/platform/database dir 0755
 internal/platform/database/README.md file 0644 379bfe9051325823ea59d37f173c811ab03c0267f5c3f217f46fb0b477f01675
 internal/platform/database/compatibility.go file 0644 696f985b188edb40c9045583126f2abccdc26ce66d3c17c74fe8044d3f46d56e
@@ -118,7 +118,7 @@ internal/platform/httpapi/openapigen/openapi.gen.go file 0644 49524ea2d6dd45dac9
 internal/platform/httpapi/problem dir 0755
 internal/platform/httpapi/problem/problem.go file 0644 a6d8b9b0931856540858e4f420a2b2fa2652964ae6db93c02a222bf3673f5b2a
 internal/platform/httpapi/problem/problem_test.go file 0644 58ec205b552c9bfb69ba04c2e13d263f39f27ef129023b78776f44321583be0c
-internal/platform/httpapi/router.go file 0644 96dbbe09dfb883720471341d85339ae2e2d900e346973905c5013ee73ce3c13d
+internal/platform/httpapi/router.go file 0644 2167a5c087950075c8c1e3be19cbe57e80140e3db22bf0fd98e0e0b0167c03ad
 internal/platform/httpapi/router_test.go file 0644 6504f432871bea9fe1b5a9d2a31f4de9285dafb6bf92a331ec243411da545999
 internal/platform/httpapi/transport_test.go file 0644 6a16f3907a2f2aba0bcd81f043737fca6dbde35c25c788452c78a3f839943bd0
 internal/platform/httpauth dir 0755

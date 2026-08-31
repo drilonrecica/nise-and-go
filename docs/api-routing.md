@@ -48,11 +48,13 @@ remains a document path here exactly as it does for a known method.
 Both sibling chains use the same core order, outermost first:
 
 1. security headers and the surface-specific CSP;
-2. request/correlation IDs and request-scoped logging;
-3. panic recovery;
-4. HTTP metrics;
-5. the surface's application middleware slot;
-6. route dispatch.
+2. the trusted-proxy edge view, so a log line, a recovered panic, and every
+   handler agree about the client address;
+3. request/correlation IDs and request-scoped logging;
+4. panic recovery;
+5. HTTP metrics;
+6. the surface's application middleware slot;
+7. route dispatch.
 
 Security is outermost so it overwrites any attempted downstream weakening and
 also covers rejections, recovered panics, and `404` responses. Logging wraps

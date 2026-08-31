@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-27
-- **Amended by:** [ADR 0015](0015-use-case-owned-transactions.md), [ADR 0016](0016-authenticated-cursor-pagination.md), [ADR 0017](0017-security-primitives-in-runtime.md)
+- **Amended by:** [ADR 0015](0015-use-case-owned-transactions.md), [ADR 0016](0016-authenticated-cursor-pagination.md), [ADR 0017](0017-security-primitives-in-runtime.md), [ADR 0019](0019-trusted-proxy-configuration.md)
 
 ## Context
 
@@ -30,6 +30,7 @@ Six milestone-2 tasks create packages here at roughly the same time. They need t
 | `runtime/pagination` | Authenticated versioned cursor tokens, key rotation, cursor request parsing, and the separate offset reporting contract (ADR 0016) |
 | `runtime/password` | Argon2id hashing, versioned parameter sets, rehash detection, and parameter benchmarking (ADR 0017) |
 | `runtime/session` | Opaque session tokens, stored digests, the driver-independent session lifecycle, and the browser cookie policy (ADR 0017, ADR 0018) |
+| `runtime/forwarded` | Trusted-proxy policy and the resolution of a request's real client address, scheme, and host (ADR 0019) |
 
 No other package may be added to `runtime/` without an ADR.
 

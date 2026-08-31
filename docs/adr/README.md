@@ -29,5 +29,6 @@ ADRs record consequential decisions, their context, and their tradeoffs. They pr
 - [0016: Authenticate pagination cursors and bind them to their query](0016-authenticated-cursor-pagination.md)
 - [0017: Security primitives belong to the runtime, security policy to the application](0017-security-primitives-in-runtime.md)
 - [0018: Development uses the same hardened session cookie as production](0018-development-cookie-policy.md)
+- [0019: Trust a declared proxy chain, counted from the right](0019-trusted-proxy-configuration.md)
 
 New records copy [template.md](template.md) and use the next four-digit number. Do not rewrite an accepted ADR to hide a reversal; add a new ADR that supersedes it.
