@@ -31,5 +31,6 @@ ADRs record consequential decisions, their context, and their tradeoffs. They pr
 - [0018: Development uses the same hardened session cookie as production](0018-development-cookie-policy.md)
 - [0019: Trust a declared proxy chain, counted from the right](0019-trusted-proxy-configuration.md)
 - [0020: Refuse common passwords locally; never ship a remote checker](0020-compromised-password-source.md)
+- [0021: Require a recent proof for actions that widen access, and for nothing else](0021-reauthentication-matrix.md)
 
 New records copy [template.md](template.md) and use the next four-digit number. Do not rewrite an accepted ADR to hide a reversal; add a new ADR that supersedes it.

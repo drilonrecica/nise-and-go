@@ -114,6 +114,19 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   login use case rather than optional ones. Adds
   `LOGIN_ATTEMPTS_PER_ADDRESS`, `LOGIN_ATTEMPTS_PER_CLIENT`, and
   `LOGIN_THROTTLE_WINDOW`.
+- Add reauthentication for sensitive actions. `runtime/session` gains
+  `Freshness` and a per-session `ProvenAt`; generated applications gain
+  `internal/platform/reauth`, a closed matrix declaring `roles.grant` (5
+  minutes), `users.enable` (15 minutes), and `invitations.create` (15 minutes).
+  A proof is required only for actions that create or widen access — withdrawal
+  is never gated, because it is the response to a compromise — and changing a
+  password records a proof rather than asking for one. The proof is stored on
+  the session, so proving yourself in one browser leaves another machine's
+  session as stale as it was; it is carried across rotation and extends no
+  deadline. An action the matrix does not declare is refused rather than
+  allowed. `Credentials.Reauthenticate` takes no account identifier, shares the
+  sign-in throttle, and audits `session.reauthenticated` and
+  `session.reauthentication_denied`.
 
 ### Fixed
 

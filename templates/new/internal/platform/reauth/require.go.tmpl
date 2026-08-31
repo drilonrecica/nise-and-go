@@ -1,0 +1,197 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package reauth
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/session"
+)
+
+// ErrRequired reports that the caller must prove themselves again.
+//
+// It is one error for every reason. A transport maps it to a single response —
+// "prove yourself again" — and never renders the reason: the difference between
+// a stale proof and a matrix missing a line is a fact about this server, and
+// the person on the other end can do exactly the same thing about both.
+var ErrRequired = errors.New("this action requires a recent proof of identity")
+
+// Reasons a demand can carry. They are values so a log line, a metric, and an
+// audit record all name the same thing.
+const (
+	// ReasonUnresolved means the middleware that resolves the proof did not
+	// run. It is a wiring bug, and it denies.
+	ReasonUnresolved = "unresolved"
+	// ReasonNoSession means the request was not authenticated at all.
+	ReasonNoSession = "no_session"
+	// ReasonUndeclared means the use case checked an action the matrix does
+	// not declare. It is a two-edits-in-one-commit mistake, and it denies:
+	// there is no window that could be satisfied.
+	ReasonUndeclared = "undeclared"
+	// ReasonStale means the proof is older than the action allows. It is the
+	// only reason a correctly wired application should ever produce, and the
+	// only one a person can do anything about.
+	ReasonStale = "stale"
+)
+
+// RequiredError carries what was demanded, for the log and the audit record.
+type RequiredError struct {
+	// Action is what the use case was asked to do.
+	Action Action
+	// UserID is the caller, or empty when there was no session.
+	UserID string
+	// Reason is one of the closed values above.
+	Reason string
+	// Window is how recent the proof had to be. It is zero when no window
+	// was declared.
+	Window time.Duration
+	// ProvenAt is when the caller last proved themselves, or the zero time.
+	ProvenAt time.Time
+}
+
+func (e *RequiredError) Error() string {
+	return fmt.Sprintf("action %s requires a recent proof: %s", e.Action, e.Reason)
+}
+
+// Is makes every RequiredError match ErrRequired, so a caller writes one check.
+func (e *RequiredError) Is(target error) bool { return target == ErrRequired }
+
+// State is the resolved reauthentication position of one request.
+type State struct {
+	// UserID is the authenticated account, or empty.
+	UserID string
+	// SessionID is the session making the request, or empty.
+	SessionID string
+	// ProvenAt is when that session last carried a proof.
+	ProvenAt time.Time
+	// Matrix is the declaration the request is judged against.
+	Matrix *Matrix
+	// At is the instant the request was resolved, and the instant every
+	// freshness question in it is answered against.
+	//
+	// It is captured once rather than read per check for the same reason
+	// authority is resolved once: two checks in one request that read the
+	// clock separately could disagree, and a request would then be fresh
+	// enough for its first action and not its second. A zero instant is a
+	// state that was built by hand and never resolved, and it denies.
+	At time.Time
+}
+
+// contextKey is unexported, so nothing outside this package can claim to have
+// proved anything. A proof any package could write would not be a proof.
+type contextKey struct{}
+
+// WithState returns a context carrying the resolved position.
+func WithState(ctx context.Context, state State) context.Context {
+	return context.WithValue(ctx, contextKey{}, state)
+}
+
+// StateFrom returns the resolved position, and whether any was resolved.
+func StateFrom(ctx context.Context) (State, bool) {
+	state, ok := ctx.Value(contextKey{}).(State)
+	return state, ok
+}
+
+// Require reports whether the caller has proved themselves recently enough to
+// do the thing, and is the only way a use case should ask.
+//
+// It denies in every direction it can fail: an unresolved request denies, an
+// unauthenticated one denies, an undeclared action denies, and a proof exactly
+// as old as the window denies. No path through this function allows without
+// finding a declared window and a proof inside it.
+//
+// It runs after the permission check, not instead of it. "May you" and "is it
+// still you" are separate questions, and an action that asked only the second
+// would let anybody who could type a password do anything.
+func Require(ctx context.Context, action Action) error {
+	state, ok := StateFrom(ctx)
+	if !ok || state.At.IsZero() {
+		return &RequiredError{Action: action, Reason: ReasonUnresolved}
+	}
+	if state.UserID == "" {
+		return &RequiredError{Action: action, Reason: ReasonNoSession}
+	}
+	freshness, declared := state.Matrix.Freshness(action)
+	if !declared {
+		return &RequiredError{Action: action, UserID: state.UserID, Reason: ReasonUndeclared}
+	}
+	if !freshness.Satisfied(state.ProvenAt, state.At) {
+		return &RequiredError{
+			Action:   action,
+			UserID:   state.UserID,
+			Reason:   ReasonStale,
+			Window:   freshness.Window(),
+			ProvenAt: state.ProvenAt,
+		}
+	}
+	return nil
+}
+
+// SessionSource reports the session behind a request, if there is one. It is
+// injected rather than imported so this package and the transport package that
+// resolves sessions do not become mutually dependent.
+type SessionSource func(ctx context.Context) (session.Record, bool)
+
+// Resolver attaches each request's reauthentication position once.
+type Resolver struct {
+	matrix    *Matrix
+	sessionOf SessionSource
+	now       func() time.Time
+}
+
+// ResolverOption configures a Resolver.
+type ResolverOption func(*Resolver)
+
+// WithClock replaces the clock the resolver reads. It exists for tests;
+// production leaves the default time.Now in place.
+func WithClock(now func() time.Time) ResolverOption {
+	return func(r *Resolver) {
+		if now != nil {
+			r.now = now
+		}
+	}
+}
+
+// NewResolver constructs the middleware that resolves the position.
+func NewResolver(matrix *Matrix, sessionOf SessionSource, options ...ResolverOption) (*Resolver, error) {
+	if matrix == nil {
+		return nil, errors.New("reauth: a matrix is required")
+	}
+	if sessionOf == nil {
+		return nil, errors.New("reauth: a session source is required")
+	}
+	resolver := &Resolver{matrix: matrix, sessionOf: sessionOf, now: time.Now}
+	for _, option := range options {
+		option(resolver)
+	}
+	return resolver, nil
+}
+
+// Matrix returns the declaration requests are judged against.
+func (r *Resolver) Matrix() *Matrix { return r.matrix }
+
+// Middleware records what the request has proved, and never rejects.
+//
+// Deciding whether a proof is recent enough belongs to the use case that knows
+// which action is being attempted; a middleware refusing here would put the
+// decision somewhere no handler's reader can see it.
+//
+// The position is attached even when nobody is signed in, carrying an empty
+// account. That is what makes "not signed in" and "this middleware is not
+// wired" two different answers, which are two different bugs — and both of them
+// still deny.
+func (r *Resolver) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		state := State{Matrix: r.matrix, At: r.now().UTC()}
+		if record, ok := r.sessionOf(request.Context()); ok {
+			state.UserID = record.UserID
+			state.SessionID = record.ID
+			state.ProvenAt = record.ProvenAt
+		}
+		next.ServeHTTP(w, request.WithContext(WithState(request.Context(), state)))
+	})
+}

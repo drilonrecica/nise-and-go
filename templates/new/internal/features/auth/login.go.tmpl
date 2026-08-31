@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"time"
 
 	"github.com/drilonrecica/nise-and-go/runtime/forwarded"
 	"github.com/drilonrecica/nise-and-go/runtime/logging"
@@ -15,6 +16,7 @@ import (
 
 	"{{.ModulePath}}/internal/features/audit"
 	"{{.ModulePath}}/internal/platform/passwords"
+	"{{.ModulePath}}/internal/platform/reauth"
 	"{{.ModulePath}}/internal/platform/throttle"
 )
 
@@ -69,6 +71,14 @@ const (
 	ActionPasswordChanged = "password.changed"
 	// ActionPasswordSet records a reset or enrollment password.
 	ActionPasswordSet = "password.set"
+	// ActionReauthenticated records a holder proving themselves again on a
+	// session they already had.
+	ActionReauthenticated = "session.reauthenticated"
+	// ActionReauthenticationDenied records a refused proof. It is separate
+	// from a refused sign-in because it happens inside a live session and
+	// says something different: somebody with that session could not produce
+	// the password.
+	ActionReauthenticationDenied = "session.reauthentication_denied"
 )
 
 // Login is the result of an attempt.
@@ -225,6 +235,106 @@ func (c *Credentials) authenticate(ctx context.Context, email, secret string) (L
 	return result, nil
 }
 
+// Reauthenticate proves that the holder of the current session is still the
+// person it was issued to, and records when.
+//
+// It is not a second sign-in: it issues nothing, changes no cookie, and cannot
+// authenticate anybody but the account the session already belongs to. The
+// account and the session both come from the resolved request rather than from
+// arguments, so a handler cannot accidentally prove one person's password
+// against another person's session.
+//
+// It runs through the same throttle as a sign-in, keyed on the same address, so
+// the endpoint cannot be used as an unmetered oracle for guessing a password
+// that the sign-in page counts. The refusal is the same generic error a wrong
+// password gets at sign-in, for the same reason.
+func (c *Credentials) Reauthenticate(ctx context.Context, secret string) (time.Time, error) {
+	state, ok := reauth.StateFrom(ctx)
+	if !ok || state.UserID == "" || state.SessionID == "" {
+		return time.Time{}, ErrNoSession
+	}
+	account, err := c.accounts.FindByID(ctx, state.UserID)
+	if err != nil {
+		if errors.Is(err, ErrAccountNotFound) {
+			// A live session for an account that no longer exists proves
+			// nothing, and is not the caller's business.
+			return time.Time{}, ErrNoSession
+		}
+		return time.Time{}, err
+	}
+
+	decision, err := c.throttle.Allow(ctx, account.Email, forwarded.ClientIP(ctx))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("checking the authentication throttle: %w", err)
+	}
+	if !decision.Allowed {
+		c.record(ctx, ActionReauthenticationDenied, audit.Failed, account.ID, map[string]string{
+			"reason": string(OutcomeThrottled),
+			"scope":  decision.Scope,
+		})
+		return time.Time{}, ErrThrottled
+	}
+
+	outcome, err := c.reauthenticate(ctx, account, secret)
+	if err != nil {
+		c.record(ctx, ActionReauthenticationDenied, audit.Failed, account.ID, map[string]string{
+			"reason": string(outcome),
+		})
+		return time.Time{}, err
+	}
+	if resetErr := c.throttle.Reset(ctx, account.Email); resetErr != nil {
+		logging.FromContext(ctx).Error("clearing the authentication throttle",
+			slog.String("error_type", fmt.Sprintf("%T", resetErr)))
+	}
+	provenAt, err := c.sessions.RecordProof(ctx, state.SessionID)
+	if err != nil {
+		// The password was right and the session is gone or already carries
+		// a later proof. Reporting success would be a lie the caller acts on.
+		c.record(ctx, ActionReauthenticationDenied, audit.Failed, account.ID, map[string]string{
+			"reason": "unrecorded",
+		})
+		return time.Time{}, err
+	}
+	c.record(ctx, ActionReauthenticated, audit.Succeeded, account.ID, nil)
+	return provenAt, nil
+}
+
+// reauthenticate verifies the password and reports what happened, without
+// deciding what to record or how to answer.
+func (c *Credentials) reauthenticate(ctx context.Context, account Account, secret string) (Outcome, error) {
+	credential, err := c.accounts.FindCredentialByEmail(ctx, account.Email)
+	if err != nil {
+		if errors.Is(err, ErrAccountNotFound) || errors.Is(err, ErrEmail) {
+			c.policy.VerifyDummy(secret)
+			return OutcomeNoAccount, ErrInvalidCredentials
+		}
+		return "", err
+	}
+	verification, err := c.policy.Verify(credential.PasswordHash, secret)
+	if err != nil {
+		logging.FromContext(ctx).Error("stored password hash could not be verified",
+			slog.String("error_type", fmt.Sprintf("%T", err)))
+		return OutcomeUnverifiable, ErrInvalidCredentials
+	}
+	if !verification.Match {
+		return OutcomeWrongPassword, ErrInvalidCredentials
+	}
+	if credential.Status != StatusActive {
+		// A session outliving its account's status is possible for one
+		// request; it must not be able to prove itself for a sensitive one.
+		return OutcomeDisabled, ErrInvalidCredentials
+	}
+	if verification.NeedsRehash {
+		// The same opportunity a sign-in has: this is a moment the server
+		// legitimately holds the plaintext.
+		if err := c.rehash(ctx, credential.ID, secret); err != nil {
+			logging.FromContext(ctx).Error("rehashing a password at reauthentication",
+				slog.String("error_type", fmt.Sprintf("%T", err)))
+		}
+	}
+	return OutcomeSucceeded, nil
+}
+
 // recordLogin writes one audit record for an attempt.
 //
 // The address is deliberately not in the detail: a failed attempt for an
@@ -341,6 +451,17 @@ func (c *Credentials) ChangePassword(ctx context.Context, userID, current, next 
 	rotated, err := c.sessions.Rotate(ctx, keepSessionID, "password changed")
 	if err != nil {
 		return Issued{}, fmt.Errorf("rotating the session after a password change: %w", err)
+	}
+	// Typing the current password is a proof of identity, and a stronger one
+	// than a recent reauthentication. Recording it here is why changing a
+	// password is not itself in the reauthentication matrix: the action
+	// carries its own proof, and asking for the same password twice in one
+	// form would teach people to type it wherever they are asked.
+	if provenAt, err := c.sessions.RecordProof(ctx, rotated.Record.ID); err != nil {
+		logging.FromContext(ctx).Error("recording the proof after a password change",
+			slog.String("error_type", fmt.Sprintf("%T", err)))
+	} else {
+		rotated.Record.ProvenAt = provenAt
 	}
 	return rotated, nil
 }

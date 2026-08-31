@@ -80,11 +80,22 @@ type Querier interface {
 	// RotateSession replaces one session with a new token, preserving the original
 	// absolute deadline. Copying created_at and expires_at rather than recomputing
 	// them is what stops repeated rotation from becoming an unbounded session.
+	// The proof of identity is carried across as well: rotation is not a new proof
+	// and not the loss of one, so a token replaced a moment after a password was
+	// typed must not ask for that password again.
 	RotateSession(ctx context.Context, arg RotateSessionParams) (RotateSessionRow, error)
 	// SetUserStatus enables or disables an account. Disabling stops the account's
 	// sessions from authenticating on their next request; revoking them is a
 	// separate, explicit step.
 	SetUserStatus(ctx context.Context, arg SetUserStatusParams) (int64, error)
+	// StampSessionProof records that the holder proved themselves again.
+	//
+	// It touches one session, never the account's others: a proof given in one
+	// browser must not make a session on another machine fresh. The proven_at guard
+	// keeps the column monotonic, so a delayed write cannot move a proof backwards,
+	// and the revoked_at guard stops a request in flight from proving anything
+	// about a session that has just been ended.
+	StampSessionProof(ctx context.Context, arg StampSessionProofParams) (int64, error)
 	// TouchSession slides the idle window. It skips revoked sessions so a
 	// concurrent revocation cannot be undone by an in-flight request.
 	TouchSession(ctx context.Context, arg TouchSessionParams) (int64, error)

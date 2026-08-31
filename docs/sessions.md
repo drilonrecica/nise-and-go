@@ -45,6 +45,20 @@ order revoked, expired, idle. A revoked session that has also expired is
 revoked: that is what an operator asked for and what an audit record should
 say.
 
+## A third clock: freshness
+
+Both bounds above answer whether a session may be used. Neither answers whether
+the person is still there. `session.Freshness` measures the age of the last
+proof — the moment a credential was actually presented — per action, so an
+application can let an ordinary request through on a twelve-hour session and
+still ask for the password again before something that cannot be undone.
+
+The proof time is stored on the session row as `proven_at`, written at issue,
+carried across rotation, and moved by a reauthentication or a password change.
+It moves no other column: a proof is not activity, and it must not extend the
+absolute deadline. See [Reauthentication](reauthentication.md) for the matrix of
+actions and windows.
+
 ## Touching
 
 Sliding the idle window on every request would turn every authenticated `GET`
@@ -248,6 +262,7 @@ obtain a session from yet.
 ## Related
 
 - [Password hashing](passwords.md)
+- [Reauthentication](reauthentication.md)
 - [Security model](security.md)
 - [Database queries and sqlc](database-queries.md)
 - [Runtime packages](runtime-packages.md)

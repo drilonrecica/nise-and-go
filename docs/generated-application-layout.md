@@ -128,6 +128,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
         ├── httpauth/                  [app]   session cookie boundary, request-identity resolver, and the anti-forgery guard
         ├── idempotency/               [app]   transaction-owned idempotent command executor and its store
         ├── passwords/                 [app]   this application's Argon2id parameter history
+        ├── reauth/                    [app]   this application's reauthentication matrix
         ├── throttle/                  [app]   PostgreSQL-backed authentication rate limiting
         ├── jobs/                      [app]   core: the River runner, queues, and registration
         ├── mail/

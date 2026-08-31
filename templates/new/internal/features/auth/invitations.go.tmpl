@@ -25,6 +25,7 @@ import (
 	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/database"
 	"{{.ModulePath}}/internal/platform/passwords"
+	"{{.ModulePath}}/internal/platform/reauth"
 )
 
 // The invitation token's shape.
@@ -190,6 +191,12 @@ func (i *Invitations) Lifetime() time.Duration { return i.lifetime }
 // the invitation link is the last thing that can see it.
 func (i *Invitations) Create(ctx context.Context, email string, roles []string, invitedBy string) (Invitation, InvitationToken, error) {
 	if err := authorization.Require(ctx, authorization.UsersManage); err != nil {
+		return Invitation{}, InvitationToken{}, err
+	}
+	// An invitation is a way into the system that outlives the request that
+	// made it, so it asks for a recent proof as well as the permission.
+	// Revoking one does not: withdrawal is the response to a mistake.
+	if err := reauth.Require(ctx, reauth.ActionInvitationsCreate); err != nil {
 		return Invitation{}, InvitationToken{}, err
 	}
 

@@ -1,0 +1,28 @@
+-- Generated once by nise; owned by this application. Nise will not overwrite it.
+--
+-- When the holder of a session last proved themselves with a credential.
+--
+-- An active session says a credential was presented at some point; it does not
+-- say the person is still there. This column is the difference, and it lives on
+-- the session rather than on the account so that proving yourself in one
+-- browser leaves a session on another machine exactly as stale as it was.
+
+-- +goose Up
+ALTER TABLE sessions ADD COLUMN proven_at timestamptz;
+
+-- Existing sessions were proved when they were issued, which is the truth and
+-- also the safe direction: any other backfill would either invent a proof that
+-- never happened or make every signed-in person reauthenticate at once for
+-- actions they had already proved themselves for.
+UPDATE sessions SET proven_at = created_at WHERE proven_at IS NULL;
+
+ALTER TABLE sessions ALTER COLUMN proven_at SET NOT NULL;
+
+-- A proof cannot predate the session that carries it. Issuing a session is
+-- itself a proof, so the two are equal at creation and the column only moves
+-- forward.
+ALTER TABLE sessions ADD CONSTRAINT sessions_proof CHECK (proven_at >= created_at);
+
+-- +goose Down
+ALTER TABLE sessions DROP CONSTRAINT sessions_proof;
+ALTER TABLE sessions DROP COLUMN proven_at;

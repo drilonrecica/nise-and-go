@@ -6,27 +6,48 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/drilonrecica/nise-and-go/runtime/authz"
 
 	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/reauth"
 )
 
 // authorized returns a context carrying the authority a checked use case
-// requires. Every call below that grants or reads roles has to build one,
-// which is the point: an unauthorized context is what the default-deny tests
-// use, and it is the one a caller gets by not thinking about it.
+// requires, together with a proof of identity given a moment ago. Every call
+// below that grants or reads roles has to build one, which is the point: an
+// unauthorized context is what the default-deny tests use, and it is the one a
+// caller gets by not thinking about it.
 func authorized(t *testing.T, userID string, permissions ...authz.Permission) context.Context {
+	t.Helper()
+
+	return proved(t, time.Now().UTC(), userID, permissions...)
+}
+
+// proved is authorized with the age of the proof chosen by the caller, for the
+// tests that care how old it is.
+func proved(t *testing.T, provenAt time.Time, userID string, permissions ...authz.Permission) context.Context {
 	t.Helper()
 
 	granted, err := authz.NewSet(permissions...)
 	if err != nil {
 		t.Fatalf("NewSet: %v", err)
 	}
-	return authorization.WithGrants(context.Background(), authorization.Grants{
+	matrix, err := reauth.DefaultMatrix()
+	if err != nil {
+		t.Fatalf("DefaultMatrix: %v", err)
+	}
+	ctx := authorization.WithGrants(context.Background(), authorization.Grants{
 		UserID:      userID,
 		Permissions: granted,
+	})
+	return reauth.WithState(ctx, reauth.State{
+		UserID:   userID,
+		Matrix:   matrix,
+		ProvenAt: provenAt,
+		At:       time.Now().UTC(),
 	})
 }
 

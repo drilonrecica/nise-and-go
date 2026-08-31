@@ -150,8 +150,17 @@ Refusing would lock an account out because of a role definition somebody
 removed. Ignoring it silently would hide the removal. Reporting it does neither.
 The row stays revocable, or it would be permanent.
 
+## What a permission does not answer
+
+A permission answers "may you". It does not answer "is it still you". A few
+actions ask both, and the second question has its own closed declaration; see
+[reauthentication](reauthentication.md). The proof check always runs *after* the
+permission check, because an action that asked only the second would let
+anybody who could type a password do anything.
+
 ## Related
 
 - [Sessions](sessions.md)
+- [Reauthentication](reauthentication.md)
 - [Audit log](audit.md)
 - [Security model](security.md)
