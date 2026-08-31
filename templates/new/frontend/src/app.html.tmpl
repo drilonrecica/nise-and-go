@@ -5,6 +5,41 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<link rel="icon" href="%sveltekit.assets%/favicon.svg" />
+		<!--
+			Resolve the theme before the browser paints. `src/lib/theme.svelte.ts`
+			owns the theme for the rest of the application's life, but a module
+			cannot run before first paint, and the page background is painted from
+			`data-theme` — so without this a reader who chose dark sees a white
+			flash on every cold load.
+
+			It is deliberately the smallest thing that removes that flash, and it
+			duplicates exactly two facts from that module: the storage key and the
+			three preference names. A test asserts the two still agree. Extend the
+			module, never this.
+
+			Its hash goes into the Content Security Policy automatically:
+			internal/platform/webui reads every inline script out of the built
+			document at startup and hands their hashes to the policy.
+		-->
+		<script>
+			(function () {
+				try {
+					var stored = localStorage.getItem('theme');
+					var preference =
+						stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system';
+					var resolved =
+						preference === 'system'
+							? window.matchMedia('(prefers-color-scheme: dark)').matches
+								? 'dark'
+								: 'light'
+							: preference;
+					document.documentElement.setAttribute('data-theme', resolved);
+				} catch (error) {
+					// Storage and matchMedia both throw in some privacy modes. The
+					// static data-theme in <html> stays, which is a readable page.
+				}
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<!--

@@ -75,6 +75,27 @@ that attribute, so the attribute is the entire theme mechanism and there is no
 `prefers-color-scheme` copy of either palette to keep in sync. The static
 value in `app.html` is only the pre-JavaScript default.
 
+`src/lib/theme.svelte.ts` owns the theme. A person chooses `light`, `dark`, or
+`system`; the preference is stored and the resolution is not, because storing
+the resolution would freeze a `system` reader into whichever mode their machine
+was in on their last visit. The root layout starts it from an `$effect`, and it
+then follows `prefers-color-scheme` for as long as the page is open — that
+listener is what makes `system` live rather than sampled once.
+
+The small inline script in `app.html` resolves the theme before first paint,
+which a module cannot do. It duplicates exactly two facts from the module, the
+storage key and the three preference names, and a Nise test asserts they still
+agree. Extend the module, not the script.
+
+`localStorage` is treated as optional: private browsing modes make it throw,
+and a theme preference is not worth a blank page.
+
+Reduced motion is handled once for the whole application in `app.css`. Every
+transition and animation collapses to a single frame rather than being removed,
+so a `transitionend` listener still fires and nothing waits forever for an
+animation that will not run. For motion CSS cannot reach — a scripted scroll, a
+count-up — read `preferences.reducedMotion`.
+
 ## Runes only
 
 This application is Svelte 5 runes-only, and `pnpm check` refuses Svelte 4

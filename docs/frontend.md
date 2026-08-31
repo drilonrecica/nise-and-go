@@ -99,6 +99,18 @@ The roles are surfaces (`canvas`, `surface`, `surface-muted`, `surface-raised`, 
 
 `:focus-visible` is styled once, globally, on the ring token — as an outline rather than a box-shadow, so forced-colors mode keeps it — so no component can ship without a focus indicator.
 
+### Light, dark, system, and reduced motion
+
+Three preferences, two themes. A person chooses `light`, `dark`, or `system`; what renders is always `light` or `dark`, written to `<html data-theme>`. The preference is stored, the resolution never is — storing the resolution would freeze a `system` reader into whichever mode their machine was in the day they last visited.
+
+`src/lib/theme.svelte.ts` owns it: a `.svelte.ts` module holding `$state`, started from an `$effect` in the root layout, which adopts the stored preference and then follows `prefers-color-scheme` for as long as the page is open. That listener is what makes `system` live rather than a value sampled once at load.
+
+A small inline script in `app.html` resolves the theme before first paint, because a module cannot run before the browser paints the page background and a dark-mode reader would otherwise see a white flash on every cold load. It repeats exactly two facts from the module — the storage key and the three preference names — and a Nise test asserts the two still agree, because a disagreement is a reader whose choice is silently discarded with nothing failing anywhere. Its hash reaches the Content Security Policy automatically: `internal/platform/webui` reads every inline script out of the built document at startup.
+
+Storage is treated as optional throughout. Private browsing modes make `localStorage` throw, and a theme preference is not worth a blank page, so both reads and writes swallow and fall back to `system`.
+
+Reduced motion is enforced once, globally, in `app.css` rather than per component — a per-component decision is one somebody forgets, and what they forget is what makes a reader ill. Every transition and animation collapses to a single frame rather than being removed, so a `transitionend` listener still fires and a component waiting for one to unmount an element does not hang. Motion that CSS cannot reach — a scripted scroll, a count-up — reads `preferences.reducedMotion`, which watches the same query.
+
 ### Contrast is checked, not intended
 
 `pnpm check` runs `scripts/check-contrast.mjs`, a dependency-free script that reads `app.css`, extracts both theme blocks, and proves 27 foreground/background pairs meet WCAG 2.2 AA in each — 54 assertions in total. Text pairs must reach 4.5:1 (SC 1.4.3) and control boundaries and the focus ring 3:1 (SC 1.4.11).
