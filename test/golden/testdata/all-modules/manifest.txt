@@ -40,8 +40,8 @@ deploy/README.md file 0644 8040eed460f74fbece44b0f5bf1080bf1d821f99d6a7119947028
 deploy/compose.yaml file 0644 a993cfffeb42db237179c3663f8e22e574580ef0c7ab74a008664b961c332933
 frontend dir 0755
 frontend/.gitignore file 0644 2dd21d60d8b83062584d4be22e8b314de402773497ce0041fccdd6968fbc34aa
-frontend/README.md file 0644 c9791c9daee491ab3ac223c434611feedc4b652269653e2e234f750c440ed780
-frontend/package.json file 0644 af775389673f8b693e7cb57b57b10093e9794cde3966173be420dc6e8a247fd2
+frontend/README.md file 0644 77dae261d467ec50d4f68a39d1ecc30c02c35837bb26628096985db3236fbadc
+frontend/package.json file 0644 d9910b539d9ab817038c121667fa68f7bce37a1fd6a9b584366318db2ce92f90
 frontend/scripts dir 0755
 frontend/scripts/check-contrast.mjs file 0644 c918f83e166cf2f7f68b13619f7f0b2a29068d5717097d8a8ec2a4f4e2c3a714
 frontend/scripts/check-runes.mjs file 0644 f95e911aebdf9dea61b46f1546f902dec5be6f800a70fe539bab17c3a4b47db8
@@ -89,6 +89,8 @@ frontend/src/lib/components/ui/Tooltip.svelte file 0644 aa3ffc66eff1f31fdb3578e5
 frontend/src/lib/components/ui/icons.ts file 0644 ed2440505082cb982a49aef71c5d41bee06e32f48fb094d6786e6079eac4134e
 frontend/src/lib/components/ui/toast.svelte.ts file 0644 15897dca12363f4b9d2f4ce622828a204beacdb3ddea6227e8295d5e3eca1a07
 frontend/src/lib/components/ui/toast.test.ts file 0644 ba724dfd6210ff64456d2b3ac9fe5081f8b35d395d9c78969fc7cb6b28976bc8
+frontend/src/lib/forms.svelte.ts file 0644 55b2795d063a7f51f054c4df4bb737e868f47fe689de111f0a781cad2d2aa739
+frontend/src/lib/forms.test.ts file 0644 799e32c8d45fa056c986a2ef0e97247f3aad66b9c8d4f8c0496965de46a81687
 frontend/src/lib/navigation.test.ts file 0644 aa0aefb81d4bb2b73dc1c552b7461e14f7bd605c6590a8435994677cfeac5eb8
 frontend/src/lib/navigation.ts file 0644 6217362979c28c8b5e08003dba80883da036a063489676452ea39f28e5659f56
 frontend/src/lib/session.svelte.ts file 0644 48d620ecb7d2f579e6c08a92fa364953de85b8be10cf214b4d78b095255b8fb9
@@ -111,9 +113,9 @@ frontend/src/routes/(public) dir 0755
 frontend/src/routes/(public)/+layout.svelte file 0644 48496d0b8eb8d0e8c28f2379b4af509b41139edfa96777d0710b0783e4201ef8
 frontend/src/routes/(public)/invitations dir 0755
 frontend/src/routes/(public)/invitations/accept dir 0755
-frontend/src/routes/(public)/invitations/accept/+page.svelte file 0644 7aab68d009e60e15cb607fc2c7283ba8b4e376409428c1c05409166eed3cd2e5
+frontend/src/routes/(public)/invitations/accept/+page.svelte file 0644 4921e7afbf0628bbdecb6cb3ccd7491b58260037524ec4634b5e54648c4dbc6d
 frontend/src/routes/(public)/sign-in dir 0755
-frontend/src/routes/(public)/sign-in/+page.svelte file 0644 69d640f474f1e2c0f218b9ab92e736efbb25010c3c28781def9efa1c05936ba6
+frontend/src/routes/(public)/sign-in/+page.svelte file 0644 be1efc7d9b49718cc7ca87fbedc5083f79b51f5b101ec73d49801ae847996cf9
 frontend/src/routes/(public)/sign-in/second-factor dir 0755
 frontend/src/routes/(public)/sign-in/second-factor/+page.svelte file 0644 8622ee7431b2a9c5befff893d0447d19ba4a8d574396f4b65788c74be74fa3cb
 frontend/src/routes/+layout.svelte file 0644 9a5e0f8cef23d4bae8295663ce506722eb1e4d769db8cf6d41cee3f0428cdef2

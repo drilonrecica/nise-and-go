@@ -137,23 +137,24 @@ type templateData struct {
 	// core history, in module order, because the runtime's compatibility
 	// check requires a history with no gaps — and a gap is how a missing
 	// migration hides.
-	TOTPMigration      string
-	NiseModule         string
-	NiseVersion        string
-	ChiVersion         string
-	PgxVersion         string
-	SQLCVersion        string
-	GooseVersion       string
-	OAPICodegenVersion string
-	OAPIRuntimeVersion string
-	XCryptoVersion     string
-	GoVersion          string
-	GoImageTag         string
-	NodeVersion        string
-	NodeMajor          string
-	PnpmVersion        string
-	PackageManager     string
-	FrontendDeps       []Dependency
+	TOTPMigration       string
+	NiseModule          string
+	NiseVersion         string
+	ChiVersion          string
+	PgxVersion          string
+	SQLCVersion         string
+	GooseVersion        string
+	OAPICodegenVersion  string
+	OAPIRuntimeVersion  string
+	XCryptoVersion      string
+	GoVersion           string
+	GoImageTag          string
+	NodeVersion         string
+	NodeMajor           string
+	PnpmVersion         string
+	PackageManager      string
+	FrontendDeps        []Dependency
+	FrontendRuntimeDeps []Dependency
 	// ReplacePlaceholder is the literal stand-in for a local framework
 	// checkout in the pre-release replace directive. It is never a
 	// resolved path — see ReplacePathPlaceholder.
@@ -171,32 +172,33 @@ func newTemplateData(opts Options) templateData {
 		selected[m] = true
 	}
 	return templateData{
-		AppName:            opts.Name,
-		ModulePath:         opts.ModulePath,
-		Profile:            string(opts.Profile),
-		Modules:            modules,
-		HasNotifications:   selected[recipe.ModuleNotifications],
-		HasOrganizations:   selected[recipe.ModuleOrganizations],
-		HasTOTP:            selected[recipe.ModuleTOTP],
-		HasUploads:         selected[recipe.ModuleUploads],
-		TOTPMigration:      moduleMigrationVersions(selected)[recipe.ModuleTOTP],
-		NiseModule:         NiseModulePath,
-		NiseVersion:        NiseModuleVersion,
-		ChiVersion:         ChiVersion,
-		PgxVersion:         PgxVersion,
-		SQLCVersion:        SQLCVersion,
-		GooseVersion:       GooseVersion,
-		OAPICodegenVersion: OAPICodegenVersion,
-		OAPIRuntimeVersion: OAPIRuntimeVersion,
-		XCryptoVersion:     XCryptoVersion,
-		GoVersion:          GoDirective,
-		GoImageTag:         GoImageTag,
-		NodeVersion:        NodeVersion,
-		NodeMajor:          NodeMajor,
-		PnpmVersion:        PnpmVersion,
-		PackageManager:     "pnpm@" + PnpmVersion,
-		FrontendDeps:       FrontendDependencies(),
-		ReplacePlaceholder: ReplacePathPlaceholder,
+		AppName:             opts.Name,
+		ModulePath:          opts.ModulePath,
+		Profile:             string(opts.Profile),
+		Modules:             modules,
+		HasNotifications:    selected[recipe.ModuleNotifications],
+		HasOrganizations:    selected[recipe.ModuleOrganizations],
+		HasTOTP:             selected[recipe.ModuleTOTP],
+		HasUploads:          selected[recipe.ModuleUploads],
+		TOTPMigration:       moduleMigrationVersions(selected)[recipe.ModuleTOTP],
+		NiseModule:          NiseModulePath,
+		NiseVersion:         NiseModuleVersion,
+		ChiVersion:          ChiVersion,
+		PgxVersion:          PgxVersion,
+		SQLCVersion:         SQLCVersion,
+		GooseVersion:        GooseVersion,
+		OAPICodegenVersion:  OAPICodegenVersion,
+		OAPIRuntimeVersion:  OAPIRuntimeVersion,
+		XCryptoVersion:      XCryptoVersion,
+		GoVersion:           GoDirective,
+		GoImageTag:          GoImageTag,
+		NodeVersion:         NodeVersion,
+		NodeMajor:           NodeMajor,
+		PnpmVersion:         PnpmVersion,
+		PackageManager:      "pnpm@" + PnpmVersion,
+		FrontendDeps:        FrontendDependencies(),
+		FrontendRuntimeDeps: FrontendRuntimeDependencies(),
+		ReplacePlaceholder:  ReplacePathPlaceholder,
 	}
 }
 

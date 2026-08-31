@@ -65,6 +65,26 @@ and offers a retry only when `isRetryable` says one could work.
 suite is Node-only and covers the fetch wrapper. Browser component and
 Playwright coverage arrive with the application-shell milestone.
 
+## Forms
+
+Every form goes through `createForm` in `src/lib/forms.svelte.ts`, over a
+Valibot schema. The browser is a courtesy and the server is authoritative: a
+schema here exists so somebody typing an address without an "@" is told before
+they wait for a round trip, not to decide anything.
+
+Field errors and submission errors are kept apart. A field error names a field
+and appears once that field is touched or the form is submitted; a submission
+error is whatever the server threw and goes to `ProblemAlert` unchanged.
+Guessing which input a server refusal belongs to is how a password-policy
+failure ends up pinned to an email field.
+
+`rules` holds the shared pieces so two forms cannot disagree about what an
+address is. `rules.newPassword` checks only the length on purpose — the server
+owns the real policy, including the breach check — and `rules.currentPassword`
+applies no policy at all, because a rule tightened today must not lock out an
+account whose password was fine when it was set. `mustMatch` covers the one
+rule the server cannot check, since it never sees the confirmation field.
+
 ## The component set
 
 `src/lib/components/ui/` holds this application's UI primitives. They are

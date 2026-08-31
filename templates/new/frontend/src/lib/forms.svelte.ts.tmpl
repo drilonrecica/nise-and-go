@@ -1,0 +1,224 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// One shape for every form in this application.
+//
+// The rule this file exists to make cheap: **the server is authoritative and
+// the browser is a courtesy.** Valibot runs here so somebody typing an email
+// address without an "@" is told before they wait for a round trip. It is not
+// a security boundary, it is not a substitute for the server's own strict
+// decoding, and a schema here that disagrees with the server's is a bug in
+// this file rather than a rule.
+//
+// So a form has two kinds of error and they are kept apart. A *field* error
+// came from the schema and names a field; a *submission* error came from the
+// server and is rendered by ProblemAlert, which knows how to read a Problem.
+// Merging them would mean inventing a field name for a failure that had none,
+// and attaching a server refusal to whichever input looked closest.
+
+import * as v from 'valibot';
+
+/** A form's field errors, keyed by the field's name. */
+export type FieldErrors<Values> = Partial<Record<keyof Values & string, string>>;
+
+/** What createForm returns. */
+export interface Form<Schema extends v.GenericSchema> {
+	/** The current values, bindable straight into inputs. */
+	readonly values: v.InferInput<Schema>;
+	/** The current field errors, for fields that have been touched or submitted. */
+	readonly errors: FieldErrors<v.InferInput<Schema>>;
+	/** Whatever the submission threw, for ProblemAlert. Null when there is none. */
+	readonly failure: unknown;
+	/** Whether a submission is in flight. */
+	readonly pending: boolean;
+	/** Whether the form currently parses. */
+	readonly valid: boolean;
+	/** Mark one field as touched, so its error may be shown. */
+	touch(field: keyof v.InferInput<Schema> & string): void;
+	/** Reset to the initial values, clearing every error. */
+	reset(): void;
+	/** Submit. Safe to pass straight to onsubmit; it calls preventDefault. */
+	submit(event?: SubmitEvent): Promise<void>;
+}
+
+/**
+ * Build a form over a Valibot schema.
+ *
+ * Errors appear when a field is touched or when a submission is attempted,
+ * never while somebody is still typing their first character — an error that
+ * appears before anybody could have finished is noise, and a form that shouts
+ * during typing teaches people to ignore it.
+ */
+export function createForm<Schema extends v.GenericSchema>(options: {
+	schema: Schema;
+	initial: v.InferInput<Schema>;
+	/** Called with the parsed value. Throw to report a submission failure. */
+	onsubmit: (value: v.InferOutput<Schema>) => Promise<void> | void;
+	/** Reset the values after a successful submission. Default false. */
+	resetOnSuccess?: boolean;
+}): Form<Schema> {
+	type Values = v.InferInput<Schema>;
+
+	const initial = structuredClone(options.initial);
+	let values = $state<Values>(structuredClone(options.initial));
+	let touched = $state<Set<string>>(new Set());
+	let submitted = $state(false);
+	let failure = $state<unknown>(null);
+	let pending = $state(false);
+
+	const result = $derived(v.safeParse(options.schema, values));
+
+	const allErrors = $derived.by((): FieldErrors<Values> => {
+		if (result.success) return {};
+		const collected: Record<string, string> = {};
+		for (const issue of result.issues) {
+			const field = fieldOf(issue);
+			// The first issue per field wins. A list of four complaints about
+			// one input is a list nobody reads, and the first is the one the
+			// schema considered most fundamental.
+			if (field && !(field in collected)) {
+				collected[field] = String(issue.message);
+			}
+		}
+		return collected as FieldErrors<Values>;
+	});
+
+	const errors = $derived.by((): FieldErrors<Values> => {
+		if (submitted) return allErrors;
+		const shown: Record<string, string> = {};
+		// Read back through a plain record: FieldErrors is keyed by the
+		// schema's own keys, which is what a caller wants, and which
+		// Object.entries cannot narrow for a generic schema.
+		for (const [field, message] of Object.entries(allErrors as Record<string, string>)) {
+			if (touched.has(field) && message) shown[field] = message;
+		}
+		return shown as FieldErrors<Values>;
+	});
+
+	return {
+		get values() {
+			return values;
+		},
+		get errors() {
+			return errors;
+		},
+		get failure() {
+			return failure;
+		},
+		get pending() {
+			return pending;
+		},
+		get valid() {
+			return result.success;
+		},
+		touch(field) {
+			touched = new Set(touched).add(field);
+		},
+		reset() {
+			values = structuredClone(initial);
+			touched = new Set();
+			submitted = false;
+			failure = null;
+		},
+		async submit(event) {
+			event?.preventDefault();
+			submitted = true;
+			failure = null;
+			const parsed = v.safeParse(options.schema, values);
+			if (!parsed.success) {
+				// Nothing is sent. The server would refuse it too, and a
+				// round trip to be told what the schema already knew is a
+				// round trip somebody waits for.
+				return;
+			}
+			pending = true;
+			try {
+				await options.onsubmit(parsed.output);
+				if (options.resetOnSuccess) {
+					values = structuredClone(initial);
+					touched = new Set();
+					submitted = false;
+				}
+			} catch (error) {
+				// Whatever it is goes to ProblemAlert unchanged. Guessing
+				// which field a server refusal belongs to is how a password
+				// policy failure ends up pinned to an email input.
+				failure = error;
+			} finally {
+				pending = false;
+			}
+		}
+	};
+}
+
+/** The top-level field a Valibot issue belongs to, when it belongs to one. */
+function fieldOf(issue: v.BaseIssue<unknown>): string | undefined {
+	const first = issue.path?.[0];
+	if (!first) return undefined;
+	const key = (first as { key?: unknown }).key;
+	return typeof key === 'string' ? key : undefined;
+}
+
+/**
+ * The shared pieces of this application's schemas.
+ *
+ * They exist so two forms cannot disagree about what an email address is, and
+ * so the messages a person reads are written once. Each mirrors a bound the
+ * server enforces; when one of those changes, this is the other place to look.
+ */
+export const rules = {
+	/** An address, matching the server's own bounds. */
+	email: v.pipe(
+		v.string(),
+		v.trim(),
+		v.nonEmpty('Enter your email address.'),
+		v.email('That does not look like an email address.'),
+		v.maxLength(320, 'That address is too long.')
+	),
+	/** A password being entered, not chosen. No policy is applied here. */
+	currentPassword: v.pipe(
+		v.string(),
+		v.nonEmpty('Enter your password.'),
+		v.maxLength(4096, 'That password is too long.')
+	),
+	/**
+	 * A password being chosen.
+	 *
+	 * Only the length is checked here, and only to spare a round trip. The
+	 * server owns the real policy — including the breach check, which no
+	 * browser should be doing — and a stricter rule here would refuse
+	 * passwords the server would accept.
+	 */
+	newPassword: v.pipe(
+		v.string(),
+		v.minLength(12, 'Use at least 12 characters.'),
+		v.maxLength(4096, 'That password is too long.')
+	)
+};
+
+/**
+ * Require two fields to match.
+ *
+ * Confirmation is the one rule the server genuinely cannot check, because it
+ * never sees the second field.
+ */
+export function mustMatch<Values extends Record<string, unknown>>(
+	field: keyof Values & string,
+	confirmation: keyof Values & string,
+	message: string
+) {
+	// Valibot types a forwarded path against the exact schema it is piped
+	// into, which cannot be expressed for two keys named as parameters
+	// without pushing that noise into every schema that uses this. The two
+	// casts are confined to this function, and the behaviour they stand in
+	// for — the issue lands on the confirmation field, not on the form — is
+	// covered by a test.
+	return v.forward(
+		v.partialCheck(
+			[[field], [confirmation]] as never,
+			(input: unknown) =>
+				(input as Values)[field] === (input as Values)[confirmation],
+			message
+		),
+		[confirmation] as never
+	) as never;
+}

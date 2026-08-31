@@ -57,10 +57,17 @@ func TestGeneratedComponentSet(t *testing.T) {
 	}
 }
 
-// TestGeneratedFrontendHasNoRuntimeDependency pins ADR 0025 and the zero-
-// runtime-dependency property of the generated package.json: everything it
-// pins is a build or test tool, and no headless component library is there.
-func TestGeneratedFrontendHasNoRuntimeDependency(t *testing.T) {
+// bundledFrontendPackages is what the generated frontend is allowed to ship in
+// its bundle, as opposed to what only builds or tests it. It is a closed list
+// because every entry is a decision with an entry in docs/dependencies.md, and
+// because "what is actually in the bundle" is the number that gets away from a
+// project one convenience at a time.
+var bundledFrontendPackages = []string{"valibot"}
+
+// TestGeneratedFrontendShipsOnlyJustifiedPackages pins ADR 0025 and the
+// bundled-dependency list: no headless component library, and nothing in
+// `dependencies` that is not in the list above.
+func TestGeneratedFrontendShipsOnlyJustifiedPackages(t *testing.T) {
 	t.Parallel()
 
 	raw := planContent(t, defaultOptions())["frontend/package.json"]
@@ -68,9 +75,24 @@ func TestGeneratedFrontendHasNoRuntimeDependency(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &pkg); err != nil {
 		t.Fatalf("frontend/package.json is not valid JSON: %v", err)
 	}
-	for _, field := range []string{"dependencies", "peerDependencies", "optionalDependencies"} {
+	for _, field := range []string{"peerDependencies", "optionalDependencies"} {
 		if _, present := pkg[field]; present {
-			t.Errorf("frontend/package.json declares %q; the generated frontend ships no runtime dependency", field)
+			t.Errorf("frontend/package.json declares %q; a generated application needs neither", field)
+		}
+	}
+
+	var bundled map[string]string
+	if err := json.Unmarshal(pkg["dependencies"], &bundled); err != nil {
+		t.Fatalf("dependencies is not an object: %v", err)
+	}
+	for name := range bundled {
+		if !containsString(bundledFrontendPackages, name) {
+			t.Errorf("frontend/package.json ships %q in the bundle; add it deliberately here and to docs/dependencies.md", name)
+		}
+	}
+	for _, expected := range bundledFrontendPackages {
+		if _, present := bundled[expected]; !present {
+			t.Errorf("frontend/package.json no longer ships %q", expected)
 		}
 	}
 
@@ -79,8 +101,10 @@ func TestGeneratedFrontendHasNoRuntimeDependency(t *testing.T) {
 		t.Fatalf("devDependencies is not an object: %v", err)
 	}
 	for _, rejected := range []string{"bits-ui", "shadcn-svelte", "@floating-ui/dom", "clsx", "tailwind-merge"} {
-		if _, present := devDependencies[rejected]; present {
-			t.Errorf("frontend/package.json pins %q; see docs/adr/0025-owned-ui-primitives.md", rejected)
+		for _, block := range []map[string]string{bundled, devDependencies} {
+			if _, present := block[rejected]; present {
+				t.Errorf("frontend/package.json pins %q; see docs/adr/0025-owned-ui-primitives.md", rejected)
+			}
 		}
 	}
 }

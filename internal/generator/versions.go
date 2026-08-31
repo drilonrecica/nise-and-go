@@ -92,6 +92,11 @@ const (
 	// VitestVersion pins the Node-based unit runner used for the generated
 	// frontend's application-owned TypeScript contracts.
 	VitestVersion = "4.1.11"
+
+	// ValibotVersion pins the schema library the generated forms validate
+	// with in the browser. It is the generated frontend's first package that
+	// ships in the bundle rather than only building it.
+	ValibotVersion = "1.1.0"
 )
 
 // Dependency is one pinned frontend package.
@@ -101,6 +106,22 @@ type Dependency struct {
 	// Version is an exact version, never a range: a generated project is
 	// reproducible from the moment it is created, before a lockfile exists.
 	Version string
+}
+
+// frontendRuntimeDependencies is the generated package.json's dependencies:
+// the packages that ship in the bundle rather than only building it. The list
+// is short on purpose, and every entry is one docs/dependencies.md justifies.
+var frontendRuntimeDependencies = []Dependency{
+	{Name: "valibot", Version: ValibotVersion},
+}
+
+// FrontendRuntimeDependencies returns the pinned packages that ship in the
+// built bundle, in the order they are written into package.json. The returned
+// slice is a copy; callers may modify it.
+func FrontendRuntimeDependencies() []Dependency {
+	out := make([]Dependency, len(frontendRuntimeDependencies))
+	copy(out, frontendRuntimeDependencies)
+	return out
 }
 
 // frontendDependencies is the generated package.json's devDependencies, in

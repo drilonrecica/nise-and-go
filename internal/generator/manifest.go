@@ -191,6 +191,8 @@ var templateFiles = []templateFile{
 	{Template: "frontend/src/lib/components/ui/toast.test.ts.tmpl", Output: "frontend/src/lib/components/ui/toast.test.ts", Owner: OwnerApp},
 	{Template: "frontend/src/lib/components/ui/Menu.svelte.tmpl", Output: "frontend/src/lib/components/ui/Menu.svelte", Owner: OwnerApp},
 	{Template: "frontend/src/lib/components/ui/icons.ts.tmpl", Output: "frontend/src/lib/components/ui/icons.ts", Owner: OwnerApp},
+	{Template: "frontend/src/lib/forms.svelte.ts.tmpl", Output: "frontend/src/lib/forms.svelte.ts", Owner: OwnerApp},
+	{Template: "frontend/src/lib/forms.test.ts.tmpl", Output: "frontend/src/lib/forms.test.ts", Owner: OwnerApp},
 	{Template: "frontend/src/lib/navigation.ts.tmpl", Output: "frontend/src/lib/navigation.ts", Owner: OwnerApp},
 	{Template: "frontend/src/lib/navigation.test.ts.tmpl", Output: "frontend/src/lib/navigation.test.ts", Owner: OwnerApp},
 	{Template: "frontend/src/lib/session.svelte.ts.tmpl", Output: "frontend/src/lib/session.svelte.ts", Owner: OwnerApp},
