@@ -85,6 +85,13 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
 - Add local known-compromised password refusal: `password.Compromised` and an
   embedded list of the passwords at the top of every credential-stuffing list,
   checked offline. Nise ships no remote checker (ADR 0020).
+- Add the login use case: one generic failure for every reason, an Argon2
+  evaluation on every failure path including the unknown-address one, a status
+  check that runs after verification so its cost cannot be timed, transparent
+  rehash-on-login when a record was written under superseded parameters, and
+  password change and set paths that end other sessions. Adds a length-only
+  password policy with the local compromised check and an
+  address-derivation refusal.
 
 ### Fixed
 

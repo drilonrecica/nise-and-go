@@ -31,6 +31,7 @@ import (
 	"{{.ModulePath}}/internal/platform/httpapi"
 	"{{.ModulePath}}/internal/platform/httpapi/problem"
 	"{{.ModulePath}}/internal/platform/httpauth"
+	"{{.ModulePath}}/internal/platform/passwords"
 	"{{.ModulePath}}/internal/platform/webui"
 )
 
@@ -124,6 +125,27 @@ func Run(ctx context.Context, modeOverride string) error {
 	if err != nil {
 		return fmt.Errorf("building the session use case: %w", err)
 	}
+	accounts, err := auth.NewAccounts(transactor)
+	if err != nil {
+		return fmt.Errorf("building the account use case: %w", err)
+	}
+	passwordPolicy, err := passwords.Policy()
+	if err != nil {
+		return fmt.Errorf("building the password policy: %w", err)
+	}
+	credentials, err := auth.NewCredentials(accounts, sessions, passwordPolicy)
+	if err != nil {
+		return fmt.Errorf("building the login use case: %w", err)
+	}
+	compromisedPasswords, err := passwords.Compromised()
+	if err != nil {
+		return fmt.Errorf("loading the known-compromised password list: %w", err)
+	}
+	// Constructed here so the object graph is complete and readable, and so a
+	// missing dependency is a startup failure rather than a nil dereference
+	// on the first login. The HTTP surface that uses them arrives with the
+	// authentication screens.
+	_, _ = credentials, compromisedPasswords
 	sessionCookies, err := httpauth.NewCookies(cfg.SessionCookie)
 	if err != nil {
 		return fmt.Errorf("building the session cookie boundary: %w", err)
