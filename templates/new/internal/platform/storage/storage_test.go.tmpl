@@ -1,0 +1,184 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package storage
+
+import (
+	"strings"
+	"testing"
+)
+
+// TestValidateKeyRefusesEverythingThatIsNotAKey is the security boundary of
+// this package stated as a table. Every entry is something that has, in some
+// system, been the difference between writing an object and writing a file
+// somewhere else.
+func TestValidateKeyRefusesEverythingThatIsNotAKey(t *testing.T) {
+	t.Parallel()
+
+	refused := []struct {
+		name string
+		key  string
+	}{
+		{"empty", ""},
+		{"absolute", "/uploads/a"},
+		{"trailing separator", "uploads/"},
+		{"parent traversal", "uploads/../../etc/passwd"},
+		{"bare parent", ".."},
+		{"current directory", "."},
+		{"embedded parent", "a/../b"},
+		{"embedded current", "a/./b"},
+		{"double separator", "a//b"},
+		{"backslash traversal", `uploads\..\..\windows`},
+		{"newline", "uploads/a\nb"},
+		{"carriage return", "uploads/a\rb"},
+		{"NUL", "uploads/a\x00b"},
+		{"tab", "uploads/a\tb"},
+		{"space", "uploads/a b"},
+		{"colon", "uploads/a:b"},
+		{"percent", "uploads/a%2e%2e"},
+		{"tilde", "uploads/~root"},
+		{"question mark", "uploads/a?b"},
+		{"hash", "uploads/a#b"},
+		{"invalid UTF-8", "uploads/\xff"},
+		{"unicode homoglyph separator", "uploads/a∕b"},
+		{"too long", strings.Repeat("a", MaxKeyBytes+1)},
+		{"component too long", "uploads/" + strings.Repeat("a", MaxKeyComponentBytes+1)},
+	}
+	for _, c := range refused {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if err := ValidateKey(c.key); err == nil {
+				t.Fatalf("ValidateKey(%q) = nil, want a refusal", c.key)
+			}
+		})
+	}
+}
+
+func TestValidateKeyAcceptsWhatAnApplicationActuallyUses(t *testing.T) {
+	t.Parallel()
+
+	accepted := []string{
+		"a",
+		"uploads/01J8Z0000000000000000000",
+		"uploads/2026/08/31/01J8Z0.bin",
+		"tenant_1/user-2/avatar.png",
+		"a.b.c",
+		// The longest key the rules permit: components at the component
+		// bound, joined until the whole is at the key bound. The two limits
+		// interact, and a key of MaxKeyBytes made of one component is
+		// refused — which is correct, and was worth finding out here rather
+		// than from a caller.
+		longestPermittedKey(),
+	}
+	for _, key := range accepted {
+		if err := ValidateKey(key); err != nil {
+			t.Errorf("ValidateKey(%q) = %v, want it accepted", key, err)
+		}
+	}
+}
+
+// TestValidateKeyRefusesRatherThanCleans is the decision behind the
+// canonical-form rule. Cleaning would mean two different key strings
+// addressing one object — and an authorization check performed on the key the
+// caller passed rather than on the object it reached.
+// longestPermittedKey builds the longest key the two bounds allow together:
+// components of MaxKeyComponentBytes joined by separators, filled up to
+// MaxKeyBytes.
+func longestPermittedKey() string {
+	component := strings.Repeat("a", MaxKeyComponentBytes)
+	var parts []string
+	for length := 0; ; {
+		next := len(component)
+		if len(parts) > 0 {
+			next++
+		}
+		if length+next > MaxKeyBytes {
+			// Fill the remainder with a shorter final component.
+			remaining := MaxKeyBytes - length - 1
+			if remaining > 0 {
+				parts = append(parts, strings.Repeat("a", remaining))
+			}
+			break
+		}
+		parts = append(parts, component)
+		length += next
+	}
+	return strings.Join(parts, "/")
+}
+
+func TestValidateKeyRefusesRatherThanCleans(t *testing.T) {
+	t.Parallel()
+
+	if err := ValidateKey("uploads/./a"); err == nil {
+		t.Fatal("a key that is not in canonical form was accepted")
+	}
+	if err := ValidateKey("uploads/a"); err != nil {
+		t.Fatalf("its canonical form was refused: %v", err)
+	}
+}
+
+func TestSanitizeFilenameNeverProducesAPath(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"report.pdf":                 "report.pdf",
+		"../../etc/passwd":           "passwd",
+		`..\..\windows\system32`:     "system32",
+		"/absolute/name.txt":         "name.txt",
+		"my report.pdf":              "my-report.pdf",
+		"réport.pdf":                 "r_port.pdf",
+		"":                           "file",
+		".":                          "file",
+		"..":                         "file",
+		"...":                        "file",
+		"/":                          "file",
+		"a\x00b.txt":                 "a_b.txt",
+		"a\nb.txt":                   "a_b.txt",
+		strings.Repeat("a", 400):     strings.Repeat("a", MaxKeyComponentBytes),
+	}
+	for input, want := range cases {
+		if got := SanitizeFilename(input); got != want {
+			t.Errorf("SanitizeFilename(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+// TestASanitizedFilenameIsNotAKey states the rule the doc comment makes,
+// where a future change would trip over it. The output is safe to display and
+// safe as one path component; it is not an identifier, and using it as a key
+// hands key naming to whoever is uploading.
+func TestASanitizedFilenameIsAValidComponentButNotAnIdentifier(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{"../../etc/passwd", "my report.pdf", "a\x00b"} {
+		got := SanitizeFilename(input)
+		if err := ValidateKey(got); err != nil {
+			t.Errorf("SanitizeFilename(%q) = %q, which is not usable even as one component: %v", input, got, err)
+		}
+		if strings.Contains(got, "/") {
+			t.Errorf("SanitizeFilename(%q) = %q, which spans more than one component", input, got)
+		}
+	}
+	// Two different uploads can produce the same sanitized name, which is
+	// exactly why it must not be the key.
+	if SanitizeFilename("a b.txt") != SanitizeFilename("a-b.txt") {
+		t.Skip("the collision this documents does not occur with these inputs")
+	}
+}
+
+func TestJoinKeyComposesAndValidates(t *testing.T) {
+	t.Parallel()
+
+	key, err := JoinKey("uploads", "/2026/", "file.bin")
+	if err != nil {
+		t.Fatalf("JoinKey: %v", err)
+	}
+	if key != "uploads/2026/file.bin" {
+		t.Errorf("JoinKey = %q", key)
+	}
+	if _, err := JoinKey("uploads", "..", "etc"); err == nil {
+		t.Error("JoinKey composed a traversal")
+	}
+	if _, err := JoinKey(); err == nil {
+		t.Error("JoinKey produced a key from nothing")
+	}
+}

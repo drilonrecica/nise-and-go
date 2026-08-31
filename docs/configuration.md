@@ -266,6 +266,31 @@ every other setting on this page is: an operator should learn at startup that a
 value was impossible, not discover later that it was quietly replaced with a
 different one.
 
+## Generated object storage settings (uploads module)
+
+Present only in a project generated with the `uploads` module. See
+[object storage](storage.md).
+
+| Variable | Default | Constraint |
+|---|---:|---|
+| `STORAGE_BACKEND` | `local` | `local` or `s3` |
+| `STORAGE_LOCAL_DIR` | `./storage` | required for the local backend |
+| `S3_ENDPOINT` | — | required for `s3`; `http` or `https` with a host |
+| `S3_BUCKET` | — | 3–63 characters, lowercase letters, digits, `-`, `.` |
+| `S3_REGION` | `us-east-1` | required; part of the signature, not only routing |
+| `S3_PATH_STYLE` | `true` | `false` for AWS itself |
+| `S3_ACCESS_KEY_ID` | — | required for `s3` |
+| `S3_SECRET_ACCESS_KEY` | — | required for `s3` |
+| `S3_SESSION_TOKEN` | — | optional; temporary credentials |
+
+`S3_PATH_STYLE` defaults to the opposite of the AWS SDK's default, because
+every S3-compatible service that is not AWS serves one hostname — and a
+virtual-host request to such a service is the usual reason a hand-configured
+client fails on its first call.
+
+`S3_REGION` is part of the request signature. A service that has no regions
+still needs a value here; `us-east-1` is the conventional answer.
+
 ## Generated mail settings
 
 See [background jobs](jobs.md) for why sending happens in a job rather than in

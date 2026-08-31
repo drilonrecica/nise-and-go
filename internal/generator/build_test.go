@@ -24,6 +24,29 @@ import (
 // this test, never of a generated project. Either being unavailable is a
 // skip with the reason, not a failure.
 func TestGeneratedGoCodeBuilds(t *testing.T) {
+	// Both recipes, because a compile-time module's code is only generated
+	// when that module was selected — so the default recipe never compiles
+	// a line of it. Until this ran over both variants, every module's Go
+	// source was covered by golden byte comparisons and by nothing that
+	// could tell whether it built.
+	for _, v := range []struct {
+		name    string
+		options generator.Options
+	}{
+		{"default", defaultOptions()},
+		{"all-modules", allModulesOptions()},
+	} {
+		t.Run(v.name, func(t *testing.T) {
+			assertGeneratedProjectBuilds(t, v.options)
+		})
+	}
+}
+
+// assertGeneratedProjectBuilds generates one variant and runs the real
+// toolchain over it.
+func assertGeneratedProjectBuilds(t *testing.T, options generator.Options) {
+	t.Helper()
+
 	if testing.Short() {
 		t.Skip("skipping: this test runs the Go toolchain and needs the module proxy")
 	}
@@ -34,12 +57,8 @@ func TestGeneratedGoCodeBuilds(t *testing.T) {
 	}
 
 	frameworkRoot := findFrameworkRoot(t)
-	root := filepath.Join(t.TempDir(), "buildprobe")
-	if _, err := generator.Write(root, generator.Options{
-		Name:       "buildprobe",
-		ModulePath: "example.com/buildprobe",
-		CLIVersion: fixedVersion,
-	}); err != nil {
+	root := filepath.Join(t.TempDir(), options.Name)
+	if _, err := generator.Write(root, options); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 

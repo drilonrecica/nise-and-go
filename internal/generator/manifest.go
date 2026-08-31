@@ -272,6 +272,7 @@ var templateFiles = []templateFile{
 	{Template: "internal/app/database_runtime.go.tmpl", Output: "internal/app/database_runtime.go", Owner: OwnerApp},
 	{Template: "internal/app/jobs.go.tmpl", Output: "internal/app/jobs.go", Owner: OwnerApp},
 	{Template: "internal/app/mail.go.tmpl", Output: "internal/app/mail.go", Owner: OwnerApp},
+	{Template: "internal/app/storage.go.tmpl", Output: "internal/app/storage.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
 	{Template: "internal/app/modes.go.tmpl", Output: "internal/app/modes.go", Owner: OwnerApp},
 	{Template: "internal/app/enroll.go.tmpl", Output: "internal/app/enroll.go", Owner: OwnerApp},
 	{Template: "internal/app/password.go.tmpl", Output: "internal/app/password.go", Owner: OwnerApp},
@@ -385,6 +386,20 @@ var templateFiles = []templateFile{
 	{Template: "internal/platform/mail/templates/README.md.tmpl", Output: "internal/platform/mail/templates/README.md", Owner: OwnerApp, Raw: true},
 	{Template: "internal/platform/mail/templates/invitation.html.tmpl", Output: "internal/platform/mail/templates/invitation.html", Owner: OwnerApp, Raw: true},
 	{Template: "internal/platform/mail/templates/invitation.txt.tmpl", Output: "internal/platform/mail/templates/invitation.txt", Owner: OwnerApp, Raw: true},
+	// The uploads module's storage layer. Absent entirely when the module
+	// was not selected — no import, no dead code, and no configuration
+	// variable for a subsystem that is not there.
+	{Template: "internal/platform/storage/local.go.tmpl", Output: "internal/platform/storage/local.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
+	{Template: "internal/platform/storage/local_test.go.tmpl", Output: "internal/platform/storage/local_test.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
+	{Template: "internal/platform/storage/modes_unix_test.go.tmpl", Output: "internal/platform/storage/modes_unix_test.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
+	{Template: "internal/platform/storage/modes_windows_test.go.tmpl", Output: "internal/platform/storage/modes_windows_test.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
+	{Template: "internal/platform/storage/s3.go.tmpl", Output: "internal/platform/storage/s3.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
+	{Template: "internal/platform/storage/s3_integration_test.go.tmpl", Output: "internal/platform/storage/s3_integration_test.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
+	{Template: "internal/platform/storage/s3_test.go.tmpl", Output: "internal/platform/storage/s3_test.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
+	{Template: "internal/platform/storage/sigv4.go.tmpl", Output: "internal/platform/storage/sigv4.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
+	{Template: "internal/platform/storage/sigv4_test.go.tmpl", Output: "internal/platform/storage/sigv4_test.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
+	{Template: "internal/platform/storage/storage.go.tmpl", Output: "internal/platform/storage/storage.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
+	{Template: "internal/platform/storage/storage_test.go.tmpl", Output: "internal/platform/storage/storage_test.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
 	{Template: "internal/platform/passwords/passwords.go.tmpl", Output: "internal/platform/passwords/passwords.go", Owner: OwnerApp},
 	{Template: "internal/platform/reauth/matrix.go.tmpl", Output: "internal/platform/reauth/matrix.go", Owner: OwnerApp},
 	{Template: "internal/platform/reauth/reauth_test.go.tmpl", Output: "internal/platform/reauth/reauth_test.go", Owner: OwnerApp},

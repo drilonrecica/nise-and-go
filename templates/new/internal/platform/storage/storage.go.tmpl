@@ -1,0 +1,239 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package storage is this application's object storage.
+//
+// Two implementations satisfy one interface: [Local], which writes to a
+// directory, and [S3], which speaks the S3 API to any compatible service. The
+// interface is what the application depends on, so moving from one to the
+// other is a configuration change and not a rewrite.
+//
+// # Keys are not paths
+//
+// A key looks like a path and is not one. It is an opaque identifier the
+// application chose, and the single most dangerous thing this package can do
+// is let a key that came from a user decide where a byte lands. [ValidateKey]
+// is therefore strict to the point of being inconvenient: a fixed character
+// set, no leading slash, no dot segments, no backslash, no control
+// characters, a length bound, and no empty component. Every operation
+// validates before it does anything.
+//
+// The local adapter is additionally confined by os.Root, so even a key that
+// somehow passed validation cannot escape the directory: the confinement is
+// the operating system's, not this package's care. That belt-and-braces is
+// deliberate. Path validation is exactly the kind of code that is correct
+// until somebody adds a case to it.
+//
+// # Filenames are not keys either
+//
+// A key is derived by the application, never taken from an upload. A
+// browser-supplied filename is display metadata: it can contain anything, it
+// can be a duplicate, and it can be chosen by whoever is uploading. Storing
+// under it hands key naming to the client. See [SanitizeFilename] for what to
+// do with one instead.
+package storage
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"path"
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+// Bounds on a key. They are refusals, not truncations.
+const (
+	// MaxKeyBytes bounds a whole key. S3 allows 1024; staying well under it
+	// leaves room for a prefix a deployment adds later without silently
+	// making existing keys unwritable.
+	MaxKeyBytes = 512
+	// MaxKeyComponentBytes bounds one slash-separated component, because
+	// most filesystems refuse a name longer than 255 bytes and the local
+	// adapter has to be able to write what the S3 adapter accepted.
+	MaxKeyComponentBytes = 200
+)
+
+// Errors this package returns.
+var (
+	// ErrKey reports a key that is not well formed. It never says which rule
+	// failed for a key that came from outside the application, for the same
+	// reason an authentication failure does not say which half was wrong.
+	ErrKey = errors.New("storage: invalid key")
+	// ErrNotFound reports an object that does not exist.
+	ErrNotFound = errors.New("storage: object not found")
+	// ErrTooLarge reports content over the configured limit.
+	ErrTooLarge = errors.New("storage: object is larger than the configured limit")
+)
+
+// Object is what a store knows about a stored object without reading it.
+type Object struct {
+	// Key is the object's key.
+	Key string
+	// Size is the object's length in bytes.
+	Size int64
+	// ContentType is the media type recorded at upload, or "" when the
+	// store does not know one.
+	ContentType string
+	// ModTime is when the object was last written.
+	ModTime time.Time
+	// ETag is the store's opaque version identifier, or "" when it has
+	// none. It is never parsed: S3 and its clones disagree about whether it
+	// is an MD5, and code that assumes one breaks on the other.
+	ETag string
+}
+
+// PutOptions are the per-object properties a store records alongside the
+// bytes.
+type PutOptions struct {
+	// ContentType is the media type served back with the object. Set it
+	// from the application's own validation of the content, never from a
+	// browser-supplied header: a store that echoes an attacker-chosen
+	// Content-Type back to a browser is a stored cross-site scripting
+	// vulnerability with extra steps.
+	ContentType string
+	// ContentLength is the exact number of bytes, when the caller knows it.
+	// Zero means unknown, and a store that needs a length will buffer.
+	ContentLength int64
+}
+
+// Store is object storage.
+//
+// Every method takes a context and validates its key before doing anything.
+// There is no List: an application that needs to enumerate objects has a
+// database table describing them, and reconstructing that from a bucket
+// listing is how a storage backend becomes a second source of truth that
+// disagrees with the first.
+type Store interface {
+	// Put writes r under key, replacing anything already there.
+	Put(ctx context.Context, key string, r io.Reader, opts PutOptions) (Object, error)
+	// Get opens the object at key. The caller closes it.
+	Get(ctx context.Context, key string) (io.ReadCloser, error)
+	// Stat reports what the store knows about key without reading it.
+	Stat(ctx context.Context, key string) (Object, error)
+	// Delete removes key. Deleting a key that is not there is not an error:
+	// the caller wanted it gone, and it is.
+	Delete(ctx context.Context, key string) error
+}
+
+// ValidateKey reports whether key is one this package will act on.
+//
+// The rules are deliberately narrow. Anything a key could usefully express is
+// expressible within them, and every character left out is one that has, in
+// some system, meant something other than itself to a filesystem, a URL
+// parser, a shell, or an S3 clone.
+func ValidateKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("%w: empty", ErrKey)
+	}
+	if len(key) > MaxKeyBytes {
+		return fmt.Errorf("%w: longer than %d bytes", ErrKey, MaxKeyBytes)
+	}
+	if !utf8.ValidString(key) {
+		return fmt.Errorf("%w: not valid UTF-8", ErrKey)
+	}
+	if strings.HasPrefix(key, "/") || strings.HasSuffix(key, "/") {
+		return fmt.Errorf("%w: a key is not a path and has no leading or trailing separator", ErrKey)
+	}
+	// path.Clean collapses "a/../b", "./a", and "a//b". A key that is not
+	// already its own cleaned form is refused rather than cleaned: cleaning
+	// would mean two different keys addressing one object, and an
+	// authorization check performed on the key the caller passed rather than
+	// on the object it reached.
+	if path.Clean(key) != key {
+		return fmt.Errorf("%w: not in canonical form", ErrKey)
+	}
+	for _, component := range strings.Split(key, "/") {
+		if component == "" {
+			return fmt.Errorf("%w: empty path component", ErrKey)
+		}
+		if len(component) > MaxKeyComponentBytes {
+			return fmt.Errorf("%w: a component is longer than %d bytes", ErrKey, MaxKeyComponentBytes)
+		}
+		if component == "." || component == ".." {
+			return fmt.Errorf("%w: dot segment", ErrKey)
+		}
+	}
+	for _, r := range key {
+		if !allowedKeyRune(r) {
+			return fmt.Errorf("%w: disallowed character", ErrKey)
+		}
+	}
+	return nil
+}
+
+// allowedKeyRune reports whether r may appear in a key.
+//
+// ASCII letters, digits, and a short punctuation set. Not a denylist of
+// dangerous characters: a denylist is a list somebody has to keep complete
+// against every filesystem, URL parser, and S3 clone that will ever see the
+// key, and it only has to be incomplete once.
+func allowedKeyRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case r == '-', r == '_', r == '.', r == '/':
+		return true
+	}
+	return false
+}
+
+// SanitizeFilename turns a browser-supplied filename into something safe to
+// show and to offer as a download name.
+//
+// It is not a key, and must never be used as one. A filename arrives from the
+// client: it can be empty, a duplicate, three hundred characters of Unicode,
+// "../../etc/passwd", or a name whose extension disagrees with its content.
+// Store the object under a key the application derived — an identifier — and
+// keep the sanitized filename as metadata beside it, in the database, where
+// it belongs.
+//
+// What comes back is the base name only, restricted to the key character set,
+// bounded in length, and never empty: an unusable name becomes "file".
+func SanitizeFilename(name string) string {
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = path.Base(path.Clean("/" + name))
+
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case allowedKeyRune(r) && r != '/':
+			b.WriteRune(r)
+		case r == ' ':
+			b.WriteByte('-')
+		default:
+			b.WriteByte('_')
+		}
+	}
+	cleaned := strings.Trim(b.String(), "._-")
+	if cleaned == "" || cleaned == "." || cleaned == ".." {
+		return "file"
+	}
+	if len(cleaned) > MaxKeyComponentBytes {
+		cleaned = cleaned[:MaxKeyComponentBytes]
+	}
+	return cleaned
+}
+
+// JoinKey builds a key from components, validating the result.
+//
+// It exists so that an application composing a key from an identifier and a
+// prefix does not have to remember which of the two might already carry a
+// separator, and so the composed value is checked once, here, rather than at
+// whichever call site remembered to.
+func JoinKey(components ...string) (string, error) {
+	parts := make([]string, 0, len(components))
+	for _, c := range components {
+		c = strings.Trim(c, "/")
+		if c == "" {
+			continue
+		}
+		parts = append(parts, c)
+	}
+	key := strings.Join(parts, "/")
+	if err := ValidateKey(key); err != nil {
+		return "", err
+	}
+	return key, nil
+}

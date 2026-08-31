@@ -1,0 +1,289 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package storage
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"net/http"
+	"net/url"
+	"sort"
+	"strings"
+	"time"
+)
+
+// AWS Signature Version 4, as much of it as S3 needs.
+//
+// This is here rather than as a dependency because the alternative is the AWS
+// SDK, which is a very large amount of code, generated from service models,
+// for four HTTP verbs. What follows is one signing algorithm with no service
+// discovery, no credential chain, no retry middleware, and no plugin
+// interface — and it is testable against the vectors AWS publishes.
+//
+// The algorithm is specified precisely and does not change. Its difficulty is
+// entirely in getting the canonicalization exactly right, which is what the
+// tests are for.
+
+const (
+	// sigV4Algorithm is the algorithm identifier in the Authorization
+	// header and in a presigned query string.
+	sigV4Algorithm = "AWS4-HMAC-SHA256"
+	// unsignedPayload is the payload hash used when the body is not
+	// available to hash — a streaming upload, or a presigned URL whose body
+	// the signer never sees.
+	unsignedPayload = "UNSIGNED-PAYLOAD"
+	// emptyPayloadHash is SHA-256 of the empty string, used for GET, HEAD,
+	// and DELETE.
+	emptyPayloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	// iso8601 is the timestamp format SigV4 uses.
+	iso8601 = "20060102T150405Z"
+	// yyyymmdd is the date format in the credential scope.
+	yyyymmdd = "20060102"
+)
+
+// credentials are the access key pair a request is signed with.
+type credentials struct {
+	accessKeyID     string
+	secretAccessKey string
+	// sessionToken is set only for temporary credentials, and adds the
+	// x-amz-security-token header to the signature.
+	sessionToken string
+}
+
+// signer signs S3 requests for one region and service.
+type signer struct {
+	credentials credentials
+	region      string
+	service     string
+	// now is injected so the tests can sign against AWS's published
+	// vectors, which fix the timestamp. Production leaves it nil.
+	now func() time.Time
+}
+
+func (s *signer) timeNow() time.Time {
+	if s.now != nil {
+		return s.now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// sign adds the Authorization header to req, using payloadHash as the
+// already-computed hash of the body.
+//
+// The Host header is signed even though Go keeps it in req.Host rather than
+// in req.Header, which is the single most common way a hand-written SigV4
+// implementation produces a signature the service rejects.
+func (s *signer) sign(req *http.Request, payloadHash string) {
+	now := s.timeNow()
+	amzDate := now.Format(iso8601)
+	scopeDate := now.Format(yyyymmdd)
+
+	req.Header.Set("X-Amz-Date", amzDate)
+	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	if s.credentials.sessionToken != "" {
+		req.Header.Set("X-Amz-Security-Token", s.credentials.sessionToken)
+	}
+
+	signedHeaders, canonicalHeaders := canonicalHeaders(req)
+	canonicalRequest := strings.Join([]string{
+		req.Method,
+		canonicalURI(req.URL),
+		canonicalQuery(req.URL.Query()),
+		canonicalHeaders,
+		signedHeaders,
+		payloadHash,
+	}, "\n")
+
+	scope := strings.Join([]string{scopeDate, s.region, s.service, "aws4_request"}, "/")
+	stringToSign := strings.Join([]string{
+		sigV4Algorithm,
+		amzDate,
+		scope,
+		hashHex([]byte(canonicalRequest)),
+	}, "\n")
+
+	signature := hex.EncodeToString(hmacSHA256(s.signingKey(scopeDate), stringToSign))
+	req.Header.Set("Authorization", fmt.Sprintf("%s Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		sigV4Algorithm, s.credentials.accessKeyID, scope, signedHeaders, signature))
+}
+
+// presign returns a URL that carries its own signature in the query string
+// and is valid for expires.
+//
+// Nothing about the body is signed: a presigned PUT is handed to a browser,
+// which chooses the bytes. That is why the upload lifecycle validates what
+// arrived rather than trusting what was promised.
+func (s *signer) presign(method string, u *url.URL, expires time.Duration, extraHeaders http.Header) string {
+	now := s.timeNow()
+	amzDate := now.Format(iso8601)
+	scopeDate := now.Format(yyyymmdd)
+	scope := strings.Join([]string{scopeDate, s.region, s.service, "aws4_request"}, "/")
+
+	// A presigned URL signs the Host header and any extra header the caller
+	// commits the client to sending.
+	req := &http.Request{Method: method, URL: u, Host: u.Host, Header: http.Header{}}
+	for name, values := range extraHeaders {
+		for _, v := range values {
+			req.Header.Add(name, v)
+		}
+	}
+	signedHeaders, canonicalHeaderBlock := canonicalHeaders(req)
+
+	query := u.Query()
+	query.Set("X-Amz-Algorithm", sigV4Algorithm)
+	query.Set("X-Amz-Credential", s.credentials.accessKeyID+"/"+scope)
+	query.Set("X-Amz-Date", amzDate)
+	query.Set("X-Amz-Expires", fmt.Sprintf("%d", int64(expires.Seconds())))
+	query.Set("X-Amz-SignedHeaders", signedHeaders)
+	if s.credentials.sessionToken != "" {
+		query.Set("X-Amz-Security-Token", s.credentials.sessionToken)
+	}
+
+	canonicalRequest := strings.Join([]string{
+		method,
+		canonicalURI(u),
+		canonicalQuery(query),
+		canonicalHeaderBlock,
+		signedHeaders,
+		unsignedPayload,
+	}, "\n")
+
+	stringToSign := strings.Join([]string{
+		sigV4Algorithm,
+		amzDate,
+		scope,
+		hashHex([]byte(canonicalRequest)),
+	}, "\n")
+
+	query.Set("X-Amz-Signature", hex.EncodeToString(hmacSHA256(s.signingKey(scopeDate), stringToSign)))
+
+	signed := *u
+	signed.RawQuery = canonicalQuery(query)
+	return signed.String()
+}
+
+// signingKey derives the date/region/service-scoped key.
+func (s *signer) signingKey(scopeDate string) []byte {
+	key := hmacSHA256([]byte("AWS4"+s.credentials.secretAccessKey), scopeDate)
+	key = hmacSHA256(key, s.region)
+	key = hmacSHA256(key, s.service)
+	return hmacSHA256(key, "aws4_request")
+}
+
+// canonicalHeaders returns the signed-header list and the canonical header
+// block. Host is included from req.Host, which is where Go keeps it.
+func canonicalHeaders(req *http.Request) (string, string) {
+	values := map[string]string{"host": hostOf(req)}
+	for name, vs := range req.Header {
+		lower := strings.ToLower(name)
+		// Only the headers SigV4 requires plus the x-amz-* family are
+		// signed. Signing everything would make the signature depend on
+		// headers a proxy may add in transit.
+		if lower != "content-type" && !strings.HasPrefix(lower, "x-amz-") {
+			continue
+		}
+		trimmed := make([]string, 0, len(vs))
+		for _, v := range vs {
+			trimmed = append(trimmed, strings.Join(strings.Fields(v), " "))
+		}
+		values[lower] = strings.Join(trimmed, ",")
+	}
+
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var block strings.Builder
+	for _, name := range names {
+		block.WriteString(name)
+		block.WriteString(":")
+		block.WriteString(values[name])
+		block.WriteString("\n")
+	}
+	return strings.Join(names, ";"), block.String()
+}
+
+// hostOf returns the host a request will be sent to.
+func hostOf(req *http.Request) string {
+	if req.Host != "" {
+		return req.Host
+	}
+	return req.URL.Host
+}
+
+// canonicalURI percent-encodes each path segment as SigV4 requires.
+//
+// It encodes the segments itself rather than using url.URL.EscapedPath,
+// because Go's escaping leaves several characters unescaped that SigV4
+// expects encoded, and a single differing byte here produces a signature the
+// service rejects with a message that names none of this.
+func canonicalURI(u *url.URL) string {
+	if u.Path == "" {
+		return "/"
+	}
+	segments := strings.Split(u.Path, "/")
+	for i, segment := range segments {
+		segments[i] = uriEncode(segment, false)
+	}
+	joined := strings.Join(segments, "/")
+	if !strings.HasPrefix(joined, "/") {
+		joined = "/" + joined
+	}
+	return joined
+}
+
+// canonicalQuery renders the query string in SigV4's canonical form: keys
+// sorted, both key and value encoded, and every key present even when empty.
+func canonicalQuery(values url.Values) string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		vs := append([]string(nil), values[key]...)
+		sort.Strings(vs)
+		for _, v := range vs {
+			parts = append(parts, uriEncode(key, true)+"="+uriEncode(v, true))
+		}
+	}
+	return strings.Join(parts, "&")
+}
+
+// uriEncode is SigV4's encoding: unreserved characters pass through, and
+// everything else becomes uppercase percent-encoding. In a path segment "/"
+// has already been split out, so it is encoded like anything else.
+func uriEncode(s string, encodeSlash bool) string {
+	var b strings.Builder
+	for i := range len(s) {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+			b.WriteByte(c)
+		case c == '-', c == '_', c == '.', c == '~':
+			b.WriteByte(c)
+		case c == '/' && !encodeSlash:
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
+func hmacSHA256(key []byte, data string) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(data))
+	return mac.Sum(nil)
+}
+
+func hashHex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
