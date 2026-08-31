@@ -32,6 +32,7 @@ import (
 	"{{.ModulePath}}/internal/platform/httpapi"
 	"{{.ModulePath}}/internal/platform/httpapi/problem"
 	"{{.ModulePath}}/internal/platform/httpauth"
+	"{{.ModulePath}}/internal/platform/jobs"
 	"{{.ModulePath}}/internal/platform/passwords"
 	"{{.ModulePath}}/internal/platform/reauth"
 	"{{.ModulePath}}/internal/platform/throttle"
@@ -269,8 +270,18 @@ func Run(ctx context.Context, modeOverride string) error {
 		return fmt.Errorf("building the HTTP handler: %w", err)
 	}
 
+	// Every process builds a job client, because every process may need to
+	// enqueue. Only the worker component ever starts one, so a web replica
+	// holds a client that never fetches a job.
+	jobRegistry := jobs.NewRegistry()
+	registerJobs(jobRegistry)
+	jobClient, err := jobs.New(pool, jobRegistry, cfg.Jobs, logger)
+	if err != nil {
+		return fmt.Errorf("building the job client: %w", err)
+	}
+
 	server := lifecycle.NewHTTPServer(cfg.Addr(), handler, gate, lifecycle.WithLogger(logger))
-	worker := newWorker(logger)
+	worker := newWorker(jobClient, logger)
 
 	group, err := lifecycle.NewGroup(mode, server, worker)
 	if err != nil {
@@ -285,6 +296,7 @@ func Run(ctx context.Context, modeOverride string) error {
 		slog.Any("cursor_keys", cfg.CursorKeys),
 		slog.String("session_cookie", cfg.SessionCookie.Name()),
 		slog.Any("modules", SelectedModules()),
+		slog.Any("job_kinds", jobClient.Kinds()),
 	)
 
 	// Initialization is complete: open the gate so the startup probe

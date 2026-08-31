@@ -6,10 +6,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/drilonrecica/nise-and-go/runtime/lifecycle"
 
 	"{{.ModulePath}}/internal/platform/config"
+	"{{.ModulePath}}/internal/platform/jobs"
 )
 
 // resolveMode decides which process mode this invocation runs. The -mode
@@ -31,16 +33,43 @@ func resolveMode(cfg config.Config, override string) (lifecycle.Mode, error) {
 // newWorker builds the background-processing component that lifecycle.Mode
 // "all" and "worker" run.
 //
-// This application registers no background jobs yet, so the loop does
-// nothing but wait for its context to be canceled and then return. It is a
-// real Runnable rather than a nil one on purpose: "nise new" wires the
-// component and its shutdown path now, so adding the first job is adding a
-// case to this loop rather than re-plumbing the process.
-func newWorker(logger *slog.Logger) *lifecycle.Worker {
+// The loop is deliberately thin. River's client owns the fetching, the
+// retry timing, and the leader election; this function owns only the two
+// things the process needs from it — start when the component starts, and
+// drain when the component's context is canceled.
+//
+// Draining is given its own timeout rather than inheriting the canceled
+// context, because a canceled context is exactly what Stop must not be
+// handed: it would return immediately and abandon jobs mid-flight. The
+// window is shorter than lifecycle.DefaultShutdownTimeout so that the
+// group's own deadline is not consumed entirely by this component.
+func newWorker(client *jobs.Client, logger *slog.Logger) *lifecycle.Worker {
 	return lifecycle.NewWorker(func(ctx context.Context) error {
-		logger.Info("worker started", slog.Int("registered_jobs", 0))
+		if err := client.Start(ctx); err != nil {
+			return err
+		}
+		logger.Info("worker started",
+			slog.Bool("works_jobs", client.Works()),
+			slog.Int("max_workers", client.MaxWorkers()),
+			slog.Any("job_kinds", client.Kinds()))
+
 		<-ctx.Done()
+
+		drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workerDrainTimeout)
+		defer cancel()
+		if err := client.Stop(drainCtx); err != nil {
+			// A drain that timed out is worth reporting and is not worth
+			// failing the process over: the jobs still running are left in
+			// the running state and are rescued by the next client to hold
+			// the leader lease, which is why every job must be safe to run
+			// twice.
+			logger.Warn("worker drain did not complete", slog.String("detail", err.Error()))
+		}
 		logger.Info("worker stopped")
 		return nil
 	})
 }
+
+// workerDrainTimeout is how long a running job has to finish once shutdown
+// begins.
+const workerDrainTimeout = 20 * time.Second

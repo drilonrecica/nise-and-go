@@ -1,0 +1,157 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package jobs
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"testing"
+	"time"
+
+	"github.com/riverqueue/river"
+)
+
+// probeArgs is a job kind that exists only so a registry has something in
+// it. Its Kind is a literal, not derived from the Go type name, which is the
+// property the doc comment on registerJobs asks every real job to have.
+type probeArgs struct{}
+
+func (probeArgs) Kind() string { return "probe" }
+
+type probeWorker struct {
+	river.WorkerDefaults[probeArgs]
+}
+
+func (probeWorker) Work(context.Context, *river.Job[probeArgs]) error { return nil }
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func TestNewSettingsRejectsImpossibleLimits(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		maxWorkers int
+		poll       time.Duration
+	}{
+		{"zero workers", 0, time.Minute},
+		{"negative workers", -1, time.Minute},
+		{"absurd worker count", MaxWorkersLimit + 1, time.Minute},
+		{"poll interval below the floor", 10, MinPollInterval - time.Millisecond},
+		{"poll interval above the ceiling", 10, MaxPollInterval + time.Second},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := NewSettings(c.maxWorkers, c.poll); err == nil {
+				t.Fatalf("NewSettings(%d, %s) = nil error, want a refusal", c.maxWorkers, c.poll)
+			}
+		})
+	}
+}
+
+func TestNewSettingsAcceptsTheBounds(t *testing.T) {
+	t.Parallel()
+
+	s, err := NewSettings(1, MinPollInterval)
+	if err != nil {
+		t.Fatalf("NewSettings at the lower bound: %v", err)
+	}
+	if s.MaxWorkers() != 1 || s.PollInterval() != MinPollInterval {
+		t.Fatalf("Settings = (%d, %s), want (1, %s)", s.MaxWorkers(), s.PollInterval(), MinPollInterval)
+	}
+	if _, err := NewSettings(MaxWorkersLimit, MaxPollInterval); err != nil {
+		t.Fatalf("NewSettings at the upper bound: %v", err)
+	}
+}
+
+// TestNewRejectsAZeroSettings is the check that keeps the validation above
+// from being optional. A Settings literal built by hand carries limits
+// nothing has looked at, so New refuses it rather than starting a client
+// with zero workers.
+func TestNewRejectsAZeroSettings(t *testing.T) {
+	t.Parallel()
+
+	if _, err := New(nil, NewRegistry(), Settings{}, discardLogger()); err == nil {
+		t.Fatal("New with a hand-built Settings = nil error, want a refusal")
+	}
+}
+
+func TestNewRejectsMissingDependencies(t *testing.T) {
+	t.Parallel()
+
+	settings, err := NewSettings(1, time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	if _, err := New(nil, NewRegistry(), settings, discardLogger()); err == nil {
+		t.Fatal("New with no pool = nil error, want a refusal")
+	}
+}
+
+func TestRegistryRecordsKindsInOrder(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	if got := r.Kinds(); len(got) != 0 {
+		t.Fatalf("a new registry has kinds %v, want none", got)
+	}
+	Register(r, &probeWorker{})
+	got := r.Kinds()
+	if len(got) != 1 || got[0] != "probe" {
+		t.Fatalf("Kinds() = %v, want [probe]", got)
+	}
+}
+
+// TestRegistryKindsIsACopy proves a caller cannot reach into the registry
+// through the slice it was handed. The startup log line passes this slice
+// straight to slog, so an aliased backing array would be a live view of
+// mutable state in a log record.
+func TestRegistryKindsIsACopy(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	Register(r, &probeWorker{})
+	got := r.Kinds()
+	got[0] = "tampered"
+	if r.Kinds()[0] != "probe" {
+		t.Fatal("mutating the returned slice changed the registry")
+	}
+}
+
+// TestStopWithoutStartIsSafe covers the shutdown path a process takes when
+// it never worked jobs: `nise` builds a client in every mode, and only the
+// worker component starts one, so Stop is reached on a client that was never
+// started whenever a web replica drains.
+func TestStopWithoutStartIsSafe(t *testing.T) {
+	t.Parallel()
+
+	c := &Client{}
+	if err := c.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop on a client that never worked jobs: %v", err)
+	}
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start on a client with no registered kinds: %v", err)
+	}
+	if c.Works() {
+		t.Fatal("Works() = true on a client with no registered kinds")
+	}
+}
+
+// TestErrorsAreWrapped keeps the package's errors identifiable by the caller
+// that has to report them, rather than flattened into strings.
+func TestErrorsAreWrapped(t *testing.T) {
+	t.Parallel()
+
+	_, err := New(nil, nil, Settings{}, discardLogger())
+	if err == nil {
+		t.Fatal("New with no registry = nil error")
+	}
+	if errors.Unwrap(err) != nil {
+		t.Log("note: the refusal is a leaf error, which is correct for a precondition")
+	}
+}

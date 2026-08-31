@@ -137,11 +137,17 @@ type templateData struct {
 	// core history, in module order, because the runtime's compatibility
 	// check requires a history with no gaps — and a gap is how a missing
 	// migration hides.
-	TOTPMigration       string
-	NiseModule          string
-	NiseVersion         string
-	ChiVersion          string
-	PgxVersion          string
+	TOTPMigration string
+	NiseModule    string
+	NiseVersion   string
+	ChiVersion    string
+	PgxVersion    string
+	RiverVersion  string
+	// RiverSchemaVersion is the River migration line version the generated
+	// job schema brings the database up to. It appears both in the
+	// migration's prose and in the row it seeds, so it is one value here
+	// rather than two literals that could disagree.
+	RiverSchemaVersion  int
 	SQLCVersion         string
 	GooseVersion        string
 	OAPICodegenVersion  string
@@ -185,6 +191,8 @@ func newTemplateData(opts Options) templateData {
 		NiseVersion:         NiseModuleVersion,
 		ChiVersion:          ChiVersion,
 		PgxVersion:          PgxVersion,
+		RiverVersion:        RiverVersion,
+		RiverSchemaVersion:  RiverSchemaVersion,
 		SQLCVersion:         SQLCVersion,
 		GooseVersion:        GooseVersion,
 		OAPICodegenVersion:  OAPICodegenVersion,
@@ -204,7 +212,7 @@ func newTemplateData(opts Options) templateData {
 
 // coreMigrations is how many migrations every generated project has before any
 // module adds one. It is the number a module's first migration follows.
-const coreMigrations = 8
+const coreMigrations = 9
 
 // modulesWithMigrations lists, in the order they are numbered, the modules that
 // contribute a migration. A module absent from this list adds none.

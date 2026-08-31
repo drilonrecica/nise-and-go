@@ -49,7 +49,7 @@ immutability and controlled production DDL remain operational requirements.
 
 - Use zero-padded sequential names: `00002_add_accounts.sql`. A
   [compile-time module](adr/0022-compile-time-modules.md)'s migration continues
-  the same numbering — the TOTP module's is `00009_totp.sql` — because the
+  the same numbering — the TOTP module's is `00010_totp.sql` — because the
   compatibility check refuses a history with gaps, and a gap is how a missing
   migration hides. The number is assigned at generation time from the recorded
   selection and never changes afterwards.

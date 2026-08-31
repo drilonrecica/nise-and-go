@@ -37,6 +37,27 @@ const (
 	// declares the command as a Go tool for explicit operator workflows.
 	GooseVersion = "v3.27.3"
 
+	// RiverVersion pins the PostgreSQL-backed job queue, and with it both
+	// of the modules its client needs: riverdriver is the storage-neutral
+	// interface, riverdriver/riverpgxv5 is the pgx v5 implementation. All
+	// three are released together and are only ever compatible in matched
+	// sets, so they share one constant rather than three that could drift.
+	//
+	// River is the second Go dependency a generated project ships with in
+	// its binary after chi and pgx. It earns that place by needing no
+	// process the application does not already run: the queue is the
+	// PostgreSQL database that is already there, which is the difference
+	// between adding a job system and adding a second thing that can be
+	// down. See docs/dependencies.md.
+	RiverVersion = "v0.46.0"
+
+	// RiverSchemaVersion is the highest River migration line version the
+	// generated db/migrations/00009_jobs.sql brings the schema up to. It is
+	// recorded in the generated river_migration table so River's own
+	// migration tooling can take over later without re-running work that
+	// migration already did.
+	RiverSchemaVersion = 7
+
 	// XCryptoVersion pins golang.org/x/crypto, reached by generated
 	// applications through runtime/password's Argon2id hashing. It is the
 	// one non-standard-library dependency any runtime package has.
