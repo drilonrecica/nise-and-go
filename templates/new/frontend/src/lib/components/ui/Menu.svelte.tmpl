@@ -1,0 +1,173 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	let {
+		id,
+		label,
+		align = 'end',
+		trigger,
+		children
+	}: {
+		/** Stable id; the trigger and the menu are wired together by it. */
+		id: string;
+		/** The menu's accessible name. */
+		label: string;
+		/** Which edge of the trigger the menu is aligned to. */
+		align?: 'start' | 'end';
+		/** The trigger's contents. The <button> itself belongs to this file. */
+		trigger: Snippet;
+		/** The menu's items. Each must carry role="menuitem". */
+		children: Snippet;
+	} = $props();
+
+	let open = $state(false);
+	let triggerElement = $state<HTMLButtonElement | null>(null);
+	let menuElement = $state<HTMLDivElement | null>(null);
+
+	// The items are read from the DOM rather than taken as a prop, so a
+	// caller can render whatever it likes — links, buttons, a separator, a
+	// conditional item — and still get correct roving focus. The alternative,
+	// an array of item descriptors, would make every new kind of item a
+	// change to this file.
+	function items(): HTMLElement[] {
+		return menuElement ? Array.from(menuElement.querySelectorAll<HTMLElement>('[role="menuitem"]')) : [];
+	}
+
+	function focusItem(index: number): void {
+		const all = items();
+		if (all.length === 0) return;
+		// Wrapping is what the ARIA authoring practices specify for a menu,
+		// and it is what a person expects after pressing Down on the last item.
+		const wrapped = ((index % all.length) + all.length) % all.length;
+		all[wrapped].focus();
+	}
+
+	function currentIndex(): number {
+		return items().indexOf(document.activeElement as HTMLElement);
+	}
+
+	function show(focus: 'first' | 'last' | 'none'): void {
+		open = true;
+		if (focus === 'none') return;
+		// Wait for the menu to exist before reaching into it.
+		queueMicrotask(() => focusItem(focus === 'first' ? 0 : items().length - 1));
+	}
+
+	/**
+	 * Close, and put focus back where the person left it.
+	 *
+	 * Returning focus is the part that is easy to skip and impossible to
+	 * work around: without it, dismissing a menu with Escape drops a keyboard
+	 * user at the top of the document.
+	 */
+	function close(restoreFocus = true): void {
+		if (!open) return;
+		open = false;
+		if (restoreFocus) triggerElement?.focus();
+	}
+
+	function onTriggerKeydown(event: KeyboardEvent): void {
+		if (event.key === 'ArrowDown') {
+			event.preventDefault();
+			show('first');
+		} else if (event.key === 'ArrowUp') {
+			event.preventDefault();
+			show('last');
+		}
+	}
+
+	function onMenuKeydown(event: KeyboardEvent): void {
+		switch (event.key) {
+			case 'ArrowDown':
+				event.preventDefault();
+				focusItem(currentIndex() + 1);
+				break;
+			case 'ArrowUp':
+				event.preventDefault();
+				focusItem(currentIndex() - 1);
+				break;
+			case 'Home':
+				event.preventDefault();
+				focusItem(0);
+				break;
+			case 'End':
+				event.preventDefault();
+				focusItem(items().length - 1);
+				break;
+			case 'Tab':
+				// Tab out of a menu dismisses it, but the focus move is the
+				// browser's, so this must not steal it back.
+				close(false);
+				break;
+		}
+	}
+
+	// While the menu is open, the document owns two dismissals.
+	//
+	// A pointer press anywhere else closes it, listening for pointerdown
+	// rather than click so the menu is gone before whatever was pressed
+	// reacts, and without restoring focus, because the person has already
+	// said where they want to be.
+	//
+	// Escape closes it wherever focus happens to be. It has to be here rather
+	// than on the menu element: opening with the mouse leaves focus on the
+	// trigger, which is a sibling of the menu, so a keydown handler on the
+	// menu would never see that Escape and the menu would refuse to close for
+	// the most ordinary sequence there is — click to open, Escape to change
+	// your mind.
+	$effect(() => {
+		if (!open) return;
+		const onPointerDown = (event: PointerEvent) => {
+			const target = event.target as Node;
+			if (menuElement?.contains(target) || triggerElement?.contains(target)) return;
+			close(false);
+		};
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key !== 'Escape') return;
+			event.preventDefault();
+			close();
+		};
+		document.addEventListener('pointerdown', onPointerDown, true);
+		document.addEventListener('keydown', onKeyDown, true);
+		return () => {
+			document.removeEventListener('pointerdown', onPointerDown, true);
+			document.removeEventListener('keydown', onKeyDown, true);
+		};
+	});
+</script>
+
+<div class="relative">
+	<button
+		bind:this={triggerElement}
+		type="button"
+		id="{id}-trigger"
+		aria-haspopup="menu"
+		aria-expanded={open}
+		aria-controls={open ? id : undefined}
+		class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-muted transition-colors duration-fast ease-standard hover:bg-surface-muted hover:text-text"
+		onclick={() => (open ? close() : show('none'))}
+		onkeydown={onTriggerKeydown}
+	>
+		{@render trigger()}
+	</button>
+
+	{#if open}
+		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -- the menu owns its own keyboard model; the items inside it are the interactive elements. -->
+		<div
+			bind:this={menuElement}
+			{id}
+			role="menu"
+			aria-label={label}
+			aria-labelledby="{id}-trigger"
+			tabindex="-1"
+			class="absolute z-50 mt-1 min-w-52 rounded-md border border-line bg-surface-raised p-1 shadow-overlay {align ===
+			'end'
+				? 'right-0'
+				: 'left-0'}"
+			onkeydown={onMenuKeydown}
+		>
+			{@render children()}
+		</div>
+	{/if}
+</div>

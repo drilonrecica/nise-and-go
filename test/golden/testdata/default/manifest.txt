@@ -45,7 +45,7 @@ frontend/scripts dir 0755
 frontend/scripts/check-contrast.mjs file 0644 00f14303678904bdfe17afd6770cfe527f8cdaa4dc56980fdfbcc2acbba1bc21
 frontend/scripts/check-runes.mjs file 0644 f95e911aebdf9dea61b46f1546f902dec5be6f800a70fe539bab17c3a4b47db8
 frontend/src dir 0755
-frontend/src/app.css file 0644 9a9aebdb5cf6c54dcadca9466dd09d31bcbc81bb6146023dfdb8459ca8ab374c
+frontend/src/app.css file 0644 b61faf5f8b16d4eff6ae2bc274b7d6ba449e5eb4cd90316ed009c5f487367fce
 frontend/src/app.d.ts file 0644 d231593a748a2379dc8248d2a06d2d8ef723c8e8f8a4a3b18291444dac38f861
 frontend/src/app.html file 0644 2d34de7c7e3337aa7fe687bd9c6450da3dea0731fe0222b969be642a5e088b2e
 frontend/src/lib dir 0755
@@ -55,12 +55,31 @@ frontend/src/lib/api/client.ts file 0644 f117bc9d9a514bb145fe4ed8ce0433410af11c4
 frontend/src/lib/api/schema.d.ts file 0644 e3f7af578b9bb3b00cfc5875f783af95c6c4c1203b3a8e0f784f01aaf528476f
 frontend/src/lib/components dir 0755
 frontend/src/lib/components/ThemeControl.svelte file 0644 8360f3ca2b33ccbd2ef80cdb0639eb07fa1a1ab82581dcddcb999d1dd0d1f66b
+frontend/src/lib/components/shell dir 0755
+frontend/src/lib/components/shell/AccountMenu.svelte file 0644 2efc8747bff455bb784624d1f46d1d5fbe6598fcd02322ace8a8a33f3c6c5f7c
+frontend/src/lib/components/shell/AppShell.svelte file 0644 c86afa5aaa46ac91fb0facf95cf20a6f86eded690790770760f97f5493619ab6
+frontend/src/lib/components/shell/Breadcrumbs.svelte file 0644 00022a11aefb67ebc4364ee4e3100dc3f326fc8078fa5a64ef6ac5b815f65a57
+frontend/src/lib/components/shell/NavDrawer.svelte file 0644 3cf371590ea1388aa3b4b693310fbed008b3a6fc22da324684ab8f965d58cf95
+frontend/src/lib/components/shell/Sidebar.svelte file 0644 247b9a230194fc3103cd0b9534e2fe9190025d065ee528b9b9da95fee3f0d1f5
+frontend/src/lib/components/shell/SidebarNav.svelte file 0644 5e08c60c3e7b0730c840e7b6d357e7c077ae23ee9d9231e1c36729dac6b0cc0a
+frontend/src/lib/components/shell/TopBar.svelte file 0644 94384db1eb6181f7755393e6272d367fb4bc999f7f272210a7762a72d9ef56aa
+frontend/src/lib/components/ui dir 0755
+frontend/src/lib/components/ui/Icon.svelte file 0644 88175bfa382279c4ebe682d0b755e78c8394468db9901165b0fa47f100d1a74a
+frontend/src/lib/components/ui/Menu.svelte file 0644 5d5172030bbf7ff3314c270f7edce862841370965b3f82cc5cf891c3121506b6
+frontend/src/lib/components/ui/icons.ts file 0644 ed2440505082cb982a49aef71c5d41bee06e32f48fb094d6786e6079eac4134e
+frontend/src/lib/navigation.test.ts file 0644 aa0aefb81d4bb2b73dc1c552b7461e14f7bd605c6590a8435994677cfeac5eb8
+frontend/src/lib/navigation.ts file 0644 72ffdbf3525339d2a2c807240d24df00b18fac9161621cf93145ebecc4c840e1
+frontend/src/lib/shell.svelte.ts file 0644 961dc9564d95fbd8e3a38ec2964ebbfd878824e73523104f49dc76efd29184a2
 frontend/src/lib/theme.svelte.ts file 0644 fb6137bd519e6b284446db250b0804c4def2eaf3e50bd281ce7d6cb472e01a75
 frontend/src/lib/theme.test.ts file 0644 bfff480428c32f68af228a2b88606dabb8d9c20e5738bc93a49879e6799e20df
 frontend/src/routes dir 0755
+frontend/src/routes/(app) dir 0755
+frontend/src/routes/(app)/+layout.svelte file 0644 b0a86054c0fe165eda4dfe73e56be414598b058778a2d73e65395429620efdb8
+frontend/src/routes/(app)/+page.svelte file 0644 be93ddd8d3b96935a5da64a6e9e847712c846e56fe79a50917bf864361c7d844
+frontend/src/routes/(app)/settings dir 0755
+frontend/src/routes/(app)/settings/+page.svelte file 0644 239330df3d0d706cd7c41e1bb9017f0969446753b4f69413dbf344cc12b368a7
 frontend/src/routes/+layout.svelte file 0644 9a5e0f8cef23d4bae8295663ce506722eb1e4d769db8cf6d41cee3f0428cdef2
 frontend/src/routes/+layout.ts file 0644 e87dac774059cbb98b215cbd26e605048b59990262f3e11898f79dd6f79f9c29
-frontend/src/routes/+page.svelte file 0644 dc70157b07083514ee159771814130a909c37f8312651dfca2761fbd6f57ddaa
 frontend/static dir 0755
 frontend/static/favicon.svg file 0644 eb78958ea23231a46ef84123653ecbeb7eda847b779fa4e72981933e1e7a5285
 frontend/svelte.config.js file 0644 d290c5b3e673ab33a1b79e093db8acd30dac7cc3b56c90bd5452f1da0e2d3af1

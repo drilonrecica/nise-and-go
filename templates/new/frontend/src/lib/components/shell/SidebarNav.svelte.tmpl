@@ -1,0 +1,63 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { page } from '$app/state';
+
+	import Icon from '$lib/components/ui/Icon.svelte';
+	import { isCurrent, navigation } from '$lib/navigation';
+
+	let {
+		collapsed = false,
+		onnavigate
+	}: {
+		/** Icons only. The label still reaches assistive technology. */
+		collapsed?: boolean;
+		/** Called after a link is activated, so the drawer can close itself. */
+		onnavigate?: () => void;
+	} = $props();
+</script>
+
+<!--
+	One nav list, drawn by both the desktop sidebar and the mobile drawer.
+	Two copies of it is two places to add a section and one place to forget.
+-->
+<ul class="space-y-6">
+	{#each navigation as section, index (section.label ?? index)}
+		<li>
+			{#if section.label}
+				<h2
+					class="px-3 pb-1.5 text-xs font-semibold tracking-wide text-text-subtle uppercase"
+					class:sr-only={collapsed}
+				>
+					{section.label}
+				</h2>
+			{/if}
+			<ul class="space-y-0.5">
+				{#each section.items as item (item.href)}
+					{@const current = isCurrent(item, page.url.pathname)}
+					<li>
+						<a
+							href={item.href}
+							onclick={onnavigate}
+							class="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors duration-fast ease-standard {current
+								? 'bg-primary-soft text-primary-on-soft'
+								: 'text-text-muted hover:bg-surface-muted hover:text-text'}"
+							class:justify-center={collapsed}
+							aria-current={current ? 'page' : undefined}
+							title={collapsed ? item.label : undefined}
+						>
+							<Icon name={item.icon} class="size-5 shrink-0" />
+							<!--
+								Collapsed hides the label visually and keeps it in the
+								accessibility tree. `display: none` would remove the
+								link's accessible name entirely, leaving a screen
+								reader with an unlabelled link and an icon it cannot
+								describe.
+							-->
+							<span class:sr-only={collapsed}>{item.label}</span>
+						</a>
+					</li>
+				{/each}
+			</ul>
+		</li>
+	{/each}
+</ul>

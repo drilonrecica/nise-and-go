@@ -1,0 +1,49 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import Icon from '$lib/components/ui/Icon.svelte';
+	import SidebarNav from '$lib/components/shell/SidebarNav.svelte';
+	import { shell } from '$lib/shell.svelte';
+
+	let { name }: { name: string } = $props();
+
+	let dialog = $state<HTMLDialogElement | null>(null);
+
+	// <dialog>.showModal() is doing real work here, not decoration: it traps
+	// focus, makes the rest of the document inert, closes on Escape, and puts
+	// the drawer in the top layer above every stacking context on the page.
+	// Each of those is a thing a hand-written drawer gets wrong, and the
+	// focus trap is the one that is actively hostile when it is wrong.
+	$effect(() => {
+		if (!dialog) return;
+		if (shell.drawerOpen && !dialog.open) {
+			dialog.showModal();
+		} else if (!shell.drawerOpen && dialog.open) {
+			dialog.close();
+		}
+	});
+</script>
+
+<dialog
+	bind:this={dialog}
+	id="navigation-drawer"
+	class="m-0 mr-auto h-dvh max-h-none w-72 max-w-[85vw] bg-surface text-text backdrop:bg-overlay md:hidden"
+	aria-label="Navigation"
+	onclose={() => shell.closeDrawer()}
+>
+	<div class="flex h-full flex-col">
+		<div class="flex h-14 items-center justify-between gap-2 border-b border-line px-4">
+			<span class="truncate text-sm font-semibold tracking-tight">{name}</span>
+			<button
+				type="button"
+				class="rounded-md p-1.5 text-text-muted transition-colors duration-fast ease-standard hover:bg-surface-muted hover:text-text"
+				onclick={() => shell.closeDrawer()}
+			>
+				<Icon name="close" label="Close navigation" />
+			</button>
+		</div>
+
+		<nav aria-label="Main (mobile)" class="flex-1 overflow-y-auto p-2">
+			<SidebarNav onnavigate={() => shell.closeDrawer()} />
+		</nav>
+	</div>
+</dialog>

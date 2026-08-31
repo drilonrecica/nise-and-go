@@ -59,6 +59,41 @@ The starter shell includes:
 
 The optional compile-time modules (organizations, TOTP, notifications, uploads) add only the pages they require, such as organization switching and membership, TOTP setup and recovery codes, a notification centre, or upload management.
 
+### How the shell is put together
+
+Every route lives under `src/routes/(app)/`, whose layout is the shell, so a page never imports it and can never forget to. The pieces are in `src/lib/components/shell/`:
+
+| File | What it is |
+|---|---|
+| `AppShell.svelte` | The composition: sidebar, drawer, top bar, skip link, and the `<main>` landmark. |
+| `Sidebar.svelte` | The collapsible desktop rail, hidden below the medium breakpoint. |
+| `NavDrawer.svelte` | The mobile drawer, a `<dialog>` opened with `showModal()`. |
+| `SidebarNav.svelte` | The navigation list itself, drawn by both of the above. |
+| `TopBar.svelte` | Menu button, breadcrumbs, theme control, account menu. |
+| `Breadcrumbs.svelte` | The trail, derived from the URL. |
+| `AccountMenu.svelte` | The account menu, over the shared `Menu` primitive. |
+
+Navigation is **data**, in `src/lib/navigation.ts`: a list of sections, each with items carrying an href, a label, an icon, and optionally a required permission. The sidebar, the drawer, and the breadcrumb trail all read that one list, so adding a section is editing one file — which is also what lets `nise generate resource` append to it. Nothing outside the shell imports it, and a test enforces that.
+
+A `permission` on an item hides it from a session that cannot use it. That is a courtesy and never a control: the server refuses the request regardless, and hiding a link the caller could still reach by typing its URL would be the only thing that changed.
+
+Breadcrumbs label known paths from the navigation list and unknown segments from the segment itself, so a generated resource's detail page or a bare identifier still produces a readable trail rather than an empty one. A malformed percent escape in the URL is rendered as-is rather than throwing.
+
+The current-section rule is a path-boundary match, not a string prefix: `/settings` claims `/settings/roles` and does not claim `/settings-archive`. An item marked `exact` — the dashboard at `/` — claims only itself, or it would be current on every page in the application.
+
+### The accessibility properties that are easy to lose
+
+Each of these is invisible when it is gone, so each is pinned by a test:
+
+- **A skip link** first in the tab order, visible only on focus. Without it a keyboard user passes every navigation link on every page before reaching the content.
+- **Named landmarks.** Two `<nav>` elements in one document must each carry a label, or a screen reader offers a list of identical "navigation" entries.
+- **`aria-current="page"`** on the current navigation item and the last breadcrumb, which is a `<span>` rather than a link — a link to the page you are on is a link that does nothing.
+- **A collapsed sidebar keeps its labels**, hidden visually with `sr-only` rather than `display: none`, which would leave a screen reader with an unlabelled link and an icon it cannot describe.
+- **The drawer is a modal `<dialog>`.** `showModal()` supplies the focus trap, the inert background, Escape-to-close, and the top layer. Every one of those is something a hand-written drawer gets wrong, and a broken focus trap is actively hostile.
+- **The menu implements the full keyboard model** — open on click or Arrow, arrow navigation with wrapping, Home/End, Escape and Tab to dismiss — and returns focus to its trigger on dismissal. Escape is handled on the document rather than on the menu, because opening with the mouse leaves focus on the trigger, which is a sibling of the menu; a handler on the menu would never see it.
+
+Icons are path data in `src/lib/components/ui/icons.ts`, drawn by one small component. There is no icon package: an icon is one or more `d` attributes on a 24×24 grid with a round stroke that takes `currentColor`, so the set stays as small as the application needs, and a single set reads correctly on both themes.
+
 ## Generated resources
 
 A generated resource receives:

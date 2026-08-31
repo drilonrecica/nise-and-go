@@ -1,0 +1,35 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { page } from '$app/state';
+
+	import Icon from '$lib/components/ui/Icon.svelte';
+	import { breadcrumbs } from '$lib/navigation';
+
+	const trail = $derived(breadcrumbs(page.url.pathname));
+</script>
+
+<nav aria-label="Breadcrumb" class="min-w-0">
+	<ol class="flex items-center gap-1 text-sm">
+		{#each trail as crumb, index (crumb.href)}
+			<li class="flex min-w-0 items-center gap-1">
+				{#if index > 0}
+					<Icon name="chevronRight" class="size-4 shrink-0 text-text-subtle" />
+				{/if}
+				{#if crumb.current}
+					<!--
+						The last crumb is the page you are on. It is marked
+						aria-current and is not a link, because a link to here is a
+						link that does nothing.
+					-->
+					<span class="truncate font-medium text-text" aria-current="page">{crumb.label}</span>
+				{:else}
+					<a
+						href={crumb.href}
+						class="truncate rounded-xs text-text-muted transition-colors duration-fast ease-standard hover:text-text"
+						>{crumb.label}</a
+					>
+				{/if}
+			</li>
+		{/each}
+	</ol>
+</nav>

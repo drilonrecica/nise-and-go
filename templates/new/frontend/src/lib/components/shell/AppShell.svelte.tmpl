@@ -1,0 +1,51 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	import NavDrawer from '$lib/components/shell/NavDrawer.svelte';
+	import Sidebar from '$lib/components/shell/Sidebar.svelte';
+	import TopBar from '$lib/components/shell/TopBar.svelte';
+	import { shell } from '$lib/shell.svelte';
+
+	let {
+		name,
+		account = null,
+		children
+	}: {
+		/** The application's name, shown in the sidebar and the drawer. */
+		name: string;
+		/** The signed-in account, or null while nobody is signed in. */
+		account?: { name: string; email?: string } | null;
+		children: Snippet;
+	} = $props();
+
+	// Adopt the stored sidebar preference once the shell is mounted. The
+	// drawer's open state is deliberately not restored: an application that
+	// opened its navigation drawer because you left it open last week would
+	// be broken.
+	$effect(() => shell.start());
+</script>
+
+<div class="flex h-dvh overflow-hidden bg-canvas text-text">
+	<Sidebar {name} />
+	<NavDrawer {name} />
+
+	<div class="flex min-w-0 flex-1 flex-col">
+		<TopBar {account} />
+
+		<!--
+			The skip link is the first thing in the tab order and is visible
+			only while focused. Without it, a keyboard user reaches the page's
+			content after every navigation link, on every page, forever.
+		-->
+		<a
+			href="#main"
+			class="sr-only rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-text focus:not-sr-only focus:absolute focus:top-16 focus:left-4 focus:z-50"
+			>Skip to content</a
+		>
+
+		<main id="main" tabindex="-1" class="flex-1 overflow-y-auto">
+			{@render children()}
+		</main>
+	</div>
+</div>

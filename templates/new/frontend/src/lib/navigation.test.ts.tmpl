@@ -1,0 +1,72 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { describe, expect, it } from 'vitest';
+
+import { breadcrumbs, isCurrent, type NavSection } from './navigation';
+
+const sections: NavSection[] = [
+	{ items: [{ href: '/', label: 'Overview', icon: 'home', exact: true }] },
+	{
+		label: 'Administration',
+		items: [
+			{ href: '/settings', label: 'Settings', icon: 'settings' },
+			{ href: '/invoices', label: 'Invoices', icon: 'list' }
+		]
+	}
+];
+
+describe('isCurrent', () => {
+	it('keeps a section current while a person is inside it', () => {
+		const settings = sections[1].items[0];
+		expect(isCurrent(settings, '/settings')).toBe(true);
+		expect(isCurrent(settings, '/settings/roles')).toBe(true);
+		expect(isCurrent(settings, '/settings/roles/editor')).toBe(true);
+	});
+
+	it('stops at a path boundary rather than at a string prefix', () => {
+		const settings = sections[1].items[0];
+		expect(isCurrent(settings, '/settings-archive')).toBe(false);
+		expect(isCurrent(settings, '/settingsomething')).toBe(false);
+	});
+
+	it('does not let an exact item claim the whole application', () => {
+		const overview = sections[0].items[0];
+		expect(isCurrent(overview, '/')).toBe(true);
+		expect(isCurrent(overview, '/settings')).toBe(false);
+	});
+});
+
+describe('breadcrumbs', () => {
+	it('is a single current crumb at the root', () => {
+		expect(breadcrumbs('/', sections)).toEqual([
+			{ href: '/', label: 'Overview', current: true }
+		]);
+	});
+
+	it('labels known paths from the navigation list', () => {
+		expect(breadcrumbs('/settings', sections)).toEqual([
+			{ href: '/', label: 'Overview', current: false },
+			{ href: '/settings', label: 'Settings', current: true }
+		]);
+	});
+
+	it('labels an unknown segment readably rather than giving up', () => {
+		expect(breadcrumbs('/invoices/draft-items', sections)).toEqual([
+			{ href: '/', label: 'Overview', current: false },
+			{ href: '/invoices', label: 'Invoices', current: false },
+			{ href: '/invoices/draft-items', label: 'Draft items', current: true }
+		]);
+	});
+
+	it('survives a malformed percent escape in the URL', () => {
+		const trail = breadcrumbs('/invoices/%E0%A4%A', sections);
+		expect(trail).toHaveLength(3);
+		expect(trail[2].current).toBe(true);
+		expect(trail[2].label).toBe('%E0%A4%A');
+	});
+
+	it('marks only the last crumb as current', () => {
+		const trail = breadcrumbs('/settings/roles/editor', sections);
+		expect(trail.map((crumb) => crumb.current)).toEqual([false, false, false, true]);
+	});
+});

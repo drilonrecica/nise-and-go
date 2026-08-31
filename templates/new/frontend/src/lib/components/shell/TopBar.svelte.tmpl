@@ -1,0 +1,31 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import AccountMenu from '$lib/components/shell/AccountMenu.svelte';
+	import Breadcrumbs from '$lib/components/shell/Breadcrumbs.svelte';
+	import Icon from '$lib/components/ui/Icon.svelte';
+	import ThemeControl from '$lib/components/ThemeControl.svelte';
+	import { shell } from '$lib/shell.svelte';
+
+	let { account }: { account: { name: string; email?: string } | null } = $props();
+</script>
+
+<header
+	class="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-surface px-3 sm:px-4"
+>
+	<button
+		type="button"
+		class="rounded-md p-1.5 text-text-muted transition-colors duration-fast ease-standard hover:bg-surface-muted hover:text-text md:hidden"
+		aria-expanded={shell.drawerOpen}
+		aria-controls="navigation-drawer"
+		onclick={() => shell.openDrawer()}
+	>
+		<Icon name="menu" label="Open navigation" />
+	</button>
+
+	<Breadcrumbs />
+
+	<div class="ms-auto flex items-center gap-2">
+		<ThemeControl />
+		<AccountMenu {account} />
+	</div>
+</header>

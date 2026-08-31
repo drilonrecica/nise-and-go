@@ -1,0 +1,15 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import AppShell from '$lib/components/shell/AppShell.svelte';
+
+	let { children } = $props();
+
+	// The signed-in account. It is null until the authentication milestone
+	// wires the session in; the shell already renders both states, so nothing
+	// here changes shape when it does.
+	const account: { name: string; email?: string } | null = null;
+</script>
+
+<AppShell name="{{.AppName}}" {account}>
+	{@render children()}
+</AppShell>

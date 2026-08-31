@@ -1,0 +1,128 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// This application's navigation, as data.
+//
+// The sidebar, the mobile drawer, and the breadcrumb trail all read this one
+// list, so adding a section is editing this file and nothing else. It is
+// plain data rather than a component tree because navigation is the thing an
+// application changes most and the thing a generator has least business
+// owning: `nise generate resource` appends an item here, and everything that
+// draws navigation picks it up.
+//
+// `permission` names a permission from the application's own catalog. The
+// shell hides an item the current session cannot use — which is a courtesy,
+// never a control: the server refuses the request regardless, and hiding a
+// link the caller could still reach by typing its URL would be the only
+// thing that changed.
+
+import type { IconName } from '$lib/components/ui/icons';
+
+/** One navigable destination. */
+export interface NavItem {
+	/** The path this item links to, always absolute. */
+	href: string;
+	/** The label shown in the sidebar, the drawer, and the breadcrumb. */
+	label: string;
+	/** The icon shown beside it, and alone when the sidebar is collapsed. */
+	icon: IconName;
+	/** The permission required to see it, when it needs one. */
+	permission?: string;
+	/**
+	 * Whether a deeper path still counts as being here. A section's own item
+	 * matches its subtree; a dashboard at "/" must not, or it would be
+	 * current on every page in the application.
+	 */
+	exact?: boolean;
+}
+
+/** A titled group of destinations. */
+export interface NavSection {
+	/** The group heading, or undefined for the leading ungrouped items. */
+	label?: string;
+	items: NavItem[];
+}
+
+/** This application's navigation. Edit freely. */
+export const navigation: NavSection[] = [
+	{
+		items: [{ href: '/', label: 'Overview', icon: 'home', exact: true }]
+	},
+	{
+		label: 'Administration',
+		items: [{ href: '/settings', label: 'Settings', icon: 'settings' }]
+	}
+];
+
+/**
+ * Whether item is the destination pathname is currently in.
+ *
+ * A subtree match is what makes a section stay highlighted while a person is
+ * three pages inside it. The boundary check matters: without it "/settings"
+ * would also claim "/settings-archive".
+ */
+export function isCurrent(item: NavItem, pathname: string): boolean {
+	if (item.exact) {
+		return pathname === item.href;
+	}
+	if (pathname === item.href) {
+		return true;
+	}
+	const prefix = item.href.endsWith('/') ? item.href : item.href + '/';
+	return pathname.startsWith(prefix);
+}
+
+/** Every item in every section, flattened, in navigation order. */
+export function allItems(sections: NavSection[] = navigation): NavItem[] {
+	return sections.flatMap((section) => section.items);
+}
+
+/** One step in the breadcrumb trail. */
+export interface Crumb {
+	href: string;
+	label: string;
+	/** The last crumb is the current page and is not a link. */
+	current: boolean;
+}
+
+/**
+ * Build the breadcrumb trail for a pathname.
+ *
+ * Segments are labelled from the navigation list where it knows them and
+ * from the segment itself where it does not, so a route this file has never
+ * heard of — a generated resource's detail page, an identifier — still gets
+ * a readable trail instead of an empty one or a crash.
+ */
+export function breadcrumbs(pathname: string, sections: NavSection[] = navigation): Crumb[] {
+	const known = new Map(allItems(sections).map((item) => [item.href, item.label]));
+	const segments = pathname.split('/').filter((segment) => segment !== '');
+
+	const trail: Crumb[] = [{ href: '/', label: known.get('/') ?? 'Overview', current: segments.length === 0 }];
+	let href = '';
+	for (const [index, segment] of segments.entries()) {
+		href += '/' + segment;
+		trail.push({
+			href,
+			label: known.get(href) ?? humanize(segment),
+			current: index === segments.length - 1
+		});
+	}
+	return trail;
+}
+
+/** Turn a URL segment into something a person can read. */
+function humanize(segment: string): string {
+	const decoded = safeDecode(segment).replace(/[-_]+/g, ' ').trim();
+	if (decoded === '') {
+		return segment;
+	}
+	return decoded.charAt(0).toUpperCase() + decoded.slice(1);
+}
+
+/** decodeURIComponent throws on a malformed escape; a breadcrumb must not. */
+function safeDecode(segment: string): string {
+	try {
+		return decodeURIComponent(segment);
+	} catch {
+		return segment;
+	}
+}
