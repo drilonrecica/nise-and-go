@@ -1,0 +1,78 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package {{.Singular}}_test
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"{{.ModulePath}}/internal/features/{{.Singular}}"
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// The tests Nise wrote are the ones that fail closed and the one rule it
+// actually wrote. Everything else here is yours: test the rules you add, and
+// their failure paths, against real PostgreSQL through
+// internal/platform/database/dbtest.
+
+// A use case that can be constructed without its dependencies is one that will
+// be, and the failure then arrives as a nil dereference on the first real
+// request rather than at startup.
+func TestNew{{.TitlePlural}}RequiresATransactor(t *testing.T) {
+	t.Parallel()
+
+	if _, err := {{.Singular}}.New{{.TitlePlural}}(nil); err == nil {
+		t.Fatal("New{{.TitlePlural}} accepted a nil transactor")
+	}
+}
+
+// Default deny, on every method that changes something and on the one that
+// reads. A context carrying no resolved grants is refused before anything
+// reaches the database.
+//
+// The transactor is a zero value on purpose: the authorization check runs
+// first, so a passing test never uses it — and if a check is ever deleted in a
+// refactor, that call falls through to an unusable transactor and this test
+// fails with a different error instead of quietly succeeding.
+func Test{{.TitlePlural}}RefuseACallerWithNoGrants(t *testing.T) {
+	t.Parallel()
+
+	use, err := {{.Singular}}.New{{.TitlePlural}}(&database.Transactor{})
+	if err != nil {
+		t.Fatalf("New{{.TitlePlural}}: %v", err)
+	}
+	ctx := context.Background()
+
+	for name, call := range map[string]func() error{
+		"Create": func() error { _, err := use.Create(ctx, "a name"); return err },
+		"Get":    func() error { _, err := use.Get(ctx, "00000000-0000-0000-0000-000000000000"); return err },
+		"Update": func() error { _, err := use.Update(ctx, "00000000-0000-0000-0000-000000000000", "a name"); return err },
+		"Delete": func() error { return use.Delete(ctx, "00000000-0000-0000-0000-000000000000") },
+	} {
+		if err := call(); !errors.Is(err, authorization.ErrDenied) {
+			t.Errorf("%s without grants = %v, want authorization.ErrDenied", name, err)
+		}
+	}
+}
+
+// The one domain rule Nise wrote. Replace it when this feature has real ones,
+// and keep testing the boundaries: the shortest and longest acceptable value,
+// and the first value on either side of each.
+func TestNormalizeName(t *testing.T) {
+	t.Parallel()
+
+	if got, err := {{.Singular}}.NormalizeName("  Acme  "); err != nil || got != "Acme" {
+		t.Errorf("NormalizeName(\"  Acme  \") = %q, %v; want \"Acme\", nil", got, err)
+	}
+	for _, bad := range []string{"", "   ", strings.Repeat("x", {{.Singular}}.MaxNameLength+1)} {
+		if _, err := {{.Singular}}.NormalizeName(bad); !errors.Is(err, {{.Singular}}.ErrName) {
+			t.Errorf("NormalizeName(%q) = %v, want {{.Singular}}.ErrName", bad, err)
+		}
+	}
+	if _, err := {{.Singular}}.NormalizeName(strings.Repeat("x", {{.Singular}}.MaxNameLength)); err != nil {
+		t.Errorf("NormalizeName at the maximum length = %v, want nil", err)
+	}
+}

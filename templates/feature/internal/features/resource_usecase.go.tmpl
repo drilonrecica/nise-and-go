@@ -59,7 +59,7 @@ func (u *{{.TitlePlural}}) Create(ctx context.Context, name string) ({{.Type}}, 
 	// happened or none of it did.
 	var created {{.Type}}
 	err = u.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
-		row, err := {{.Singular}}store.New(tx).Create{{.Type}}(ctx, normalized)
+		row, err := {{.Singular}}store.New(tx).Create{{.Type}}(ctx, {{.Singular}}store.Create{{.Type}}Params{Name: normalized})
 		if err != nil {
 			return fmt.Errorf("creating the {{.Singular}}: %w", err)
 		}
@@ -88,7 +88,7 @@ func (u *{{.TitlePlural}}) Get(ctx context.Context, id string) ({{.Type}}, error
 
 	var found {{.Type}}
 	err = u.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		row, err := {{.Singular}}store.New(tx).Get{{.Type}}(ctx, identifier)
+		row, err := {{.Singular}}store.New(tx).Get{{.Type}}(ctx, {{.Singular}}store.Get{{.Type}}Params{ID: identifier})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -154,7 +154,7 @@ func (u *{{.TitlePlural}}) Delete(ctx context.Context, id string) error {
 	}
 
 	return u.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
-		affected, err := {{.Singular}}store.New(tx).Delete{{.Type}}(ctx, identifier)
+		affected, err := {{.Singular}}store.New(tx).Delete{{.Type}}(ctx, {{.Singular}}store.Delete{{.Type}}Params{ID: identifier})
 		if err != nil {
 			return fmt.Errorf("deleting the {{.Singular}}: %w", err)
 		}

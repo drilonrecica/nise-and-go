@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/drilonrecica/nise-and-go/internal/generator"
@@ -112,4 +113,44 @@ func ModulePathOf(root string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%w: its go.mod declares no module path", ErrNotAProject)
+}
+
+// NextMigrationVersion is the version a new migration is written as: one past
+// the highest already in db/migrations.
+//
+// The history has to be contiguous — the runtime's compatibility check refuses
+// a gap, and a gap is how a missing migration hides — so this reads what is
+// there rather than deriving a number from the clock. Timestamped filenames
+// would sidestep the read and reintroduce exactly the nondeterminism ADR 0002
+// forbids.
+func NextMigrationVersion(root string) (int, error) {
+	dir := filepath.Join(root, "db", "migrations")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, fmt.Errorf("%w: reading db/migrations: %w", ErrNotAProject, err)
+	}
+	highest := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		prefix, _, found := strings.Cut(entry.Name(), "_")
+		if !found {
+			continue
+		}
+		version, err := strconv.Atoi(prefix)
+		if err != nil {
+			// A file that is not NNNNN_name.sql is not part of the history and
+			// is not this function's to complain about; the migration runner
+			// is what refuses one.
+			continue
+		}
+		if version > highest {
+			highest = version
+		}
+	}
+	if highest == 0 {
+		return 0, fmt.Errorf("%w: db/migrations holds no numbered migration", ErrNotAProject)
+	}
+	return highest + 1, nil
 }

@@ -27,6 +27,12 @@ type Options struct {
 	// ModulePath is the generated project's Go module path, read from its
 	// go.mod. The generated imports need it and nothing else does.
 	ModulePath string
+	// NextMigration is the version a resource's migration is written as. It
+	// is the number after the highest already in db/migrations, read from the
+	// project: the runtime's compatibility check refuses a history with a
+	// gap, and a gap is how a missing migration hides. Ignored for a feature,
+	// which adds no table.
+	NextMigration int
 }
 
 // Insertion is one line a person adds to a file they own.
@@ -53,6 +59,11 @@ type Plan struct {
 	Files []generator.File
 	// Insertions are the edits the person makes, in the order to apply them.
 	Insertions []Insertion
+	// Commands are what to run afterwards, in order. They are printed rather
+	// than run: generation touches no toolchain, no network, and no database,
+	// and a command that quietly ran `sqlc generate` would be a command that
+	// quietly rewrote a directory.
+	Commands []string
 	// Names are the derived spellings, for the command's own output.
 	Names Names
 }
@@ -79,6 +90,9 @@ type templateData struct {
 	// wire names, for the catalog entry the command prints.
 	PermissionReadValue   string
 	PermissionManageValue string
+	// Migration is the zero-padded version a resource's migration is written
+	// as.
+	Migration string
 }
 
 // featureTemplates is every template a `generate feature` run renders, mapped
@@ -90,6 +104,24 @@ var featureTemplates = []templateFile{
 	{Template: "internal/features/domain.go.tmpl", Output: "internal/features/{{.Singular}}/domain.go"},
 	{Template: "internal/features/usecase.go.tmpl", Output: "internal/features/{{.Singular}}/usecase.go"},
 	{Template: "internal/features/feature_test.go.tmpl", Output: "internal/features/{{.Singular}}/{{.Singular}}_test.go"},
+}
+
+// resourceTemplates are the files a resource adds on top of a feature: the
+// table, the hand-written SQL that reads it, the sqlc contract that turns that
+// SQL into typed Go, and a use case that does something with all three.
+//
+// The sqlc output itself is not here. `sqlc generate` writes store/, it is
+// tool-owned, and a generator that wrote a plausible-looking copy of somebody
+// else's output would be a generator whose files disagree with the tool the
+// moment either changes.
+var resourceTemplates = []templateFile{
+	{Template: "internal/features/README.md.tmpl", Output: "internal/features/{{.Singular}}/README.md"},
+	{Template: "internal/features/domain.go.tmpl", Output: "internal/features/{{.Singular}}/domain.go"},
+	{Template: "internal/features/resource_usecase.go.tmpl", Output: "internal/features/{{.Singular}}/usecase.go"},
+	{Template: "internal/features/resource_test.go.tmpl", Output: "internal/features/{{.Singular}}/{{.Singular}}_test.go"},
+	{Template: "internal/features/sqlc.yaml.tmpl", Output: "internal/features/{{.Singular}}/sqlc.yaml"},
+	{Template: "internal/features/queries/queries.sql.tmpl", Output: "internal/features/{{.Singular}}/queries/{{.Singular}}.sql"},
+	{Template: "db/migrations/resource.sql.tmpl", Output: "db/migrations/{{.Migration}}_{{.Plural}}.sql"},
 }
 
 // templateFile maps one embedded template to its output path.
@@ -114,6 +146,14 @@ func NewPlan(opts Options) (Plan, error) {
 		return Plan{}, fmt.Errorf("feature: unknown kind %q", opts.Kind)
 	}
 
+	sources := featureTemplates
+	if opts.Kind == KindResource {
+		if opts.NextMigration < 1 {
+			return Plan{}, fmt.Errorf("feature: a resource needs the next migration version; got %d", opts.NextMigration)
+		}
+		sources = resourceTemplates
+	}
+
 	data := templateData{
 		Names:                 names,
 		ModulePath:            opts.ModulePath,
@@ -121,10 +161,11 @@ func NewPlan(opts Options) (Plan, error) {
 		PermissionManage:      names.TitlePlural + "Manage",
 		PermissionReadValue:   names.Plural + ".read",
 		PermissionManageValue: names.Plural + ".manage",
+		Migration:             fmt.Sprintf("%05d", opts.NextMigration),
 	}
 
-	files := make([]generator.File, 0, len(featureTemplates))
-	for _, tf := range featureTemplates {
+	files := make([]generator.File, 0, len(sources))
+	for _, tf := range sources {
 		source, err := templates.FeatureFS.ReadFile(path.Join(templateRoot, tf.Template))
 		if err != nil {
 			return Plan{}, fmt.Errorf("reading template %s: %w", tf.Template, err)
@@ -149,7 +190,12 @@ func NewPlan(opts Options) (Plan, error) {
 		}
 	}
 
-	return Plan{Files: files, Insertions: insertions(data), Names: names}, nil
+	return Plan{
+		Files:      files,
+		Insertions: insertions(data),
+		Commands:   commands(opts.Kind),
+		Names:      names,
+	}, nil
 }
 
 // insertions are the lines the person adds, in the order to apply them.
@@ -182,6 +228,22 @@ if err != nil {
 			Anchor:  "the import block",
 			Snippet: fmt.Sprintf(`"%s/internal/features/%s"`, data.ModulePath, data.Singular),
 		},
+	}
+}
+
+// commands are what to run after the files are written, in order.
+//
+// They are printed rather than run. Generation touches no toolchain, no
+// network, and no database — that is what makes `nise new` and `nise generate`
+// safe to run anywhere — and a command that quietly ran `sqlc generate` would
+// be one that quietly rewrote a directory.
+func commands(kind Kind) []string {
+	if kind != KindResource {
+		return nil
+	}
+	return []string{
+		"make sqlc-generate   # write internal/features/*/store from the SQL above",
+		"make migration-test  # apply the new migration against a disposable database",
 	}
 }
 

@@ -263,3 +263,120 @@ func TestModulePathOfReadsTheProjectRatherThanAsking(t *testing.T) {
 		t.Errorf("ModulePathOf in an empty directory = %v, want feature.ErrNotAProject", err)
 	}
 }
+
+func resourceOptions() feature.Options {
+	return feature.Options{
+		Kind:          feature.KindResource,
+		Name:          "order",
+		ModulePath:    "example.com/demo",
+		NextMigration: 9,
+	}
+}
+
+// TestResourcePlanWritesTheDataLayerAndNotTheToolsOutput pins what a resource
+// adds and, just as importantly, what it does not: sqlc's store/ is written by
+// sqlc, and a generator that wrote a plausible copy of another tool's output
+// would produce files that disagree with the tool the moment either changes.
+func TestResourcePlanWritesTheDataLayerAndNotTheToolsOutput(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, resourceOptions())
+
+	for _, path := range []string{
+		"db/migrations/00009_orders.sql",
+		"internal/features/order/queries/order.sql",
+		"internal/features/order/sqlc.yaml",
+		"internal/features/order/usecase.go",
+		"internal/features/order/order_test.go",
+	} {
+		if _, exists := content[path]; !exists {
+			t.Errorf("the resource plan lacks %s", path)
+		}
+	}
+	for path := range content {
+		if strings.Contains(path, "/store/") {
+			t.Errorf("the plan writes %s; store/ is sqlc's output, not nise's", path)
+		}
+	}
+}
+
+// TestResourceMigrationIsNumberedNotTimestamped keeps the history contiguous.
+// The runtime's compatibility check refuses a gap, and a gap is how a missing
+// migration hides; a timestamped filename would also reintroduce exactly the
+// nondeterminism ADR 0002 forbids.
+func TestResourceMigrationIsNumberedNotTimestamped(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, resourceOptions())
+	migration, exists := content["db/migrations/00009_orders.sql"]
+	if !exists {
+		t.Fatal("the migration is not numbered 00009")
+	}
+	for _, fragment := range []string{
+		"-- +goose Up",
+		"-- +goose Down",
+		"CREATE TABLE orders (",
+		// The bound is in the database as well as in Go: a check the database
+		// enforces holds for a bulk import and a hand-written UPDATE too.
+		"CHECK (length(name) BETWEEN 1 AND 200)",
+		// The index matches the list's (created_at, id) order exactly; an
+		// index in a different order is one the planner will not use.
+		"CREATE INDEX orders_created_at_id_idx ON orders (created_at DESC, id DESC);",
+	} {
+		if !strings.Contains(migration, fragment) {
+			t.Errorf("the migration lacks %q", fragment)
+		}
+	}
+
+	// A resource with no migration number is refused rather than numbered
+	// zero, or numbered from the clock.
+	opts := resourceOptions()
+	opts.NextMigration = 0
+	if _, err := feature.NewPlan(opts); err == nil {
+		t.Error("NewPlan accepted a resource with no migration version")
+	}
+}
+
+// TestResourceQueriesCarryNoOwnershipHeader is ADR 0009's resolution for a
+// file format whose comments are copied elsewhere: sqlc puts a query's leading
+// comment into the generated Go doc comment, so a Nise header there would
+// appear inside a tool-owned file and contradict that file's own marker.
+func TestResourceQueriesCarryNoOwnershipHeader(t *testing.T) {
+	t.Parallel()
+
+	queries := planContent(t, resourceOptions())["internal/features/order/queries/order.sql"]
+	if strings.Contains(queries, "Generated once by nise") {
+		t.Error("the query file carries an ownership header; sqlc would copy it into its own output")
+	}
+	// The query names are the exported Go identifiers sqlc will emit, so the
+	// plural has to be the title-cased one.
+	if !strings.Contains(queries, "-- name: ListOrders :many") {
+		t.Error("the list query is not named ListOrders")
+	}
+}
+
+// TestResourcePlanNamesTheFollowUpCommands covers the other half of ADR 0026:
+// generation runs no toolchain, so what has to run afterwards is printed.
+func TestResourcePlanNamesTheFollowUpCommands(t *testing.T) {
+	t.Parallel()
+
+	plan, err := feature.NewPlan(resourceOptions())
+	if err != nil {
+		t.Fatalf("NewPlan: %v", err)
+	}
+	if len(plan.Commands) == 0 {
+		t.Fatal("a resource plan names no follow-up commands; store/ would never be written")
+	}
+	if !strings.Contains(plan.Commands[0], "sqlc-generate") {
+		t.Errorf("the first command is %q, want sqlc generation first", plan.Commands[0])
+	}
+
+	// A feature adds no table and no SQL, so it needs none of them.
+	featurePlan, err := feature.NewPlan(featureOptions())
+	if err != nil {
+		t.Fatalf("NewPlan: %v", err)
+	}
+	if len(featurePlan.Commands) != 0 {
+		t.Errorf("a feature plan names commands %v; it adds no SQL", featurePlan.Commands)
+	}
+}

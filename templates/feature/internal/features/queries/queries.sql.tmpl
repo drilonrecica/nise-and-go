@@ -1,0 +1,52 @@
+-- Hand-written SQL, and the input to sqlc. This file has no ownership header:
+-- sqlc copies a query's leading comment into the generated Go doc comment, so
+-- a header here would appear inside a tool-owned file and contradict that
+-- file's own marker. queries/ is application-owned and store/ is tool-owned;
+-- the two directory names are the declaration (ADR 0009, ADR 0014).
+--
+-- Nise wrote four queries and no domain rules. Add what this feature needs.
+
+-- Create{{.Type}} inserts one record. The database assigns the identifier and
+-- both timestamps, so two replicas cannot disagree about when something
+-- happened by disagreeing about the time.
+-- name: Create{{.Type}} :one
+INSERT INTO {{.Plural}} (name)
+VALUES ($1)
+RETURNING *;
+
+-- Get{{.Type}} reads one by identifier.
+-- name: Get{{.Type}} :one
+SELECT * FROM {{.Plural}}
+WHERE id = $1;
+
+-- List{{.TitlePlural}} pages newest first, after an optional (created_at, id)
+-- position. The tuple comparison is what makes the page boundary exact when
+-- several rows share an instant, which is common when a batch creates many at
+-- once; comparing created_at alone would skip or repeat rows at the boundary.
+--
+-- The limit is bounded by the caller, and the search is a plain prefix match:
+-- replace it with whatever this domain actually searches by, and remember that
+-- a LIKE with a leading wildcard cannot use an index.
+-- name: List{{.TitlePlural}} :many
+SELECT * FROM {{.Plural}}
+WHERE (sqlc.narg('search')::text IS NULL OR name ILIKE sqlc.narg('search')::text || '%')
+  AND (
+    sqlc.narg('after_created_at')::timestamptz IS NULL
+    OR (created_at, id) < (sqlc.narg('after_created_at')::timestamptz, sqlc.narg('after_id')::uuid)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg('page_size');
+
+-- Update{{.Type}} renames one. updated_at is set by the database rather than
+-- by the caller, for the same reason created_at is.
+-- name: Update{{.Type}} :one
+UPDATE {{.Plural}}
+SET name = $2, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- Delete{{.Type}} removes one and reports whether anything matched, so the use
+-- case can tell "deleted" from "was never there" without a second read.
+-- name: Delete{{.Type}} :execrows
+DELETE FROM {{.Plural}}
+WHERE id = $1;
