@@ -82,6 +82,9 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   Authority is resolved once per request by middleware that never rejects.
   Role changes, account status changes, and reading the audit log are now
   enforced in their use cases. Adds the `permission_denied` Problem type.
+- Add local known-compromised password refusal: `password.Compromised` and an
+  embedded list of the passwords at the top of every credential-stuffing list,
+  checked offline. Nise ships no remote checker (ADR 0020).
 
 ### Fixed
 

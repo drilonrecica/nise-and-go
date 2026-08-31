@@ -36,6 +36,15 @@
 // costs, or the response time answers "does this person have an account here"
 // to anyone who asks.
 //
+// # Known-compromised passwords
+//
+// [BuiltinCommonList] refuses the passwords at the top of every
+// credential-stuffing list, offline. It is not a breach corpus and this package
+// never calls it one. [Compromised] is an interface so an owner who wants the
+// full corpus supplies it — and makes the privacy decision that comes with
+// sending anything about a password anywhere — rather than inheriting that
+// decision from a framework default.
+//
 // # Benchmarking
 //
 // [Recommend] measures this machine and reports the strongest parameters that
