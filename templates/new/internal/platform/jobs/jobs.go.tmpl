@@ -176,7 +176,15 @@ func New(pool *pgxpool.Pool, registry *Registry, settings Settings, logger *slog
 		return nil, errors.New("jobs: a logger is required")
 	}
 
-	cfg := &river.Config{Logger: logger}
+	cfg := &river.Config{
+		Logger: logger,
+		// Retry, timeout, and attempt limits are this application's, not
+		// River's defaults. See retry.go for the schedule and why it is
+		// shorter and jittered.
+		JobTimeout:  DefaultJobTimeout,
+		MaxAttempts: DefaultMaxAttempts,
+		RetryPolicy: NewRetryPolicy(),
+	}
 	works := len(registry.kinds) > 0
 	if works {
 		// Queues and Workers are set together or not at all: River treats a

@@ -1,0 +1,199 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package jobs
+
+import (
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
+)
+
+// fixedRetryNow is the instant the deterministic schedule tests read.
+var fixedRetryNow = time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+
+// policyWithJitter returns a policy whose clock is fixed and whose jitter is
+// the given constant, so a schedule can be asserted exactly. random == 0 is
+// the earliest a retry can be scheduled, random == 1 the latest.
+func policyWithJitter(random float64) *RetryPolicy {
+	return &RetryPolicy{
+		now:    func() time.Time { return fixedRetryNow },
+		random: func() float64 { return random },
+	}
+}
+
+func jobWithFailures(n int) *rivertype.JobRow {
+	return &rivertype.JobRow{Errors: make([]rivertype.AttemptError, n)}
+}
+
+// TestBackoffFollowsTheDocumentedSchedule pins the table in retry.go's doc
+// comment to the code that produces it. The delays are the pre-jitter values
+// halved, which is the floor of the jittered interval.
+func TestBackoffFollowsTheDocumentedSchedule(t *testing.T) {
+	t.Parallel()
+
+	// The documented schedule, before jitter.
+	want := []time.Duration{
+		2 * time.Second,
+		6 * time.Second,
+		18 * time.Second,
+		54 * time.Second,
+		162 * time.Second,
+		486 * time.Second,
+		1458 * time.Second,
+		RetryMaxDelay,
+		RetryMaxDelay,
+		RetryMaxDelay,
+		RetryMaxDelay,
+	}
+
+	floor := policyWithJitter(0)
+	ceiling := policyWithJitter(1)
+	for failures, full := range want {
+		gotFloor := floor.backoff(failures)
+		gotCeiling := ceiling.backoff(failures)
+		if gotFloor != full/2 {
+			t.Errorf("after %d failures: earliest retry = %s, want %s", failures, gotFloor, full/2)
+		}
+		if gotCeiling != full {
+			t.Errorf("after %d failures: latest retry = %s, want %s", failures, gotCeiling, full)
+		}
+	}
+}
+
+// TestTheScheduleIsCappedAndNeverOverflows covers the degenerate end. A
+// failure count far past the attempt limit is reachable through a rescued
+// job, and math.Pow reaches +Inf long before any int does.
+func TestTheScheduleIsCappedAndNeverOverflows(t *testing.T) {
+	t.Parallel()
+
+	p := policyWithJitter(1)
+	for _, failures := range []int{-1, 0, 20, 100, 1_000, 100_000} {
+		got := p.backoff(failures)
+		if got < 0 {
+			t.Errorf("after %d failures: backoff = %s, want a non-negative duration", failures, got)
+		}
+		if got > RetryMaxDelay {
+			t.Errorf("after %d failures: backoff = %s, want no more than the %s cap", failures, got, RetryMaxDelay)
+		}
+	}
+}
+
+// TestJitterSpreadsARetryCrowd is the property the policy exists for. Two
+// jobs that failed in the same instant must not be scheduled to return in the
+// same instant, because that is how a recovery becomes a second outage.
+//
+// The clock is frozen, and that is the whole design of this test rather than
+// a detail of it. Read from the real clock, two hundred calls produce two
+// hundred distinct times whether or not any jitter is applied — the wall
+// clock moved between them — and the test passes against a policy with the
+// jitter deleted. Which it did, when this was written that way. Freezing time
+// leaves the random draw as the only thing that can differ.
+func TestJitterSpreadsARetryCrowd(t *testing.T) {
+	t.Parallel()
+
+	// A fixed clock and the production random source.
+	p := &RetryPolicy{now: func() time.Time { return fixedRetryNow }}
+	job := jobWithFailures(3)
+
+	seen := make(map[time.Time]struct{})
+	const crowd = 200
+	for range crowd {
+		seen[p.NextRetry(job)] = struct{}{}
+	}
+	// The interval is 27 seconds wide at nanosecond resolution, so
+	// collisions are essentially impossible; requiring a healthy majority
+	// rather than all of them keeps this a test about spread and not about
+	// the random source's exact distribution.
+	if len(seen) < crowd/2 {
+		t.Errorf("%d retries from one instant produced only %d distinct times; the crowd was not spread", crowd, len(seen))
+	}
+}
+
+// TestJitterNeverSchedulesARetryImmediately is why the scheme is equal jitter
+// rather than full jitter. The first retry after an outage is the worst
+// possible moment to arrive without delay.
+func TestJitterNeverSchedulesARetryImmediately(t *testing.T) {
+	t.Parallel()
+
+	p := &RetryPolicy{now: func() time.Time { return fixedRetryNow }}
+	job := jobWithFailures(0)
+	earliest := RetryBaseDelay / 2
+
+	for range 500 {
+		if delay := p.NextRetry(job).Sub(fixedRetryNow); delay < earliest {
+			t.Fatalf("a retry was scheduled %s out, inside the %s floor", delay, earliest)
+		}
+	}
+}
+
+// TestNextRetryCountsErrorsNotAttempts covers the accounting River itself
+// uses: a snooze decrements the attempt counter, so a job that snoozed and
+// then failed would be rescheduled as though it had never failed.
+func TestNextRetryCountsErrorsNotAttempts(t *testing.T) {
+	t.Parallel()
+
+	p := policyWithJitter(0)
+	snoozedThenFailed := &rivertype.JobRow{
+		Attempt: 1,
+		Errors:  make([]rivertype.AttemptError, 4),
+	}
+	got := p.NextRetry(snoozedThenFailed).Sub(fixedRetryNow)
+	want := p.backoff(4)
+	if got != want {
+		t.Errorf("NextRetry scheduled %s out, want %s — the attempt count was used instead of the error count", got, want)
+	}
+}
+
+func TestTerminalMarksAFailureAsFinal(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("the invoice was deleted")
+	err := Terminal(cause)
+
+	if !IsTerminal(err) {
+		t.Error("IsTerminal(Terminal(err)) = false")
+	}
+	if !errors.Is(err, cause) {
+		t.Error("Terminal discarded the cause; the last recorded error would say nothing")
+	}
+	if Terminal(nil) != nil {
+		t.Error("Terminal(nil) is not nil; a job that succeeded would be discarded")
+	}
+	if IsTerminal(cause) {
+		t.Error("IsTerminal reports true for an ordinary error")
+	}
+	if IsTerminal(nil) {
+		t.Error("IsTerminal(nil) = true")
+	}
+}
+
+// TestTerminalSurvivesWrapping matters because a worker composes errors: the
+// decision that a failure is final must not be lost the moment somebody adds
+// context to it.
+func TestTerminalSurvivesWrapping(t *testing.T) {
+	t.Parallel()
+
+	wrapped := errors.Join(errors.New("sending the receipt"), Terminal(errors.New("no such invoice")))
+	if !IsTerminal(wrapped) {
+		t.Error("IsTerminal = false for a wrapped terminal failure")
+	}
+}
+
+func TestSnoozeDoesNotPanicOnANegativeDuration(t *testing.T) {
+	t.Parallel()
+
+	var snooze *river.JobSnoozeError
+	err := Snooze(-time.Hour)
+	if !errors.As(err, &snooze) {
+		t.Fatalf("Snooze(-1h) = %v, want a snooze error", err)
+	}
+	if snooze.Duration != 0 {
+		t.Errorf("Snooze(-1h) duration = %s, want 0", snooze.Duration)
+	}
+	if IsTerminal(err) {
+		t.Error("a snooze reports as terminal; the job would be discarded rather than retried")
+	}
+}

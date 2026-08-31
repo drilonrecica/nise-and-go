@@ -140,6 +140,100 @@ The counts are read straight out of `river_job` on a separate connection.
 Reading them back through River's own API would prove only that River agrees
 with itself.
 
+## When a job fails
+
+A failure is retried on this schedule, before jitter:
+
+| Attempt | Delay before it |
+|---:|---|
+| 1 | 2s |
+| 2 | 6s |
+| 3 | 18s |
+| 4 | 54s |
+| 5 | 2m42s |
+| 6 | 8m6s |
+| 7 | 24m18s |
+| 8–12 | 30m (the cap) |
+
+Twelve attempts over roughly three hours, then the job is **discarded** — it
+stays in `river_job` with its recorded errors, so it can be found and read,
+but it is not tried again.
+
+That window is chosen against how long incidents last, not against how many
+retries feel generous. It is long enough to ride out a database failover, a
+restarted dependency, or a credential somebody has to rotate by hand, and
+short enough that a job which is simply broken reaches the discard pile while
+the deploy that broke it is still the obvious suspect. River's own default —
+twenty-five attempts on an `attempt⁴` curve — keeps retrying for four and a
+half days, by which point nobody is looking.
+
+### Jitter
+
+Each delay is randomized: half of it, plus a random amount up to the other
+half.
+
+This is the part that earns the custom policy. Failures arrive in crowds — a
+database goes away and every job running at that moment fails within the same
+second. Retried on an identical schedule they come back in the same crowd, at
+the same instant, at a database that has just recovered. That is how a
+recovery becomes a second outage and a retry loop becomes the thing keeping
+the system down.
+
+Halving rather than randomizing across the whole interval ("full jitter")
+keeps a floor: the first retry after an outage should not be able to land
+almost immediately, which is exactly the wrong moment.
+
+### Timeouts
+
+A job may run for one minute before its context is canceled. A job that needs
+longer says so:
+
+```go
+func (SlowReportWorker) Timeout(*river.Job[SlowReportArgs]) time.Duration {
+    return 15 * time.Minute
+}
+```
+
+A worker that ignores context cancellation cannot be timed out. Respect
+`ctx.Done()` in anything that waits.
+
+### Terminal failure
+
+Some failures are not transient and never will be: arguments that do not
+parse, an entity that has since been deleted, a request the far side calls
+invalid. Returning one as an ordinary error spends three hours and eleven more
+attempts confirming it, and buries the one useful message under twelve
+identical ones.
+
+```go
+if errors.Is(err, ErrInvoiceDeleted) {
+    return jobs.Terminal(err)
+}
+```
+
+The job is discarded immediately with `err` as its last recorded error.
+
+### Not ready yet
+
+"Not ready" is not a failure. A document still converting, a rate limit with a
+stated reset, a dependency that told you when to come back:
+
+```go
+return jobs.Snooze(retryAfter)
+```
+
+A snooze does not count as an attempt, so a job can be patient without being
+discarded for it. It also does not back off and does not jitter, so bound it
+with something the job itself can check — a job that snoozes unconditionally
+never fails and never finishes.
+
+### Per-job overrides
+
+The numbers above are the client-level defaults. A job type sets its own by
+implementing `NextRetry` or `Timeout`, or by passing `river.InsertOpts` at
+enqueue time — `MaxAttempts`, `Priority`, `ScheduledAt`, and a different
+queue among them.
+
 ## Every job must be safe to run twice
 
 A process killed mid-job leaves its row in the `running` state, and the next

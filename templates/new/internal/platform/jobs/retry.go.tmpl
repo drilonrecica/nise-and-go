@@ -1,0 +1,186 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package jobs
+
+import (
+	"errors"
+	"math"
+	"math/rand/v2"
+	"time"
+
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
+)
+
+// The retry contract every job in this application inherits.
+//
+// A job fails. What happens next has to be a decision somebody made, because
+// every part of it is a trade-off between recovering from a real outage and
+// making one worse. These are that decision, written down as constants a
+// reader can change and a test can check.
+//
+//	attempt   delay before it (before jitter)
+//	      1   2s
+//	      2   6s
+//	      3   18s
+//	      4   54s
+//	      5   2m42s
+//	      6   8m6s
+//	      7   24m18s
+//	   8–12   30m (the cap)
+//
+// Twelve attempts spread over roughly three hours. That window is chosen
+// against how long incidents last, not against how many retries feel
+// generous: it is long enough to ride out a database failover, a restarted
+// dependency, or an expired credential somebody has to rotate by hand, and
+// short enough that a job which is simply broken reaches the discard pile
+// while the deploy that broke it is still the obvious suspect. River's own
+// default — twenty-five attempts on an attempt^4 curve — keeps retrying for
+// four and a half days, by which time nobody is looking.
+const (
+	// DefaultMaxAttempts is how many times a job is tried before it is
+	// discarded. It counts the first attempt, so twelve means one run and
+	// eleven retries.
+	DefaultMaxAttempts = 12
+
+	// RetryBaseDelay is the delay before the first retry.
+	RetryBaseDelay = 2 * time.Second
+
+	// RetryFactor multiplies the delay after each further failure. Three
+	// rather than two: doubling from a two-second base spends its first six
+	// retries inside the first two minutes, which is a lot of load aimed at
+	// something that has not had time to recover.
+	RetryFactor = 3
+
+	// RetryMaxDelay caps the backoff. Without a cap, exponential growth's
+	// last steps are measured in days, and a job scheduled two days out is
+	// indistinguishable to everyone involved from a job that was lost.
+	RetryMaxDelay = 30 * time.Minute
+
+	// DefaultJobTimeout is how long a job may run before its context is
+	// canceled. A job that needs longer says so by implementing Timeout;
+	// see the package documentation.
+	DefaultJobTimeout = time.Minute
+)
+
+// RetryPolicy schedules a failed job's next attempt with exponential backoff
+// and jitter.
+//
+// The jitter is the part that matters, and it is why this type exists rather
+// than River's default. Failures arrive in crowds: a database goes away and
+// every job running at that moment fails within the same second. Retried on
+// an identical schedule they arrive back in the same crowd, at the same
+// instant, on a database that has just come back — which is how a recovery
+// turns into a second outage, and how a retry loop becomes the thing keeping
+// the system down.
+//
+// The scheme is equal jitter: half the computed delay, plus a random amount
+// up to the other half. Full jitter — a uniform draw across the whole
+// interval — spreads slightly better but lets a retry land almost
+// immediately, which for the first attempt after an outage is exactly the
+// wrong moment. Halving keeps a floor and still halves the crowd.
+type RetryPolicy struct {
+	// now and random are injected so the schedule is testable. Production
+	// leaves both nil.
+	now    func() time.Time
+	random func() float64
+}
+
+// NewRetryPolicy returns the policy every client is configured with.
+func NewRetryPolicy() *RetryPolicy { return &RetryPolicy{} }
+
+// NextRetry implements river.ClientRetryPolicy.
+//
+// It counts errors rather than attempts, matching River's own accounting: a
+// snoozed job decrements its attempt counter, so a job that snoozes and then
+// fails would otherwise be scheduled as if it had never failed before.
+func (p *RetryPolicy) NextRetry(job *rivertype.JobRow) time.Time {
+	return p.timeNow().Add(p.backoff(len(job.Errors)))
+}
+
+// backoff returns the delay before the retry that follows failures-many
+// failures. failures is zero for the first failure a job has recorded.
+func (p *RetryPolicy) backoff(failures int) time.Duration {
+	if failures < 0 {
+		failures = 0
+	}
+
+	delay := float64(RetryBaseDelay) * math.Pow(RetryFactor, float64(failures))
+	// math.Pow overflows to +Inf long before a plausible failure count, and
+	// converting +Inf to a Duration is undefined. Compare in float, where
+	// +Inf compares correctly, before converting.
+	if delay > float64(RetryMaxDelay) || math.IsInf(delay, 1) || math.IsNaN(delay) {
+		delay = float64(RetryMaxDelay)
+	}
+
+	half := time.Duration(delay / 2)
+	return half + time.Duration(p.randomFloat()*float64(half))
+}
+
+func (p *RetryPolicy) timeNow() time.Time {
+	if p.now != nil {
+		return p.now()
+	}
+	return time.Now().UTC()
+}
+
+func (p *RetryPolicy) randomFloat() float64 {
+	if p.random != nil {
+		return p.random()
+	}
+	return rand.Float64() //nolint:gosec // G404: scheduling jitter, not a secret.
+}
+
+// Terminal marks a failure that retrying cannot fix.
+//
+// Some failures are not transient and never will be: arguments that do not
+// parse, an entity the job was about that has since been deleted, a request
+// the far side has rejected as invalid. Returning such a failure as an
+// ordinary error spends three hours and eleven more attempts confirming it,
+// and buries the one useful error message under twelve identical ones.
+//
+// A job returning Terminal is discarded immediately, with err recorded as its
+// last error. The row stays in the database, so the failure is still
+// something an operator can find and read.
+//
+//	if errors.Is(err, ErrInvoiceDeleted) {
+//	    return jobs.Terminal(err)
+//	}
+func Terminal(err error) error {
+	if err == nil {
+		return nil
+	}
+	return river.JobCancel(err)
+}
+
+// Snooze puts a job back on the queue after d without counting the attempt
+// against it.
+//
+// This is the answer to "not ready yet" — a document still being converted, a
+// rate limit with a stated reset, a dependency that told you when to come
+// back. Expressing that as an error works exactly until the eleventh time,
+// when the job is discarded for having been patient.
+//
+// Snooze is not a substitute for retry: it does not back off, it does not
+// jitter, and a job that snoozes unconditionally never fails and never
+// finishes. Bound it with something the job itself can check.
+//
+// A duration of zero makes the job available again immediately, which River
+// documents as the right answer for work interrupted by shutdown. A negative
+// duration would panic inside River, so it is clamped to zero here rather
+// than crashing a worker on an arithmetic slip.
+func Snooze(d time.Duration) error {
+	if d < 0 {
+		d = 0
+	}
+	return river.JobSnooze(d)
+}
+
+// IsTerminal reports whether err marks a failure retrying cannot fix — either
+// one this application produced with [Terminal], or a cancellation an
+// operator requested. It is here for a worker composing another worker's
+// error, and for tests.
+func IsTerminal(err error) bool {
+	var cancel *river.JobCancelError
+	return errors.As(err, &cancel) || errors.Is(err, river.ErrJobCancelledRemotely)
+}
