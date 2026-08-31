@@ -122,6 +122,8 @@ var resourceTemplates = []templateFile{
 	{Template: "internal/features/sqlc.yaml.tmpl", Output: "internal/features/{{.Singular}}/sqlc.yaml"},
 	{Template: "internal/features/queries/queries.sql.tmpl", Output: "internal/features/{{.Singular}}/queries/{{.Singular}}.sql"},
 	{Template: "db/migrations/resource.sql.tmpl", Output: "db/migrations/{{.Migration}}_{{.Plural}}.sql"},
+	{Template: "api/resource.yaml.tmpl", Output: "api/{{.Singular}}.yaml"},
+	{Template: "internal/platform/httpapi/resource.go.tmpl", Output: "internal/platform/httpapi/{{.Singular}}.go"},
 }
 
 // templateFile maps one embedded template to its output path.
@@ -204,7 +206,7 @@ func NewPlan(opts Options) (Plan, error) {
 // before the use case that checks them is constructed, and the use case exists
 // before anything is wired to it.
 func insertions(data templateData) []Insertion {
-	return []Insertion{
+	shared := []Insertion{
 		{
 			File:   "internal/platform/authorization/catalog.go",
 			Anchor: "the permission block, the permissions() list, and the administrator role",
@@ -229,6 +231,55 @@ if err != nil {
 			Snippet: fmt.Sprintf(`"%s/internal/features/%s"`, data.ModulePath, data.Singular),
 		},
 	}
+	if data.Migration == "" {
+		return shared
+	}
+	return append(shared,
+		Insertion{
+			File:   "api/openapi.yaml",
+			Anchor: "paths: and components.schemas:",
+			Snippet: fmt.Sprintf(`Merge api/%s.yaml into it: its paths: entries under paths:, and its
+components.schemas: entries under components.schemas:. Every $ref in the
+fragment is already written to resolve once merged. Delete the fragment
+afterwards — openapi.yaml stays the single authoritative document, and a
+second file that generated code also read would be a second contract to
+keep in step.`, data.Singular),
+		},
+		Insertion{
+			File:   "internal/platform/httpapi/api.go",
+			Anchor: "the Server struct, the ServerDeps struct, and NewServer's nil check and assignment",
+			Snippet: fmt.Sprintf(`// in Server:
+	%s *%s.%s
+// in ServerDeps:
+	// %s is the %s use case.
+	%s *%s.%s
+// in NewServer's switch, beside the other required dependencies:
+	case deps.%s == nil:
+		return nil, errors.New("httpapi: the %s use case is required")
+// and in the returned &Server{...}:
+	%s: deps.%s,`,
+				data.Plural, data.Singular, data.TitlePlural,
+				data.TitlePlural, data.Singular,
+				data.TitlePlural, data.Singular, data.TitlePlural,
+				data.TitlePlural, data.Singular,
+				data.Plural, data.TitlePlural),
+		},
+		Insertion{
+			File:    "internal/app/app.go",
+			Anchor:  "the httpapi.ServerDeps literal",
+			Snippet: fmt.Sprintf(`%s: %s,`, data.TitlePlural, data.Plural),
+		},
+		Insertion{
+			File:   "internal/platform/httpapi/api_test.go",
+			Anchor: "testServerDeps, beside the other dependencies",
+			Snippet: fmt.Sprintf(`%s: &%s.%s{},
+
+// NewServer refuses a missing dependency, which is what makes a half-wired
+// surface a startup failure rather than a nil dereference on the first
+// request — so the project's own test helper has to supply this one too.`,
+				data.TitlePlural, data.Singular, data.TitlePlural),
+		},
+	)
 }
 
 // commands are what to run after the files are written, in order.
@@ -242,8 +293,10 @@ func commands(kind Kind) []string {
 		return nil
 	}
 	return []string{
-		"make sqlc-generate   # write internal/features/*/store from the SQL above",
-		"make migration-test  # apply the new migration against a disposable database",
+		"make sqlc-generate     # write internal/features/*/store from the SQL above",
+		"make api-generate      # regenerate the strict bindings from the contract",
+		"make api-types-generate # regenerate the frontend's models from the same",
+		"make migration-test    # apply the new migration against a disposable database",
 	}
 }
 

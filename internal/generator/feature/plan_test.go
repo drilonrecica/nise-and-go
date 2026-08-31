@@ -380,3 +380,73 @@ func TestResourcePlanNamesTheFollowUpCommands(t *testing.T) {
 		t.Errorf("a feature plan names commands %v; it adds no SQL", featurePlan.Commands)
 	}
 }
+
+// TestResourceContractIsAFragmentThatMerges pins how the OpenAPI reaches the
+// authoritative document: as a fragment whose refs resolve after a merge, not
+// as a second document generated code also reads.
+//
+// External `$ref` across files was the first shape tried and does not work:
+// the pinned generator refuses a back-reference into the main document without
+// an import mapping. A fragment written to merge is what remains, and it keeps
+// api/openapi.yaml the single authoritative contract.
+func TestResourceContractIsAFragmentThatMerges(t *testing.T) {
+	t.Parallel()
+
+	fragment, exists := planContent(t, resourceOptions())["api/order.yaml"]
+	if !exists {
+		t.Fatal("the resource plan has no OpenAPI fragment")
+	}
+	// Every reference is local, so it resolves once merged.
+	if strings.Contains(fragment, "openapi.yaml#") {
+		t.Error("the fragment refers back to openapi.yaml; that does not resolve for the pinned generator")
+	}
+	for _, fragmentText := range []string{
+		"operationId: listOrders",
+		"operationId: createOrder",
+		"operationId: getOrder",
+		"operationId: updateOrder",
+		"operationId: deleteOrder",
+		// The domain-command example: a verb with its own permission and its
+		// own meaning, rather than a nullable field on the record.
+		"operationId: archiveOrder",
+		// The input is a separate schema from the resource: the identifier and
+		// the timestamps are the server's.
+		"OrderInput:",
+		"additionalProperties: false",
+	} {
+		if !strings.Contains(fragment, fragmentText) {
+			t.Errorf("the fragment lacks %q", fragmentText)
+		}
+	}
+}
+
+// TestResourceHandlerDelegatesAndDecidesNothing pins the transport rule: the
+// handler translates, and every decision belongs to the use case.
+func TestResourceHandlerDelegatesAndDecidesNothing(t *testing.T) {
+	t.Parallel()
+
+	handler, exists := planContent(t, resourceOptions())["internal/platform/httpapi/order.go"]
+	if !exists {
+		t.Fatal("the resource plan has no handler")
+	}
+	for _, fragment := range []string{
+		"func (s *Server) ListOrders(",
+		"func (s *Server) ArchiveOrder(",
+		// Every operation checks for a session before it reaches a use case.
+		"if _, err := requireSession(ctx); err != nil {",
+		// The cursor's binding fingerprints this operation's own filters, so
+		// changing a filter invalidates a cursor rather than paging into a
+		// different result set.
+		"pagination.NewBinding(orderResource, filters)",
+		// A collection is never null.
+		"items := make([]openapigen.Order, 0, len(page.Items))",
+	} {
+		if !strings.Contains(handler, fragment) {
+			t.Errorf("the handler lacks %q", fragment)
+		}
+	}
+	// No authorization decision in the transport: the use case owns it.
+	if strings.Contains(handler, "authorization.Require(") {
+		t.Error("the handler checks a permission itself; that belongs in the use case, where every caller reaches it")
+	}
+}

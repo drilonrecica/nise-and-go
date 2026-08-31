@@ -1,0 +1,227 @@
+# Generated once by nise; owned by this application. Nise will not overwrite it.
+#
+# A fragment to merge into api/openapi.yaml, not a second contract.
+#
+# Copy its `paths:` entries under that document's `paths:`, and its
+# `components.schemas:` entries under its `components.schemas:`. Every $ref
+# below is written as `#/components/...` so that it resolves once merged.
+# `nise generate` printed the instruction and deliberately did not do the
+# merge: that document is yours, and a generator that reformatted your contract
+# while inserting a path is a generator you would stop running (ADR 0026).
+#
+# Delete this file once you have merged it. It is a starting point, not a
+# source: api/openapi.yaml stays the single authoritative document, and a
+# second file that generated code also read would be a second contract to keep
+# in step.
+#
+# Nise wrote the four CRUD operations and one domain command. It invented no
+# fields: a {{.Title}} has an identifier, a name, and timestamps, and every
+# other property is a decision for whoever knows the domain.
+openapi: 3.0.3
+info:
+  title: "{{.TitlePlural}}"
+  version: 1.0.0
+paths:
+  /{{.Plural}}:
+    get:
+      operationId: list{{.TitlePlural}}
+      summary: List {{.Plural}}
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: A prefix search over the name.
+          schema:
+            type: string
+            maxLength: 200
+        - $ref: '#/components/parameters/CursorLimit'
+        - $ref: '#/components/parameters/CursorAfter'
+        - $ref: '#/components/parameters/CursorBefore'
+      responses:
+        "200":
+          description: A page of {{.Plural}}.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/{{.Type}}CursorCollection'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: create{{.Type}}
+      summary: Create one {{.Singular}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/{{.Type}}Input'
+      responses:
+        "201":
+          description: The created {{.Singular}}.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/{{.Type}}'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "422":
+          $ref: '#/components/responses/Problem'
+  /{{.Plural}}/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/{{.Type}}Id'
+    get:
+      operationId: get{{.Type}}
+      summary: Read one {{.Singular}}
+      responses:
+        "200":
+          description: The {{.Singular}}.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/{{.Type}}'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+    put:
+      operationId: update{{.Type}}
+      summary: Replace one {{.Singular}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/{{.Type}}Input'
+      responses:
+        "200":
+          description: The updated {{.Singular}}.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/{{.Type}}'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+        "422":
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: delete{{.Type}}
+      summary: Remove one {{.Singular}}
+      responses:
+        "204":
+          description: The {{.Singular}} is gone.
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+  /{{.Plural}}/{id}/archive:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/{{.Type}}Id'
+    post:
+      operationId: archive{{.Type}}
+      summary: Archive one {{.Singular}}
+      description: >-
+        The domain-command example, and the reason this contract is not only
+        CRUD. Archiving is not "PUT with a different field": it has its own
+        permission, its own audit meaning, and its own rules about when it is
+        allowed. Expressing it as a command says all of that in the URL, and
+        keeps the resource's own representation from growing a field whose
+        value is really a verb.
+
+        It is idempotent by construction — archiving an archived
+        {{.Singular}} answers the same way — so it needs no Idempotency-Key.
+        A command that is not, such as one that charges something, takes the
+        `IdempotencyKey` header parameter from the main document.
+
+        Delete this path if this domain has no such command. Do not delete the
+        idea: the moment something has a verb, it belongs here rather than in
+        a nullable field.
+      responses:
+        "200":
+          description: The archived {{.Singular}}.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/{{.Type}}'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+components:
+  schemas:
+    {{.Type}}Id:
+      type: string
+      description: An opaque identifier. Do not parse it.
+      minLength: 1
+      maxLength: 64
+      pattern: '^[A-Za-z0-9-]+$'
+    {{.Type}}:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - created_at
+        - updated_at
+      properties:
+        id:
+          $ref: '#/components/schemas/{{.Type}}Id'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    {{.Type}}Input:
+      type: object
+      additionalProperties: false
+      description: >-
+        What a caller may set. It is a separate schema from {{.Type}} on
+        purpose: the identifier and the timestamps are the server's, and a
+        request body that accepted them would be a request body somebody
+        eventually populates.
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+    {{.Type}}CursorCollection:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - page
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/{{.Type}}'
+        page:
+          $ref: '#/components/schemas/CursorPage'
