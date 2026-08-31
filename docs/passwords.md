@@ -85,6 +85,31 @@ and identical response bodies do not fix that.
 The dummy record is generated at policy construction, so two deployments never
 share one, and the cost is paid once rather than per request.
 
+## Known-compromised passwords
+
+A generated application refuses the passwords that appear at the top of every
+credential-stuffing list. The list is embedded in `runtime/password`, checked in
+memory, and folds case and surrounding whitespace.
+
+**It is not a breach corpus.** It stops `password`, `qwerty`, `changeme`, and
+their neighbours — most of what an unthrottled stuffing run actually tries — and
+stops nothing else. Folding is limited to case and whitespace: stripping digits
+or punctuation so `p@ssw0rd!` matched `password` would claim far more than this
+list can support and would refuse passwords that are genuinely fine.
+
+Nise ships **no remote checker**, and will not. Have I Been Pwned's k-anonymity
+API is well designed, and it is still an outbound call to a third party on the
+login path, which this project does not do by default. `password.Compromised` is
+an interface: an owner who wants the full corpus writes the adapter and makes
+the privacy decision themselves, with the trade-off in front of them.
+
+An unavailable checker **denies**. `IsCompromised` returning an error is not the
+same as returning "no", and failing open would turn an outage into an accepted
+weak password, silently, exactly when nobody is looking.
+
+See [ADR 0020](adr/0020-compromised-password-source.md) for the privacy model of
+each option.
+
 ## Bounds
 
 | Bound | Value |

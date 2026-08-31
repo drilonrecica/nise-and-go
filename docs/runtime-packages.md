@@ -19,7 +19,7 @@ Import path prefix: `github.com/drilonrecica/nise-and-go/runtime/…` ([ADR 0007
 | `runtime/secure` | Security headers and Content Security Policy for the embedded frontend. | implemented | M2-012 |
 | `runtime/transaction` | Driver-independent use-case transaction lifecycle, rollback bounds, and closed isolation/access options. | implemented | M3-005 |
 | `runtime/pagination` | Authenticated versioned cursor tokens, key rotation, cursor parsing, and the separate offset reporting contract. | implemented | M4-007, M4-008 |
-| `runtime/password` | Argon2id hashing, versioned parameter sets, rehash detection, constant-cost dummy verification, and parameter benchmarking. | implemented | M5-004 |
+| `runtime/password` | Argon2id hashing, versioned parameter sets, rehash detection, constant-cost dummy verification, parameter benchmarking, and local known-compromised refusal. | implemented | M5-004, M5-017 |
 | `runtime/session` | Opaque session tokens, their stored digests, the idle/absolute/revoked lifecycle rules, and the browser cookie policy. | implemented | M5-001, M5-015 |
 | `runtime/forwarded` | Trusted-proxy policy, and the real client address, scheme, and host behind it. | implemented | M5-014 |
 | `runtime/authz` | Permissions, role bundles, and the closed catalog that declares them. | implemented | M5-007 |
