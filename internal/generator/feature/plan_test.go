@@ -1,7 +1,11 @@
 package feature_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -629,5 +633,165 @@ func TestResourceShipsAllFourKindsOfTest(t *testing.T) {
 		if !strings.Contains(component, fragment) {
 			t.Errorf("the component test lacks %q", fragment)
 		}
+	}
+}
+
+// walkTree returns every path under root with its content hash, so a test can
+// assert that a run changed nothing outside its own plan.
+func walkTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+
+	tree := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			tree[filepath.ToSlash(relative)+"/"] = "dir"
+			return nil
+		}
+		data, err := os.ReadFile(path) // #nosec G304 -- a path this test created.
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(data)
+		tree[filepath.ToSlash(relative)] = hex.EncodeToString(sum[:])
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", root, err)
+	}
+	return tree
+}
+
+// TestWriteTouchesNothingOutsideItsPlan is the strongest form of ADR 0026's
+// promise: a run creates exactly the paths it planned and changes nothing
+// else, so the worst a wrong invocation can do is create files you delete.
+func TestWriteTouchesNothingOutsideItsPlan(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	// A project with files of its own, including ones a careless generator
+	// might plausibly want to edit.
+	existing := map[string]string{
+		"go.mod":                               "module example.com/demo\n",
+		"api/openapi.yaml":                     "openapi: 3.0.3\n",
+		"internal/app/app.go":                  "package app\n",
+		"internal/platform/authorization/x.go": "package authorization\n",
+		"frontend/src/lib/navigation.ts":       "export const navigation = [];\n",
+		"internal/features/other/usecase.go":   "package other\n",
+	}
+	for path, body := range existing {
+		target := filepath.Join(root, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := walkTree(t, root)
+
+	plan, err := feature.NewPlan(resourceOptions())
+	if err != nil {
+		t.Fatalf("NewPlan: %v", err)
+	}
+	if _, err := feature.Write(root, plan); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	after := walkTree(t, root)
+	planned := map[string]bool{}
+	for _, file := range plan.Files {
+		planned[file.Path] = true
+	}
+	for path, hash := range before {
+		if strings.HasSuffix(path, "/") {
+			continue
+		}
+		if after[path] != hash {
+			t.Errorf("%s changed; nise generate edits no file it did not write", path)
+		}
+	}
+	for path := range after {
+		if strings.HasSuffix(path, "/") || before[path] != "" {
+			continue
+		}
+		if !planned[path] {
+			t.Errorf("%s was created but is not in the plan", path)
+		}
+	}
+	// Every file the plan named is there, and nothing the plan named is
+	// missing.
+	for path := range planned {
+		if after[path] == "" {
+			t.Errorf("%s was planned but not written", path)
+		}
+	}
+}
+
+// TestWriteRefusesAPathHeldByADirectory covers the collision a plain existence
+// check would report as a confusing "is a directory" write failure halfway
+// through, rather than as a refusal before anything happened.
+func TestWriteRefusesAPathHeldByADirectory(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	plan, err := feature.NewPlan(featureOptions())
+	if err != nil {
+		t.Fatalf("NewPlan: %v", err)
+	}
+	blocked := plan.Files[0].Path
+	if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(blocked)), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := feature.Write(root, plan); !errors.Is(err, feature.ErrExists) {
+		t.Fatalf("Write over a directory = %v, want feature.ErrExists", err)
+	}
+	for _, file := range plan.Files {
+		if file.Path == blocked {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(file.Path))); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s was created despite the collision", file.Path)
+		}
+	}
+}
+
+// TestSecondRunChangesNothingAtAll is the property a person relies on when
+// they run the command twice by accident.
+func TestSecondRunChangesNothingAtAll(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	plan, err := feature.NewPlan(resourceOptions())
+	if err != nil {
+		t.Fatalf("NewPlan: %v", err)
+	}
+	if _, err := feature.Write(root, plan); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	// Somebody edits what was generated, as they are meant to.
+	edited := filepath.Join(root, filepath.FromSlash(plan.Files[0].Path))
+	const mine = "// my own work\n"
+	if err := os.WriteFile(edited, []byte(mine), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := walkTree(t, root)
+
+	if _, err := feature.Write(root, plan); !errors.Is(err, feature.ErrExists) {
+		t.Fatalf("second Write = %v, want feature.ErrExists", err)
+	}
+
+	if got := walkTree(t, root); !maps.Equal(got, before) {
+		t.Error("the refused second run changed the project")
+	}
+	if got, _ := os.ReadFile(edited); string(got) != mine { // #nosec G304 -- a path this test created.
+		t.Errorf("the edited file was overwritten: %q", got)
 	}
 }

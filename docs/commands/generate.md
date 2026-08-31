@@ -121,7 +121,25 @@ slice is yours from the moment it is written, so nise will not replace one.
 Every path is checked before anything is written, so a colliding run leaves
 the project exactly as it found it — no half-written feature to identify and
 remove by hand. The write itself uses `O_EXCL`, so even a file created between
-the check and the write is refused rather than overwritten.
+the check and the write is refused rather than overwritten, and a path already
+held by a *directory* is refused the same way rather than failing halfway
+through with "is a directory".
+
+Three properties are pinned by tests rather than promised:
+
+- A run creates exactly the paths it planned and changes nothing else. The
+  test builds a project containing the files a careless generator might
+  plausibly want to edit — the OpenAPI document, `app.go`, the permission
+  catalog, the navigation list — hashes the whole tree, generates, and
+  compares.
+- A refused second run changes nothing at all, including a file you have since
+  edited. That is the case that actually happens: somebody runs the command
+  twice by accident after making the generated code their own.
+- No insertion the command prints names a file the command wrote. An insertion
+  into a generated file would mean the generator should have written that line
+  itself.
+
+So the worst a wrong invocation can do is create files you delete.
 
 ## What it does not decide
 
