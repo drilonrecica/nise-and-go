@@ -34,5 +34,6 @@ ADRs record consequential decisions, their context, and their tradeoffs. They pr
 - [0021: Require a recent proof for actions that widen access, and for nothing else](0021-reauthentication-matrix.md)
 - [0022: A compile-time module is a framework package plus conditional templates](0022-compile-time-modules.md)
 - [0023: Second-factor design — HMAC-SHA1, a stored secret, and a single-use challenge](0023-second-factor-design.md)
+- [0024: Design native device tokens now; expose nothing yet](0024-device-token-design.md)
 
 New records copy [template.md](template.md) and use the next four-digit number. Do not rewrite an accepted ADR to hide a reversal; add a new ADR that supersedes it.

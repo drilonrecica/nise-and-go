@@ -147,6 +147,12 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
 - `auth.NewCredentials` now requires a `SecondFactor`; an application without
   the module passes `auth.NoSecondFactor`, an explicit declaration rather than a
   nil.
+- Record the native device-token design (ADR 0024) and build none. A generated
+  application ships exactly one API credential. Tests pin both the absence and
+  the three properties that keep adding one additive: a prefixed token shape, an
+  anti-forgery guard that follows the credential that authenticated the request
+  rather than the headers it carries, and identity resolved once into one
+  context value.
 
 ### Fixed
 
