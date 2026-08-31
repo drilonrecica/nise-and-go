@@ -1,0 +1,190 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package mail
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"log/slog"
+	"strings"
+	"testing"
+)
+
+func TestValidateRefusesHeaderInjection(t *testing.T) {
+	t.Parallel()
+
+	// Every one of these is a value that has, in real systems, arrived from
+	// a form: a display name, a subject built from user text, an address
+	// typed into a field. A newline in any of them ends the header it lands
+	// in and begins another.
+	cases := []struct {
+		name    string
+		message Message
+	}{
+		{"newline in the subject", Message{
+			From: "a@example.com", To: []string{"b@example.com"},
+			Subject: "Hello\nBcc: attacker@example.com", Text: "body",
+		}},
+		{"carriage return in the subject", Message{
+			From: "a@example.com", To: []string{"b@example.com"},
+			Subject: "Hello\rBcc: attacker@example.com", Text: "body",
+		}},
+		{"NUL in the subject", Message{
+			From: "a@example.com", To: []string{"b@example.com"},
+			Subject: "Hello\x00truncated", Text: "body",
+		}},
+		{"newline in a recipient", Message{
+			From: "a@example.com", To: []string{"b@example.com\nBcc: attacker@example.com"},
+			Subject: "Hello", Text: "body",
+		}},
+		{"newline in the sender", Message{
+			From: "a@example.com\nBcc: attacker@example.com", To: []string{"b@example.com"},
+			Subject: "Hello", Text: "body",
+		}},
+		{"newline in reply-to", Message{
+			From: "a@example.com", To: []string{"b@example.com"}, ReplyTo: "c@example.com\nBcc: x@example.com",
+			Subject: "Hello", Text: "body",
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			err := c.message.Validate()
+			if !errors.Is(err, ErrHeaderInjection) && !errors.Is(err, ErrAddress) {
+				t.Fatalf("Validate = %v, want a refusal", err)
+			}
+		})
+	}
+}
+
+// TestValidateRefusesASmuggledSecondRecipient covers the injection that does
+// not need a newline: a single address field holding a list.
+func TestValidateRefusesASmuggledSecondRecipient(t *testing.T) {
+	t.Parallel()
+
+	m := Message{
+		From:    "a@example.com, attacker@example.com",
+		To:      []string{"b@example.com"},
+		Subject: "Hello",
+		Text:    "body",
+	}
+	if err := m.Validate(); !errors.Is(err, ErrAddress) {
+		t.Fatalf("Validate = %v, want ErrAddress", err)
+	}
+}
+
+func TestValidateRefusesTheObviouslyUnsendable(t *testing.T) {
+	t.Parallel()
+
+	base := Message{From: "a@example.com", To: []string{"b@example.com"}, Subject: "s", Text: "t"}
+
+	noRecipients := base
+	noRecipients.To = nil
+	if err := noRecipients.Validate(); !errors.Is(err, ErrNoRecipients) {
+		t.Errorf("no recipients = %v, want ErrNoRecipients", err)
+	}
+
+	tooMany := base
+	tooMany.To = make([]string, MaxRecipients+1)
+	for i := range tooMany.To {
+		tooMany.To[i] = "b@example.com"
+	}
+	if err := tooMany.Validate(); !errors.Is(err, ErrTooManyRecipients) {
+		t.Errorf("too many recipients = %v, want ErrTooManyRecipients", err)
+	}
+
+	empty := base
+	empty.Text, empty.HTML = "", ""
+	if err := empty.Validate(); !errors.Is(err, ErrEmptyBody) {
+		t.Errorf("empty body = %v, want ErrEmptyBody", err)
+	}
+
+	long := base
+	long.Subject = strings.Repeat("s", MaxSubjectBytes+1)
+	if err := long.Validate(); !errors.Is(err, ErrSubjectTooLong) {
+		t.Errorf("long subject = %v, want ErrSubjectTooLong", err)
+	}
+}
+
+func TestValidateAcceptsADisplayName(t *testing.T) {
+	t.Parallel()
+
+	m := Message{
+		From:    "Support <support@example.com>",
+		To:      []string{"Ada Lovelace <ada@example.com>"},
+		Subject: "Hello",
+		Text:    "body",
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate = %v, want a display name to be accepted", err)
+	}
+}
+
+// TestLogTransportNeverLogsTheBody is a privacy check, not a formatting one.
+// A rendered message routinely carries a single-use token, a name, or an
+// address, and a development log is the least protected place any of those
+// could end up.
+func TestLogTransportNeverLogsTheBody(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	transport, err := NewLog(logger, "noreply@example.com")
+	if err != nil {
+		t.Fatalf("NewLog: %v", err)
+	}
+
+	const secret = "inv1_a-single-use-token"
+	err = transport.Send(context.Background(), Message{
+		To:      []string{"b@example.com"},
+		Subject: "Your invitation",
+		Text:    "Open " + secret + " to continue",
+		HTML:    "<a href=\"" + secret + "\">Open</a>",
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if strings.Contains(buf.String(), secret) {
+		t.Fatalf("the log transport wrote the body, which held a token:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "Your invitation") {
+		t.Error("the log line does not identify the message at all")
+	}
+}
+
+// TestLogTransportStillValidates keeps the development path honest: a
+// message that could not be sent in production must not appear to succeed in
+// development, or the mistake is found after deploy.
+func TestLogTransportStillValidates(t *testing.T) {
+	t.Parallel()
+
+	transport, err := NewLog(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), "noreply@example.com")
+	if err != nil {
+		t.Fatalf("NewLog: %v", err)
+	}
+	err = transport.Send(context.Background(), Message{
+		To:      []string{"b@example.com"},
+		Subject: "Hello\nBcc: attacker@example.com",
+		Text:    "body",
+	})
+	if !errors.Is(err, ErrHeaderInjection) {
+		t.Fatalf("Send = %v, want the same refusal production would give", err)
+	}
+}
+
+func TestMailerFuncSatisfiesMailer(t *testing.T) {
+	t.Parallel()
+
+	var sent Message
+	var m Mailer = MailerFunc(func(_ context.Context, msg Message) error {
+		sent = msg
+		return nil
+	})
+	if err := m.Send(context.Background(), Message{Subject: "recorded"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if sent.Subject != "recorded" {
+		t.Error("MailerFunc did not receive the message")
+	}
+}

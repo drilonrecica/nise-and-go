@@ -284,3 +284,85 @@ func TestPeriodicSchedulingIsUniqueInTheDatabase(t *testing.T) {
 		t.Error("registerJobs cannot report a scheduling mistake")
 	}
 }
+
+// TestGeneratedProjectSendsMailSafely pins M8-005: the mail boundary, the
+// transports, and the two refusals that keep a header from becoming two.
+func TestGeneratedProjectSendsMailSafely(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, defaultOptions())
+
+	wants := map[string][]string{
+		"internal/platform/mail/mail.go": {
+			"type Mailer interface {",
+			"func (m Message) Validate() error",
+			"func ValidateAddress(address string) error",
+			`strings.ContainsAny(s, "\r\n\x00")`,
+			"ErrHeaderInjection",
+		},
+		"internal/platform/mail/smtp.go": {
+			"func (s *SMTP) Send(ctx context.Context, m Message) error",
+			`client.Extension("STARTTLS")`,
+			"MinVersion: tls.VersionTLS12",
+			"mime.QEncoding.Encode",
+			"multipart/alternative",
+			"type Log struct {",
+		},
+		"internal/platform/mail/render.go": {
+			"//go:embed templates/*.txt templates/*.html",
+			"htmltemplate",
+			"texttemplate",
+			`Option("missingkey=error")`,
+		},
+		"internal/app/mail.go": {
+			"func newMailer(cfg config.Config, logger *slog.Logger) (mail.Mailer, error)",
+		},
+		"internal/platform/config/config.go": {
+			`l.String("MAIL_TRANSPORT"`,
+			`l.Secret("SMTP_PASSWORD"`,
+			`v.Check(cfg.MailTransport == "smtp", "MAIL_TRANSPORT"`,
+		},
+		".env.example": {
+			"MAIL_TRANSPORT=log",
+			"SMTP_ENCRYPTION=starttls",
+		},
+	}
+	for path, fragments := range wants {
+		for _, fragment := range fragments {
+			if !strings.Contains(content[path], fragment) {
+				t.Errorf("%s lacks %q", path, fragment)
+			}
+		}
+	}
+
+	// Nothing in the mail package may stuff a dot. net/smtp's DotWriter
+	// already does, and doing it twice puts an extra dot into every message
+	// whose body starts a line with one — which this package did until the
+	// test asserting wire bytes caught it.
+	smtp := content["internal/platform/mail/smtp.go"]
+	if strings.Contains(smtp, "func dotStuff(") {
+		t.Error("the mail package stuffs dots itself; net/smtp's DotWriter already does, and twice is a corrupted message")
+	}
+
+	// The plain-text alternative has to be written before the HTML one: a
+	// client renders the last one it understands.
+	textPart := strings.Index(smtp, `writePart(&b, boundary, `+"`"+`text/plain`)
+	htmlPart := strings.Index(smtp, `writePart(&b, boundary, `+"`"+`text/html`)
+	if textPart < 0 || htmlPart < 0 {
+		t.Fatal("the multipart body does not write both alternatives")
+	}
+	if textPart > htmlPart {
+		t.Error("the HTML alternative is written before the plain-text one, so no client will render the HTML")
+	}
+
+	// Both message templates ship, and both are copied verbatim: their
+	// delimiters belong to the generated application, not to Nise.
+	for _, path := range []string{
+		"internal/platform/mail/templates/invitation.txt",
+		"internal/platform/mail/templates/invitation.html",
+	} {
+		if !strings.Contains(content[path], "{{.AcceptURL}}") {
+			t.Errorf("%s does not carry the application's own template delimiters", path)
+		}
+	}
+}

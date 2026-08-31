@@ -25,6 +25,7 @@ import (
 
 	"{{.ModulePath}}/internal/platform/database"
 	"{{.ModulePath}}/internal/platform/jobs"
+	"{{.ModulePath}}/internal/platform/mail"
 	"{{.ModulePath}}/internal/platform/throttle"
 )
 
@@ -101,6 +102,15 @@ type Config struct {
 	// __Host- prefix and the Secure attribute. It exists for a development
 	// origin that is not localhost; production refuses it.
 	SessionCookieInsecure bool
+	// Mail holds the validated SMTP connection parameters. It is the zero
+	// value when MailTransport is "log", where nothing connects anywhere.
+	Mail mail.Settings
+	// MailTransport is "smtp" or "log". Production refuses "log": an
+	// application that silently sends no invitation is worse than one that
+	// refuses to start without a mail server.
+	MailTransport string
+	// MailFrom is the default sender address.
+	MailFrom string
 	// Jobs holds the validated background-worker limits. They apply only to
 	// a process running in "all" or "worker" mode; a web replica never
 	// fetches a job, so the numbers here are per worker process rather than
@@ -154,6 +164,17 @@ func Load() (Config, []string, error) {
 	loginAttemptsPerAddress := l.Int("LOGIN_ATTEMPTS_PER_ADDRESS", rtconfig.Default("10"))
 	loginAttemptsPerClient := l.Int("LOGIN_ATTEMPTS_PER_CLIENT", rtconfig.Default("60"))
 	loginThrottleWindow := l.Duration("LOGIN_THROTTLE_WINDOW", rtconfig.Default("15m"))
+	mailTransport := l.String("MAIL_TRANSPORT", rtconfig.Default("log"))
+	mailFrom := l.String("MAIL_FROM", rtconfig.Default("noreply@localhost"))
+	smtpHost := l.String("SMTP_HOST", rtconfig.Default(""))
+	smtpPort := l.String("SMTP_PORT", rtconfig.Default("587"))
+	smtpUsername := l.String("SMTP_USERNAME", rtconfig.Default(""))
+	smtpEncryption := l.String("SMTP_ENCRYPTION", rtconfig.Default("starttls"))
+	// The password is read as a Secret and passed straight into
+	// mail.NewSettings, which stores it as one. It is never a Config field:
+	// a value that only one constructor needs should not also be reachable
+	// from everything that holds a Config.
+	smtpPassword := l.Secret("SMTP_PASSWORD", rtconfig.Default(""))
 	jobMaxWorkers := l.Int("JOB_MAX_WORKERS", rtconfig.Default("10"))
 	jobPollInterval := l.Duration("JOB_POLL_INTERVAL", rtconfig.Default("5s"))
 	// The two cursor key variables are read into locals rather than kept as
@@ -212,6 +233,27 @@ func Load() (Config, []string, error) {
 		return Config{}, warnings, err
 	}
 	cfg.Jobs = jobSettings
+
+	switch mailTransport {
+	case "log", "smtp":
+		cfg.MailTransport = mailTransport
+	default:
+		return Config{}, warnings, fmt.Errorf("MAIL_TRANSPORT: unknown transport %q, expected \"smtp\" or \"log\"", mailTransport)
+	}
+	cfg.MailFrom = mailFrom
+	if cfg.MailTransport == "smtp" {
+		mailSettings, err := mail.NewSettings(smtpHost, smtpPort, smtpUsername, smtpPassword.Reveal(), smtpEncryption, mailFrom)
+		if err != nil {
+			return Config{}, warnings, err
+		}
+		cfg.Mail = mailSettings
+	} else if err := mail.ValidateAddress(mailFrom); err != nil {
+		// The log transport connects to nothing, but it still validates
+		// every message it is given — including its From — so an address
+		// that would fail in production must fail here too rather than at
+		// the moment somebody switches the transport on.
+		return Config{}, warnings, fmt.Errorf("MAIL_FROM: %w", err)
+	}
 	if cfg.DatabaseSlowQueryThreshold <= 0 {
 		return Config{}, warnings, errors.New("DB_SLOW_QUERY_THRESHOLD: must be greater than zero")
 	}
@@ -308,6 +350,13 @@ func Load() (Config, []string, error) {
 		v.Check(!cfg.CursorKeysAreEphemeral, "CURSOR_SIGNING_KEY",
 			"pagination cursors would be signed with a key generated for this process, so every restart and every replica rejects outstanding cursors",
 			"set CURSOR_SIGNING_KEY to <id>:<base64 secret>; generate one with: openssl rand -base64 32")
+		// An application that silently sends nothing is worse than one that
+		// refuses to start. The failure it produces otherwise is an
+		// invitation that never arrives, reported weeks later as "the link
+		// is broken" by somebody who never received a link.
+		v.Check(cfg.MailTransport == "smtp", "MAIL_TRANSPORT",
+			"the log transport is selected, so no email would be sent at all",
+			"set MAIL_TRANSPORT=smtp and configure SMTP_HOST")
 	}); err != nil {
 		return Config{}, warnings, err
 	}

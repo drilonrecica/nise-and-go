@@ -22,6 +22,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Database transactions](database-transactions.md)
 - [PostgreSQL integration testing](database-testing.md)
 - [Background jobs](jobs.md)
+- [Outbound email](mail.md)
 - [Observability](observability.md)
 - [Metrics and tracing](metrics.md)
 - [Operations: runtime HTTP lifecycle](operations-runtime.md)

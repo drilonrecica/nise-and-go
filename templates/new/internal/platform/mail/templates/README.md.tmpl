@@ -1,0 +1,36 @@
+# Message templates
+
+Generated once by nise; owned by this application. Nise will not overwrite
+anything in this directory.
+
+The files here carry no ownership header of their own, and this README is the
+declaration for all of them. A header in `invitation.txt` would be sent
+verbatim to a person, because the plain-text part of a message is its body
+with nothing stripped — so the ownership marker lives in the directory rather
+than in each file, the same resolution ADR 0009 applies to files with no
+comment syntax at all.
+
+## The rules
+
+Templates come in pairs sharing a base name: a `.txt` rendered with
+`text/template`, and a `.html` rendered with `html/template`. Both are
+embedded in the binary and parsed once, at startup, so a typo is a deployment
+failure rather than something the first affected user discovers.
+
+- **The `.txt` is required.** A message with only an HTML part is filtered
+  more aggressively, unreadable in a text client, and unreadable to a screen
+  reader that has given up on the markup. A `.txt` with no `.html` sibling is
+  refused at startup.
+- **The two engines are different on purpose.** `text/template` does no
+  escaping, which is right for a body that is not markup and catastrophic for
+  one that is. `html/template` escapes contextually: a name containing a `<`
+  arrives as a name, and a `javascript:` URL never survives into an `href`.
+- **The subject is not in the template.** It is passed to `Render`, so it can
+  be localized, tested, and read without a convention about which line of the
+  file it is.
+- **Every key a template uses must be present in its data.** Templates are
+  parsed with `missingkey=error`, so a missing key fails the render rather
+  than putting `<no value>` into a message somebody receives.
+
+See [`docs/mail.md`](../../../../../docs/mail.md) in the framework repository
+for the surrounding contract.

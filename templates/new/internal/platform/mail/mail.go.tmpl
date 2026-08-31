@@ -1,0 +1,168 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package mail is this application's outbound email.
+//
+// The surface is deliberately small. [Mailer] has one method, [Message] has
+// five fields, and there is no queue, no template registry, and no provider
+// abstraction beyond the one interface. Everything an application actually
+// varies — which addresses, what content, when — is decided by the caller.
+//
+// Sending is expected to happen inside a background job rather than inside a
+// request. An SMTP conversation is a network round trip to a machine this
+// application does not control, and putting one in the path of a form
+// submission means the form is as slow and as available as the mail provider.
+// Through a job it is retried on the schedule in internal/platform/jobs, and
+// a provider outage delays mail instead of failing user-visible work. See
+// docs/jobs.md.
+//
+// Two transports ship. [SMTP] talks to a real server. [Log] writes the
+// message to the application log and sends nothing, which is what a developer
+// with no mail server wants and what production refuses to start with.
+package mail
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	netmail "net/mail"
+	"strings"
+)
+
+// MaxRecipients bounds one message's recipient list.
+//
+// A message with hundreds of recipients is either a mistake or a mailing
+// list, and a mailing list wants per-recipient sending — separate
+// unsubscribe handling, separate bounce attribution, separate failure. The
+// bound is here so the mistake is caught at the boundary rather than
+// discovered by a provider's abuse team.
+const MaxRecipients = 50
+
+// MaxSubjectBytes bounds a subject line. RFC 5322 recommends lines under 998
+// octets; encoded-word folding makes the true limit hard to state exactly, so
+// this is comfortably inside it.
+const MaxSubjectBytes = 512
+
+// Errors this package returns. Every one of them is a refusal to send: there
+// is no partial send, and no message is ever half-delivered because a field
+// was almost valid.
+var (
+	// ErrNoRecipients reports a message with nowhere to go.
+	ErrNoRecipients = errors.New("mail: a message needs at least one recipient")
+	// ErrTooManyRecipients reports a recipient list over MaxRecipients.
+	ErrTooManyRecipients = errors.New("mail: too many recipients for one message")
+	// ErrAddress reports an address that is not a valid RFC 5322 address.
+	ErrAddress = errors.New("mail: invalid address")
+	// ErrHeaderInjection reports a control character in a value that becomes
+	// a header. See Message.Validate.
+	ErrHeaderInjection = errors.New("mail: a header value contains a line break")
+	// ErrEmptyBody reports a message with neither a text nor an HTML part.
+	ErrEmptyBody = errors.New("mail: a message needs a text or HTML body")
+	// ErrSubjectTooLong reports a subject over MaxSubjectBytes.
+	ErrSubjectTooLong = errors.New("mail: subject is too long")
+)
+
+// Message is one email, already rendered.
+//
+// It carries no template, no data, and no locale: rendering happens before a
+// Message exists, in [Renderer], so that what is sent is a value a test can
+// read and an error can name.
+type Message struct {
+	// From is the envelope and header sender. An empty From uses the
+	// transport's configured default, which is what almost every message
+	// wants.
+	From string
+	// To is the recipient list. At least one, at most MaxRecipients.
+	To []string
+	// ReplyTo is optional.
+	ReplyTo string
+	// Subject is the subject line, unencoded. Non-ASCII is encoded on the
+	// way out.
+	Subject string
+	// Text is the plain-text body. Always set it: a message with only an
+	// HTML part is filtered more aggressively, unreadable in a text client,
+	// and unreadable by a screen reader that has given up on the HTML.
+	Text string
+	// HTML is the optional HTML body. When both are set the message is
+	// multipart/alternative and the client chooses.
+	HTML string
+}
+
+// Validate reports the first reason this message cannot be sent.
+//
+// The header-injection check is the one that matters. Every field here is
+// interpolated into a header, and a bare newline in a subject or an address
+// ends that header and begins another — which is how a value that reached
+// this application from a form becomes a Bcc, a forged From, or an entire
+// second message. Rejecting the character is the only reliable defense;
+// stripping it silently would send a message nobody wrote.
+func (m Message) Validate() error {
+	if len(m.To) == 0 {
+		return ErrNoRecipients
+	}
+	if len(m.To) > MaxRecipients {
+		return fmt.Errorf("%w: %d, the limit is %d", ErrTooManyRecipients, len(m.To), MaxRecipients)
+	}
+	if len(m.Subject) > MaxSubjectBytes {
+		return fmt.Errorf("%w: %d bytes, the limit is %d", ErrSubjectTooLong, len(m.Subject), MaxSubjectBytes)
+	}
+	if m.Text == "" && m.HTML == "" {
+		return ErrEmptyBody
+	}
+	if containsLineBreak(m.Subject) {
+		return fmt.Errorf("%w: subject", ErrHeaderInjection)
+	}
+	for _, address := range append([]string{m.From, m.ReplyTo}, m.To...) {
+		if address == "" {
+			continue
+		}
+		if containsLineBreak(address) {
+			return fmt.Errorf("%w: address", ErrHeaderInjection)
+		}
+		if err := ValidateAddress(address); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateAddress reports whether address is one parseable RFC 5322 address.
+//
+// net/mail's parser accepts a display name, which is wanted — "Support
+// <support@example.com>" is a legitimate From. It does not accept a list, so
+// a value smuggling a second recipient past a caller that expected one
+// address is refused here rather than delivered.
+func ValidateAddress(address string) error {
+	if containsLineBreak(address) {
+		return fmt.Errorf("%w: address", ErrHeaderInjection)
+	}
+	parsed, err := netmail.ParseAddress(address)
+	if err != nil {
+		return fmt.Errorf("%w: %q", ErrAddress, address)
+	}
+	if parsed.Address == "" || !strings.Contains(parsed.Address, "@") {
+		return fmt.Errorf("%w: %q", ErrAddress, address)
+	}
+	return nil
+}
+
+// containsLineBreak reports whether s holds any character that can terminate
+// a header. NUL is included because a C-level SMTP implementation on the far
+// side may truncate there, which turns one message into a different one.
+func containsLineBreak(s string) bool {
+	return strings.ContainsAny(s, "\r\n\x00")
+}
+
+// Mailer sends one message.
+//
+// One method, because that is all a caller needs and all a fake needs to
+// implement. A use case takes a Mailer, not an *SMTP, so its test does not
+// need a mail server and its production wiring does not need a flag.
+type Mailer interface {
+	Send(ctx context.Context, m Message) error
+}
+
+// MailerFunc adapts a function to [Mailer].
+type MailerFunc func(ctx context.Context, m Message) error
+
+// Send implements Mailer.
+func (f MailerFunc) Send(ctx context.Context, m Message) error { return f(ctx, m) }

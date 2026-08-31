@@ -70,6 +70,29 @@ func IsFeatureQueryPath(path string) bool {
 	return len(parts) == 3 && parts[0] != "" && parts[1] == "queries"
 }
 
+// IsMailTemplatePath reports whether path is one of the application's
+// embedded message templates.
+//
+// Those files carry no ownership header and declare their ownership by path,
+// for a stronger version of the reason a feature's query files do. A comment
+// in a message template is not inert: the plain-text part is sent verbatim to
+// a person, so a header there would arrive in somebody's inbox reading "Nise
+// will not overwrite it". The HTML part could hide one in a comment, but a
+// pair of files whose ownership is declared two different ways is worse than
+// one rule that covers both.
+//
+// internal/platform/mail/templates/ is application-owned in its entirety, and
+// the directory is the declaration — the same resolution ADR 0009 applies to
+// JSON, which has no comment syntax at all.
+func IsMailTemplatePath(path string) bool {
+	const prefix = "internal/platform/mail/templates/"
+	remainder, found := strings.CutPrefix(path, prefix)
+	if !found || remainder == "" {
+		return false
+	}
+	return !strings.Contains(remainder, "/")
+}
+
 // IsSQLCGeneratedPath reports whether path is inside a feature's sqlc output
 // directory, which is the structural ownership marker for that tool's files
 // (ADR 0014). Everything under internal/features/<feature>/store is replaced
@@ -248,6 +271,7 @@ var templateFiles = []templateFile{
 	{Template: "internal/app/database.go.tmpl", Output: "internal/app/database.go", Owner: OwnerApp},
 	{Template: "internal/app/database_runtime.go.tmpl", Output: "internal/app/database_runtime.go", Owner: OwnerApp},
 	{Template: "internal/app/jobs.go.tmpl", Output: "internal/app/jobs.go", Owner: OwnerApp},
+	{Template: "internal/app/mail.go.tmpl", Output: "internal/app/mail.go", Owner: OwnerApp},
 	{Template: "internal/app/modes.go.tmpl", Output: "internal/app/modes.go", Owner: OwnerApp},
 	{Template: "internal/app/enroll.go.tmpl", Output: "internal/app/enroll.go", Owner: OwnerApp},
 	{Template: "internal/app/password.go.tmpl", Output: "internal/app/password.go", Owner: OwnerApp},
@@ -347,6 +371,20 @@ var templateFiles = []templateFile{
 	{Template: "internal/platform/jobs/periodic_test.go.tmpl", Output: "internal/platform/jobs/periodic_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/jobs/retry.go.tmpl", Output: "internal/platform/jobs/retry.go", Owner: OwnerApp},
 	{Template: "internal/platform/jobs/retry_test.go.tmpl", Output: "internal/platform/jobs/retry_test.go", Owner: OwnerApp},
+	{Template: "internal/platform/mail/mail.go.tmpl", Output: "internal/platform/mail/mail.go", Owner: OwnerApp},
+	{Template: "internal/platform/mail/mail_test.go.tmpl", Output: "internal/platform/mail/mail_test.go", Owner: OwnerApp},
+	{Template: "internal/platform/mail/render.go.tmpl", Output: "internal/platform/mail/render.go", Owner: OwnerApp},
+	{Template: "internal/platform/mail/render_test.go.tmpl", Output: "internal/platform/mail/render_test.go", Owner: OwnerApp},
+	{Template: "internal/platform/mail/smtp.go.tmpl", Output: "internal/platform/mail/smtp.go", Owner: OwnerApp},
+	{Template: "internal/platform/mail/smtp_test.go.tmpl", Output: "internal/platform/mail/smtp_test.go", Owner: OwnerApp},
+	// The message templates carry the generated application's own template
+	// delimiters, which are Go's and therefore Nise's. Raw copies their
+	// bytes so `{{.AcceptURL}}` reaches the application instead of being
+	// resolved against Nise's generation data — the same reason the
+	// vendored sqlc and oapi-codegen configs are raw.
+	{Template: "internal/platform/mail/templates/README.md.tmpl", Output: "internal/platform/mail/templates/README.md", Owner: OwnerApp, Raw: true},
+	{Template: "internal/platform/mail/templates/invitation.html.tmpl", Output: "internal/platform/mail/templates/invitation.html", Owner: OwnerApp, Raw: true},
+	{Template: "internal/platform/mail/templates/invitation.txt.tmpl", Output: "internal/platform/mail/templates/invitation.txt", Owner: OwnerApp, Raw: true},
 	{Template: "internal/platform/passwords/passwords.go.tmpl", Output: "internal/platform/passwords/passwords.go", Owner: OwnerApp},
 	{Template: "internal/platform/reauth/matrix.go.tmpl", Output: "internal/platform/reauth/matrix.go", Owner: OwnerApp},
 	{Template: "internal/platform/reauth/reauth_test.go.tmpl", Output: "internal/platform/reauth/reauth_test.go", Owner: OwnerApp},

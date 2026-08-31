@@ -1,0 +1,436 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package mail
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/tls"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"mime"
+	"net"
+	netmail "net/mail"
+	"net/smtp"
+	"strings"
+	"time"
+
+	rtconfig "github.com/drilonrecica/nise-and-go/runtime/config"
+)
+
+// Encryption is how the SMTP connection is protected.
+type Encryption string
+
+const (
+	// EncryptionStartTLS opens a plaintext connection and upgrades it with
+	// STARTTLS before authenticating. This is the common case: port 587.
+	EncryptionStartTLS Encryption = "starttls"
+	// EncryptionImplicit opens a TLS connection directly. Port 465.
+	EncryptionImplicit Encryption = "implicit"
+	// EncryptionNone sends in the clear. It exists for a mail relay reached
+	// over a loopback or a private network the deployment already trusts,
+	// and production refuses it whenever credentials are configured — see
+	// NewSMTP.
+	EncryptionNone Encryption = "none"
+)
+
+// ParseEncryption converts s to an Encryption, listing the accepted values
+// when it is not one of them.
+func ParseEncryption(s string) (Encryption, error) {
+	switch Encryption(s) {
+	case EncryptionStartTLS, EncryptionImplicit, EncryptionNone:
+		return Encryption(s), nil
+	}
+	return "", fmt.Errorf("mail: unknown encryption %q, expected one of starttls, implicit, none", s)
+}
+
+// SendTimeout bounds one SMTP conversation end to end.
+//
+// It is not the connection timeout: a server that accepts the connection and
+// then stalls mid-DATA holds the worker just as effectively as one that never
+// answers, so the bound covers the whole exchange.
+const SendTimeout = 30 * time.Second
+
+// Settings are the validated SMTP connection parameters. Build one with
+// [NewSettings]; the zero value is rejected.
+type Settings struct {
+	host       string
+	port       string
+	username   string
+	password   rtconfig.Secret
+	encryption Encryption
+	from       string
+	valid      bool
+}
+
+// Host, Port, Username, Encryption, and From expose the non-secret settings
+// for a startup log line. The password is deliberately not among them.
+func (s Settings) Host() string           { return s.host }
+func (s Settings) Port() string           { return s.port }
+func (s Settings) Username() string       { return s.username }
+func (s Settings) Encryption() Encryption { return s.encryption }
+func (s Settings) From() string           { return s.from }
+
+// NewSettings validates the SMTP connection parameters.
+//
+// The refusal that matters is the last one: credentials over an unencrypted
+// connection. SMTP AUTH PLAIN is a base64-encoded password on the wire, so
+// sending it without TLS hands the account to anything on the path. Go's own
+// smtp.PlainAuth refuses this too, and this refuses it earlier — at startup,
+// where an operator sees it, rather than on the first message.
+func NewSettings(host, port, username, password, encryption, from string) (Settings, error) {
+	if strings.TrimSpace(host) == "" {
+		return Settings{}, errors.New("mail: an SMTP host is required")
+	}
+	if containsLineBreak(host) || containsLineBreak(port) || containsLineBreak(username) {
+		return Settings{}, errors.New("mail: SMTP settings contain a line break")
+	}
+	if strings.TrimSpace(port) == "" {
+		return Settings{}, errors.New("mail: an SMTP port is required")
+	}
+	mode, err := ParseEncryption(encryption)
+	if err != nil {
+		return Settings{}, err
+	}
+	if from == "" {
+		return Settings{}, errors.New("mail: a default From address is required")
+	}
+	if err := ValidateAddress(from); err != nil {
+		return Settings{}, err
+	}
+	if password != "" && username == "" {
+		return Settings{}, errors.New("mail: an SMTP password was configured without a username")
+	}
+	if username != "" && mode == EncryptionNone {
+		return Settings{}, errors.New(
+			"mail: SMTP credentials were configured with encryption disabled; AUTH PLAIN is a base64-encoded password on the wire, so use starttls or implicit")
+	}
+	return Settings{
+		host:       host,
+		port:       port,
+		username:   username,
+		password:   rtconfig.NewSecret(password),
+		encryption: mode,
+		from:       from,
+		valid:      true,
+	}, nil
+}
+
+// SMTP sends through a real mail server.
+type SMTP struct {
+	settings Settings
+	// dial is the connection function, injected so tests can drive a
+	// server on a loopback listener. Production leaves it nil.
+	dial func(ctx context.Context, network, address string) (net.Conn, error)
+	// tlsConfig is likewise injected only by tests, which need to trust a
+	// certificate they generated. Production leaves it nil and gets the
+	// system roots.
+	tlsConfig *tls.Config
+}
+
+// NewSMTP builds the production transport.
+func NewSMTP(settings Settings) (*SMTP, error) {
+	if !settings.valid {
+		return nil, errors.New("mail: settings must come from NewSettings")
+	}
+	return &SMTP{settings: settings}, nil
+}
+
+// Send implements [Mailer].
+//
+// The message is validated before a connection is opened, so a message that
+// could never be sent does not cost a round trip and does not appear in the
+// server's logs as a rejected attempt.
+func (s *SMTP) Send(ctx context.Context, m Message) error {
+	if m.From == "" {
+		m.From = s.settings.from
+	}
+	if err := m.Validate(); err != nil {
+		return err
+	}
+
+	body, err := render(m)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, SendTimeout)
+	defer cancel()
+
+	client, err := s.connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
+
+	if err := s.authenticate(client); err != nil {
+		return err
+	}
+	return deliver(client, m, body)
+}
+
+// connect opens the connection and brings it to the point where a command
+// can be sent, applying the configured encryption.
+func (s *SMTP) connect(ctx context.Context) (*smtp.Client, error) {
+	address := net.JoinHostPort(s.settings.host, s.settings.port)
+
+	dial := s.dial
+	if dial == nil {
+		dialer := &net.Dialer{}
+		dial = dialer.DialContext
+	}
+
+	if s.settings.encryption == EncryptionImplicit {
+		raw, err := dial(ctx, "tcp", address)
+		if err != nil {
+			return nil, fmt.Errorf("mail: connecting to the SMTP server: %w", err)
+		}
+		conn := tls.Client(raw, s.tls())
+		if err := conn.HandshakeContext(ctx); err != nil {
+			_ = raw.Close()
+			return nil, fmt.Errorf("mail: TLS handshake with the SMTP server: %w", err)
+		}
+		client, err := smtp.NewClient(conn, s.settings.host)
+		if err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("mail: starting the SMTP session: %w", err)
+		}
+		return client, nil
+	}
+
+	conn, err := dial(ctx, "tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("mail: connecting to the SMTP server: %w", err)
+	}
+	client, err := smtp.NewClient(conn, s.settings.host)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("mail: starting the SMTP session: %w", err)
+	}
+
+	if s.settings.encryption == EncryptionStartTLS {
+		// A server that does not offer STARTTLS is an error, never a
+		// fallback to plaintext. Downgrading silently is what makes an
+		// active attacker's job a matter of stripping one capability line.
+		if ok, _ := client.Extension("STARTTLS"); !ok {
+			_ = client.Close()
+			return nil, errors.New("mail: the SMTP server does not offer STARTTLS and encryption is required")
+		}
+		if err := client.StartTLS(s.tls()); err != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("mail: STARTTLS: %w", err)
+		}
+	}
+	return client, nil
+}
+
+// tls returns the TLS configuration for this transport. The ServerName is
+// always the configured host, so a certificate for a different name fails
+// verification rather than being accepted because the connection reached
+// something.
+func (s *SMTP) tls() *tls.Config {
+	if s.tlsConfig != nil {
+		return s.tlsConfig.Clone()
+	}
+	return &tls.Config{ServerName: s.settings.host, MinVersion: tls.VersionTLS12}
+}
+
+// authenticate performs AUTH when credentials are configured.
+func (s *SMTP) authenticate(client *smtp.Client) error {
+	if s.settings.username == "" {
+		return nil
+	}
+	if ok, _ := client.Extension("AUTH"); !ok {
+		return errors.New("mail: SMTP credentials are configured but the server does not offer AUTH")
+	}
+	auth := smtp.PlainAuth("", s.settings.username, s.settings.password.Reveal(), s.settings.host)
+	if err := client.Auth(auth); err != nil {
+		// The error is not wrapped with the credential or the username: an
+		// authentication failure is logged, and a log line naming the
+		// account being used to send mail is a log line worth stealing.
+		return errors.New("mail: SMTP authentication failed")
+	}
+	return nil
+}
+
+// deliver runs the MAIL/RCPT/DATA exchange.
+//
+// The writer Data returns is a textproto.DotWriter: it terminates the message
+// and performs dot stuffing on the way out. See the note above render.
+func deliver(client *smtp.Client, m Message, body []byte) error {
+	sender, err := addressOnly(m.From)
+	if err != nil {
+		return err
+	}
+	if err := client.Mail(sender); err != nil {
+		return fmt.Errorf("mail: MAIL FROM: %w", err)
+	}
+	for _, to := range m.To {
+		recipient, err := addressOnly(to)
+		if err != nil {
+			return err
+		}
+		if err := client.Rcpt(recipient); err != nil {
+			return fmt.Errorf("mail: RCPT TO: %w", err)
+		}
+	}
+	writer, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("mail: DATA: %w", err)
+	}
+	if _, err := writer.Write(body); err != nil {
+		_ = writer.Close()
+		return fmt.Errorf("mail: writing the message: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("mail: completing the message: %w", err)
+	}
+	// Quit sends QUIT and closes. A server that fails here has already
+	// accepted the message, so this is reported and not treated as a
+	// delivery failure — retrying would send it twice.
+	_ = client.Quit()
+	return nil
+}
+
+// addressOnly strips a display name, leaving the envelope address. The
+// envelope is what the server routes on, and a display name in it is a
+// syntax error rather than a nicety.
+func addressOnly(address string) (string, error) {
+	parsed, err := netmail.ParseAddress(address)
+	if err != nil {
+		return "", fmt.Errorf("%w: %q", ErrAddress, address)
+	}
+	return parsed.Address, nil
+}
+
+// render builds the RFC 5322 message.
+//
+// Two properties matter here and both are about what a header may contain.
+// The subject is encoded with RFC 2047 encoded-words, so a non-ASCII subject
+// arrives readable instead of as mojibake. And every header value has already
+// been through Message.Validate, so none of them can contain the newline that
+// would end the header and begin another.
+func render(m Message) ([]byte, error) {
+	var b strings.Builder
+
+	writeHeader(&b, "From", m.From)
+	writeHeader(&b, "To", strings.Join(m.To, ", "))
+	if m.ReplyTo != "" {
+		writeHeader(&b, "Reply-To", m.ReplyTo)
+	}
+	writeHeader(&b, "Subject", mime.QEncoding.Encode("utf-8", m.Subject))
+	writeHeader(&b, "MIME-Version", "1.0")
+
+	switch {
+	case m.HTML == "":
+		writeHeader(&b, "Content-Type", `text/plain; charset="utf-8"`)
+		b.WriteString("\r\n")
+		b.WriteString(normalizeNewlines(m.Text))
+	case m.Text == "":
+		writeHeader(&b, "Content-Type", `text/html; charset="utf-8"`)
+		b.WriteString("\r\n")
+		b.WriteString(normalizeNewlines(m.HTML))
+	default:
+		boundary, err := newBoundary()
+		if err != nil {
+			return nil, err
+		}
+		writeHeader(&b, "Content-Type", `multipart/alternative; boundary="`+boundary+`"`)
+		b.WriteString("\r\n")
+		// Least-preferred part first: a client picks the last one it can
+		// render, so the plain-text alternative has to precede the HTML.
+		writePart(&b, boundary, `text/plain; charset="utf-8"`, m.Text)
+		writePart(&b, boundary, `text/html; charset="utf-8"`, m.HTML)
+		b.WriteString("--" + boundary + "--\r\n")
+	}
+	return []byte(b.String()), nil
+}
+
+func writeHeader(b *strings.Builder, name, value string) {
+	b.WriteString(name)
+	b.WriteString(": ")
+	b.WriteString(value)
+	b.WriteString("\r\n")
+}
+
+func writePart(b *strings.Builder, boundary, contentType, content string) {
+	b.WriteString("--" + boundary + "\r\n")
+	writeHeader(b, "Content-Type", contentType)
+	b.WriteString("\r\n")
+	b.WriteString(normalizeNewlines(content))
+	b.WriteString("\r\n")
+}
+
+// newBoundary returns a MIME boundary that cannot occur in the body by
+// accident. It is random rather than derived from the content, because a
+// derived boundary means reading the whole message twice and still being
+// wrong when the content contains its own hash.
+func newBoundary() (string, error) {
+	raw := make([]byte, 24)
+	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+		return "", fmt.Errorf("mail: generating a MIME boundary: %w", err)
+	}
+	return "nise-" + base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+// normalizeNewlines converts a body to CRLF line endings, which is what SMTP
+// requires and what a Go string literal never has.
+func normalizeNewlines(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\n", "\r\n")
+}
+
+// A line consisting of a single "." ends SMTP DATA, so a body containing one
+// would truncate the message there and leave the rest to be read as SMTP
+// commands. Nothing in this file escapes it, deliberately: net/smtp's Data
+// returns a textproto.DotWriter, which stuffs the sequence as it writes.
+// Stuffing here as well would double it, and every message whose body starts
+// a line with a dot would arrive with an extra one. That is not a
+// hypothetical — this file did exactly that until the test asserting the wire
+// bytes said so.
+
+// Log is the development transport: it records the message and sends
+// nothing.
+//
+// It exists because a developer running the application locally has no mail
+// server, and the alternative to this is either an unexplained connection
+// error on every signup or a real message to a real address from a laptop.
+// Production refuses to start with it — see config.
+//
+// The body is not logged. A rendered message routinely contains a
+// single-use token, a name, or an address, and a development log is the
+// least protected place any of those could end up.
+type Log struct {
+	logger *slog.Logger
+	from   string
+}
+
+// NewLog builds the development transport.
+func NewLog(logger *slog.Logger, from string) (*Log, error) {
+	if logger == nil {
+		return nil, errors.New("mail: a logger is required")
+	}
+	if from == "" {
+		return nil, errors.New("mail: a default From address is required")
+	}
+	return &Log{logger: logger, from: from}, nil
+}
+
+// Send implements [Mailer].
+func (l *Log) Send(_ context.Context, m Message) error {
+	if m.From == "" {
+		m.From = l.from
+	}
+	if err := m.Validate(); err != nil {
+		return err
+	}
+	l.logger.Info("mail not sent: this application is configured with the log transport",
+		slog.String("from", m.From),
+		slog.Int("recipients", len(m.To)),
+		slog.String("subject", m.Subject),
+		slog.Bool("html", m.HTML != ""))
+	return nil
+}

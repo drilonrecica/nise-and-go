@@ -1,0 +1,35 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package app
+
+import (
+	"fmt"
+	"log/slog"
+
+	"{{.ModulePath}}/internal/platform/config"
+	"{{.ModulePath}}/internal/platform/mail"
+)
+
+// newMailer builds the outbound mail transport this process uses.
+//
+// The choice is made once, here, and everything downstream takes a
+// mail.Mailer — so no use case, job, or test ever branches on which transport
+// is configured. A test passes mail.MailerFunc; production passes SMTP; a
+// developer with no mail server gets the log transport, which validates every
+// message exactly as production would and then sends nothing.
+//
+// Production has already refused the log transport by the time this runs; see
+// config.Load. That refusal is deliberate: an application that silently sends
+// no invitations is worse than one that will not start without a mail server,
+// because the first failure is reported weeks later as "the link is broken"
+// by somebody who never received a link.
+func newMailer(cfg config.Config, logger *slog.Logger) (mail.Mailer, error) {
+	switch cfg.MailTransport {
+	case "smtp":
+		return mail.NewSMTP(cfg.Mail)
+	case "log":
+		return mail.NewLog(logger, cfg.MailFrom)
+	default:
+		return nil, fmt.Errorf("unknown mail transport %q", cfg.MailTransport)
+	}
+}
