@@ -106,4 +106,34 @@ describe('API client', () => {
 			void client.request('post', '/');
 		}
 	});
+
+	it('types cursor pages as opaque tokens that are absent, never null', () => {
+		const firstPage: components['schemas']['APIRootCursorCollection'] = {
+			items: [],
+			page: { has_more: true, next_cursor: 'nc1.y2026a.eyJ9.Zm9v' }
+		};
+		expect(firstPage.page.next_cursor).toBeTypeOf('string');
+
+		const lastPage: components['schemas']['APIRootCursorCollection'] = {
+			items: [],
+			page: { has_more: false }
+		};
+		expect(lastPage.page.next_cursor).toBeUndefined();
+		expect(Object.hasOwn(lastPage.page, 'next_cursor')).toBe(false);
+
+		if (false) {
+			expectTypeOf<components['schemas']['Cursor']>().toEqualTypeOf<string>();
+			expectTypeOf<components['schemas']['CursorPage']>().not.toEqualTypeOf<
+				components['schemas']['Page']
+			>();
+			// @ts-expect-error an absent cursor is omitted, never null.
+			void ({ items: [], page: { has_more: false, next_cursor: null } } satisfies components['schemas']['APIRootCursorCollection']);
+			// @ts-expect-error has_more is required on every cursor page.
+			void ({ items: [], page: {} } satisfies components['schemas']['APIRootCursorCollection']);
+			// @ts-expect-error offset members do not belong to the cursor contract.
+			void ({ items: [], page: { has_more: false, total: 0 } } satisfies components['schemas']['APIRootCursorCollection']);
+			// @ts-expect-error a cursor page is not interchangeable with the neutral page.
+			void ({ items: [], page: { has_more: false, next_cursor: 'nc1.a.b.c' } } satisfies components['schemas']['APIRootCollection']);
+		}
+	});
 });

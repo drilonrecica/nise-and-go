@@ -51,6 +51,22 @@ define schemas and constructors such as `InvoiceCollection`; each constructor
 must normalize a nil Go slice to `[]` before writing. Do not add a generic
 runtime envelope or `data`, `result`, and `meta` wrappers.
 
+An operational list pages by cursor. Give it a `page` of `CursorPage` and
+reference the shared `CursorLimit`, `CursorAfter`, and `CursorBefore` parameter
+components so every collection names the same three parameters.
+`next_cursor` and `prev_cursor` are absent, never null, when there is no page
+in that direction. `APIRootCursorCollection` is the fixture.
+
+In `api.go`, `cursorBinding` fingerprints the query a cursor belongs to —
+every parameter except `limit`, `after`, and `before` — and `issueCursorPage`
+mints one authenticated cursor per direction that has a further page. Query one
+row more than the requested limit to learn `has_more`, sort by a unique key,
+and put any filter that is not in the query string (a path parameter, the
+caller's tenant) into the resource argument. Pagination failures are `400`
+with `invalid_pagination` or `cursor_expired`; `paginationProblem` does that
+mapping. A cursor is signed with `CURSOR_SIGNING_KEY` and expires after
+`CURSOR_TTL`.
+
 The API and document routers are sibling security boundaries with independent
 policies. Application middleware may be added only through the documented
 `httpapi.MiddlewareSlots`, inside the fixed security, request identity/logging,

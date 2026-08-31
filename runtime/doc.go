@@ -17,6 +17,8 @@
 //   - runtime/secure        security headers and Content Security Policy
 //   - runtime/transaction   driver-independent use-case transaction lifecycle,
 //     rollback bounds, and closed isolation/access options
+//   - runtime/pagination    authenticated versioned cursor tokens, key
+//     rotation, and cursor request parsing
 //
 // The name runtime/internal is reserved for shared implementation. No such
 // package exists yet: every package above compiles against the standard library

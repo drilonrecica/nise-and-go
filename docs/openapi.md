@@ -27,9 +27,28 @@ explicitly in OpenAPI—for example, `InvoiceCollection`—instead of adding a
 generic runtime response type. Because a generated Go slice can still be nil,
 each concrete server-side collection constructor normalizes nil items to an
 empty non-nil slice before writing; the API-root fixture makes that rule
-executable. The initial neutral `Page` requires `has_more`; cursor and offset
-reporting contracts add their distinct metadata without combining incompatible
-pagination semantics.
+executable. The neutral `Page` requires only `has_more`, for a collection with
+no paging strategy of its own; cursor and offset reporting contracts add their
+distinct metadata without combining incompatible pagination semantics.
+
+## Cursor pagination
+
+`CursorPage` is the page contract for a cursor-paginated collection: required
+`has_more`, plus `next_cursor` and `prev_cursor`, which are **absent** rather
+than null when there is no page in that direction. `Cursor` is a closed string
+schema bounded at 4096 bytes, and the reusable `CursorLimit`, `CursorAfter`,
+and `CursorBefore` parameter components are what a domain list operation
+references so every collection names the same three parameters.
+`APIRootCursorCollection` is the executable fixture, on the same terms as
+`APIRootCollection`: it proves the generated Go and TypeScript shapes without
+inventing a public list endpoint.
+
+The token itself is authenticated, versioned, expiring, and bound to the query
+it was issued for; `runtime/pagination` owns that format and the generated
+application owns the per-collection decisions. Pagination failures are `400`
+with the `invalid_pagination` or `cursor_expired` Problem code. See
+[Pagination](pagination.md) and
+[ADR 0016](adr/0016-authenticated-cursor-pagination.md).
 
 ## Files and ownership
 
@@ -38,8 +57,8 @@ pagination semantics.
 | `api/openapi.yaml` | application | hand-edited authoritative contract |
 | `api/oapi-codegen.yaml` | application | strict chi generation choices |
 | `internal/platform/httpapi/openapigen/openapi.gen.go` | Nise/tool | complete checked-in oapi-codegen output |
-| `internal/platform/httpapi/api.go` | application | explicit strict handler adapter and registration |
-| `internal/platform/httpapi/api_test.go` | application | route-level contract through the real middleware core |
+| `internal/platform/httpapi/api.go` | application | explicit strict handler adapter, registration, cursor binding and page issuing |
+| `internal/platform/httpapi/api_test.go` | application | route, collection, and cursor contracts through the real middleware core |
 | `internal/platform/httpapi/httpjson/json.go` | application | bounded strict request decoder and response writer |
 | `internal/platform/httpapi/httpjson/json_test.go` | application | malformed, duplicate, unknown, and oversized-body contracts |
 | `internal/platform/httpapi/problem/problem.go` | application | validated RFC 9457 catalog and bounded writer |
@@ -146,7 +165,7 @@ a second wire struct. Required text and identity members are explicitly
 nonempty in both the schema and the Go definition validator.
 
 The application-owned `problem` package exposes validated catalog accessors
-for `400`, `404`, `405`, `413`, `415`, and `500`. Built-in `type` identifiers
+for `400` (three distinct codes), `404`, `405`, `413`, `415`, and `500`. Built-in `type` identifiers
 are root-relative full paths under `/problems/`, titles and public details are
 stable, and HTTP/JSON statuses come from the same definition. Definitions
 bound every text field and restrict machine codes. `httpjson.WriteMediaType`

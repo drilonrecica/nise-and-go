@@ -10,10 +10,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/pagination"
 	"github.com/drilonrecica/nise-and-go/runtime/secure"
 
 	"{{.ModulePath}}/internal/platform/httpapi/httpjson"
@@ -23,7 +26,7 @@ import (
 
 func TestStrictOpenAPIIndexRoute(t *testing.T) {
 	deps, _, _ := routerTestDeps(t)
-	deps.RegisterAPI = NewServer().Register
+	deps.RegisterAPI = testServer(t).Register
 	handler, err := New(deps)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -92,6 +95,221 @@ func TestCollectionResponseShape(t *testing.T) {
 	}
 }
 
+func TestNewServerRequiresACursorCodec(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewServer(nil); err == nil {
+		t.Fatal("NewServer accepted a nil cursor codec")
+	}
+}
+
+func TestCursorCollectionResponseShape(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty page", func(t *testing.T) {
+		t.Parallel()
+		response := httptest.NewRecorder()
+		if err := httpjson.Write(response, http.StatusOK, newAPIRootCursorCollection(
+			nil,
+			openapigen.CursorPage{HasMore: false},
+		)); err != nil {
+			t.Fatalf("write cursor collection fixture: %v", err)
+		}
+		const want = `{"items":[],"page":{"has_more":false}}` + "\n"
+		if got := response.Body.String(); got != want {
+			t.Fatalf("body = %q, want exact non-null shape %q", got, want)
+		}
+	})
+
+	t.Run("cursor members are absent rather than null", func(t *testing.T) {
+		t.Parallel()
+		root := openapigen.APIRoot{Version: openapigen.V1}
+		response := httptest.NewRecorder()
+		if err := httpjson.Write(response, http.StatusOK, newAPIRootCursorCollection(
+			[]openapigen.APIRoot{root},
+			openapigen.CursorPage{HasMore: true, NextCursor: cursorPointer("nc1.k.a.b")},
+		)); err != nil {
+			t.Fatalf("write cursor collection fixture: %v", err)
+		}
+		body := response.Body.String()
+		if strings.Contains(body, "null") {
+			t.Errorf("body contains null: %q", body)
+		}
+		if strings.Contains(body, `"prev_cursor"`) {
+			t.Errorf("absent previous cursor was serialized: %q", body)
+		}
+		if !strings.Contains(body, `"next_cursor":"nc1.k.a.b"`) {
+			t.Errorf("body lacks the issued next cursor: %q", body)
+		}
+	})
+}
+
+func TestCursorBindingIgnoresOnlyThePaginationParameters(t *testing.T) {
+	t.Parallel()
+
+	base := cursorBinding(cursorRequest(t, "/api/v1/widgets?status=open"), "/widgets")
+
+	same := []string{
+		"/api/v1/widgets?status=open&limit=50",
+		"/api/v1/widgets?status=open&after=nc1.k.a.b",
+		"/api/v1/widgets?status=open&before=nc1.k.a.b",
+		"/api/v1/widgets?limit=1&status=open&after=x&before=y",
+	}
+	for _, target := range same {
+		if got := cursorBinding(cursorRequest(t, target), "/widgets"); got.String() != base.String() {
+			t.Errorf("%s changed the binding; pagination parameters must not be part of it", target)
+		}
+	}
+
+	different := []string{
+		"/api/v1/widgets?status=closed",
+		"/api/v1/widgets?status=open&owner=7",
+		"/api/v1/widgets",
+		"/api/v1/widgets?status=open&status=closed",
+	}
+	for _, target := range different {
+		if got := cursorBinding(cursorRequest(t, target), "/widgets"); got.String() == base.String() {
+			t.Errorf("%s kept the binding; a filter change must invalidate outstanding cursors", target)
+		}
+	}
+	if got := cursorBinding(cursorRequest(t, "/api/v1/gadgets?status=open"), "/gadgets"); got.String() == base.String() {
+		t.Error("two resources share one binding")
+	}
+}
+
+func TestIssueCursorPage(t *testing.T) {
+	t.Parallel()
+
+	codec := testCursorCodec(t)
+	binding := cursorBinding(cursorRequest(t, "/api/v1/widgets?status=open"), "/widgets")
+
+	page, err := issueCursorPage(codec, binding, pageBoundaries{
+		First:       []string{"100"},
+		Last:        []string{"149"},
+		HasMore:     true,
+		HasPrevious: true,
+	})
+	if err != nil {
+		t.Fatalf("issueCursorPage: %v", err)
+	}
+	if !page.HasMore || page.NextCursor == nil || page.PrevCursor == nil {
+		t.Fatalf("page = %#v, want both cursors", page)
+	}
+
+	next, err := codec.Decode(binding, *page.NextCursor)
+	if err != nil {
+		t.Fatalf("decode next cursor: %v", err)
+	}
+	if next.Direction != pagination.Forward || next.Values[0] != "149" {
+		t.Errorf("next cursor = %#v, want forward at the last row", next)
+	}
+	previous, err := codec.Decode(binding, *page.PrevCursor)
+	if err != nil {
+		t.Fatalf("decode previous cursor: %v", err)
+	}
+	if previous.Direction != pagination.Backward || previous.Values[0] != "100" {
+		t.Errorf("previous cursor = %#v, want backward at the first row", previous)
+	}
+
+	other := cursorBinding(cursorRequest(t, "/api/v1/widgets?status=closed"), "/widgets")
+	if _, err := codec.Decode(other, *page.NextCursor); !errors.Is(err, pagination.ErrCursorBinding) {
+		t.Errorf("a cursor issued for one filter decoded under another: %v", err)
+	}
+
+	t.Run("no further page issues no cursor", func(t *testing.T) {
+		t.Parallel()
+		empty, err := issueCursorPage(codec, binding, pageBoundaries{})
+		if err != nil {
+			t.Fatalf("issueCursorPage: %v", err)
+		}
+		if empty.HasMore || empty.NextCursor != nil || empty.PrevCursor != nil {
+			t.Fatalf("page = %#v, want no cursors", empty)
+		}
+	})
+
+	t.Run("an unbound query cannot issue a cursor", func(t *testing.T) {
+		t.Parallel()
+		_, err := issueCursorPage(codec, pagination.Binding{}, pageBoundaries{Last: []string{"1"}, HasMore: true})
+		if !errors.Is(err, pagination.ErrBinding) {
+			t.Fatalf("error = %v, want ErrBinding", err)
+		}
+	})
+}
+
+func TestParsePageThroughTheApplicationCodec(t *testing.T) {
+	t.Parallel()
+
+	codec := testCursorCodec(t)
+	limits, err := pagination.NewLimits(25, 100)
+	if err != nil {
+		t.Fatalf("NewLimits: %v", err)
+	}
+	request := cursorRequest(t, "/api/v1/widgets?status=open&limit=10")
+	binding := cursorBinding(request, "/widgets")
+
+	page, err := codec.ParsePage(binding, request.URL.Query(), limits)
+	if err != nil {
+		t.Fatalf("ParsePage: %v", err)
+	}
+	if page.Limit != 10 || page.HasCursor || page.Direction != pagination.Forward {
+		t.Fatalf("page = %#v", page)
+	}
+}
+
+func TestPaginationProblemMapsEveryFailureToTheClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{name: "expired", err: pagination.ErrCursorExpired, wantCode: "cursor_expired"},
+		{name: "forged", err: pagination.ErrCursorSignature, wantCode: "invalid_pagination"},
+		{name: "wrong query", err: pagination.ErrCursorBinding, wantCode: "invalid_pagination"},
+		{name: "wrong direction", err: pagination.ErrCursorDirection, wantCode: "invalid_pagination"},
+		{name: "malformed", err: pagination.ErrCursorMalformed, wantCode: "invalid_pagination"},
+		{name: "unsupported version", err: pagination.ErrCursorVersion, wantCode: "invalid_pagination"},
+		{name: "limit", err: pagination.ErrInvalidLimit, wantCode: "invalid_pagination"},
+		{name: "conflicting cursors", err: pagination.ErrConflictingCursors, wantCode: "invalid_pagination"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			definition := paginationProblem(fmt.Errorf("internal detail: %w", tc.err))
+			if definition.Status() != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", definition.Status())
+			}
+			if definition.Code() != tc.wantCode {
+				t.Errorf("code = %q, want %q", definition.Code(), tc.wantCode)
+			}
+
+			response := httptest.NewRecorder()
+			problem.Handler(definition)(response, transportRequestWithIDs(), fmt.Errorf("cursor nc1.secret.value: %w", tc.err))
+			for _, forbidden := range []string{"nc1.secret.value", "internal detail"} {
+				if strings.Contains(response.Body.String(), forbidden) {
+					t.Errorf("response exposed %q: %q", forbidden, response.Body.String())
+				}
+			}
+
+			// The public detail is the catalog's fixed text for this
+			// definition, never anything derived from the cause: two
+			// different signature failures must be indistinguishable.
+			var body openapigen.Problem
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode problem: %v", err)
+			}
+			wantDetail := "The pagination parameters are not valid for this collection."
+			if tc.wantCode == "cursor_expired" {
+				wantDetail = "The pagination cursor has expired; start the listing again."
+			}
+			if body.Detail != wantDetail {
+				t.Errorf("detail = %q, want the catalog text %q", body.Detail, wantDetail)
+			}
+		})
+	}
+}
+
 func TestResponseTransportErrorDoesNotExposeCause(t *testing.T) {
 	response := httptest.NewRecorder()
 	problem.Handler(problem.InternalServerError())(
@@ -154,6 +372,51 @@ func TestRequestTransportErrorMapsBoundedPublicFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testCursorCodec builds a codec with a throwaway key. A real deployment gets
+// its key ring from configuration; a test only needs one that signs.
+func testCursorCodec(t *testing.T) *pagination.Codec {
+	t.Helper()
+
+	key, err := pagination.GenerateKey("test")
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	ring, err := pagination.NewKeyRing(key)
+	if err != nil {
+		t.Fatalf("NewKeyRing: %v", err)
+	}
+	codec, err := pagination.NewCodec(ring, time.Hour)
+	if err != nil {
+		t.Fatalf("NewCodec: %v", err)
+	}
+	return codec
+}
+
+func testServer(t *testing.T) *Server {
+	t.Helper()
+
+	server, err := NewServer(testCursorCodec(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return server
+}
+
+func cursorRequest(t *testing.T, target string) *http.Request {
+	t.Helper()
+
+	parsed, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("parse %q: %v", target, err)
+	}
+	return httptest.NewRequest(http.MethodGet, parsed.String(), nil)
+}
+
+func cursorPointer(value string) *openapigen.Cursor {
+	cursor := openapigen.Cursor(value)
+	return &cursor
 }
 
 func transportRequestWithIDs() *http.Request {

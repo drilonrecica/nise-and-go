@@ -3,6 +3,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"os"
 	"strings"
 	"testing"
@@ -67,6 +68,133 @@ func TestLoadRejectsInvalidSlowQueryThreshold(t *testing.T) {
 	}
 }
 
+func TestLoadBuildsTheCursorKeyRing(t *testing.T) {
+	setTestEnvironment(t)
+	t.Setenv("CURSOR_RETIRED_KEYS", testCursorKey("y2025b")+","+testCursorKey("y2025a"))
+
+	cfg, warnings, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CursorKeysAreEphemeral {
+		t.Error("a configured signing key was reported as ephemeral")
+	}
+	if got := cfg.CursorKeys.ActiveID(); got != "y2026a" {
+		t.Errorf("ActiveID = %q, want y2026a", got)
+	}
+	if got := cfg.CursorKeys.IDs(); len(got) != 3 || got[1] != "y2025b" || got[2] != "y2025a" {
+		t.Errorf("IDs = %v, want the active key and both retired keys", got)
+	}
+	if cfg.CursorTTL != time.Hour {
+		t.Errorf("CursorTTL = %s, want 1h", cfg.CursorTTL)
+	}
+	for _, warning := range warnings {
+		if strings.Contains(warning, "CURSOR_SIGNING_KEY") {
+			t.Errorf("configured key produced warning %q", warning)
+		}
+	}
+}
+
+func TestLoadGeneratesAnEphemeralCursorKeyOutsideProduction(t *testing.T) {
+	setTestEnvironment(t)
+	t.Setenv("CURSOR_SIGNING_KEY", "")
+
+	cfg, warnings, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.CursorKeysAreEphemeral {
+		t.Fatal("an unset signing key was not reported as ephemeral")
+	}
+	if got := cfg.CursorKeys.ActiveID(); got != "ephemeral" {
+		t.Errorf("ActiveID = %q, want ephemeral", got)
+	}
+	warned := false
+	for _, warning := range warnings {
+		if strings.Contains(warning, "CURSOR_SIGNING_KEY") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("warnings = %v, want one naming CURSOR_SIGNING_KEY", warnings)
+	}
+}
+
+func TestProductionRefusesAnEphemeralCursorKey(t *testing.T) {
+	setTestEnvironment(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("LOG_FORMAT", "json")
+	t.Setenv("CURSOR_SIGNING_KEY", "")
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("production accepted a generated cursor signing key")
+	}
+	if !strings.Contains(err.Error(), "CURSOR_SIGNING_KEY") {
+		t.Errorf("error %q does not name CURSOR_SIGNING_KEY", err)
+	}
+}
+
+func TestLoadRejectsUnusableCursorConfiguration(t *testing.T) {
+	tests := []struct {
+		name  string
+		env   map[string]string
+		wants string
+	}{
+		{
+			name:  "signing key is not id:base64",
+			env:   map[string]string{"CURSOR_SIGNING_KEY": "no-separator"},
+			wants: "CURSOR_SIGNING_KEY",
+		},
+		{
+			name:  "signing key secret is too short",
+			env:   map[string]string{"CURSOR_SIGNING_KEY": "y2026a:" + base64.StdEncoding.EncodeToString([]byte("short"))},
+			wants: "CURSOR_SIGNING_KEY",
+		},
+		{
+			name:  "retired key repeats the active identifier",
+			env:   map[string]string{"CURSOR_RETIRED_KEYS": testCursorKey("y2026a")},
+			wants: "CURSOR_SIGNING_KEY",
+		},
+		{
+			name:  "retired entry is empty",
+			env:   map[string]string{"CURSOR_RETIRED_KEYS": testCursorKey("y2025a") + ",,"},
+			wants: "CURSOR_RETIRED_KEYS",
+		},
+		{
+			name:  "retired keys without a signing key",
+			env:   map[string]string{"CURSOR_SIGNING_KEY": "", "CURSOR_RETIRED_KEYS": testCursorKey("y2025a")},
+			wants: "CURSOR_RETIRED_KEYS",
+		},
+		{
+			name:  "lifetime is zero",
+			env:   map[string]string{"CURSOR_TTL": "0s"},
+			wants: "CURSOR_TTL",
+		},
+		{
+			name:  "lifetime is beyond the ceiling",
+			env:   map[string]string{"CURSOR_TTL": "25h"},
+			wants: "CURSOR_TTL",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setTestEnvironment(t)
+			for name, value := range tc.env {
+				t.Setenv(name, value)
+			}
+			_, _, err := Load()
+			if err == nil {
+				t.Fatalf("Load accepted %v", tc.env)
+			}
+			if !strings.Contains(err.Error(), tc.wants) {
+				t.Errorf("error %q does not name %s", err, tc.wants)
+			}
+		})
+	}
+}
+
 func setTestEnvironment(t *testing.T) {
 	t.Helper()
 	values := map[string]string{
@@ -89,6 +217,9 @@ func setTestEnvironment(t *testing.T) {
 		"DB_HEALTH_CHECK_PERIOD":  "30s",
 		"DB_CONNECT_TIMEOUT":      "5s",
 		"DB_SLOW_QUERY_THRESHOLD": "250ms",
+		"CURSOR_SIGNING_KEY":      testCursorKey("y2026a"),
+		"CURSOR_RETIRED_KEYS":     "",
+		"CURSOR_TTL":              "1h",
 	}
 	for name, value := range values {
 		t.Setenv(name, value)
@@ -96,6 +227,19 @@ func setTestEnvironment(t *testing.T) {
 	unsetTestEnvironment(t, "OPERATOR_TOKEN_FILE")
 	unsetTestEnvironment(t, "DATABASE_URL_FILE")
 	unsetTestEnvironment(t, "DATABASE_PASSWORD_FILE")
+	unsetTestEnvironment(t, "CURSOR_SIGNING_KEY_FILE")
+	unsetTestEnvironment(t, "CURSOR_RETIRED_KEYS_FILE")
+}
+
+// testCursorKey builds a well-formed key for a given identifier. The secret is
+// deliberately a fixed pattern: it is a test fixture, not a credential, and a
+// real deployment generates one with openssl.
+func testCursorKey(id string) string {
+	secret := make([]byte, 32)
+	for i := range secret {
+		secret[i] = byte(i) ^ id[len(id)-1]
+	}
+	return id + ":" + base64.StdEncoding.EncodeToString(secret)
 }
 
 func unsetTestEnvironment(t *testing.T, name string) {

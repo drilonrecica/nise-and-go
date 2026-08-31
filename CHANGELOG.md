@@ -11,6 +11,11 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
 - Initial public project documentation.
 - Add the public `runtime/transaction` package and generated pgx/sqlc wiring
   for use-case-owned business transactions.
+- Add the public `runtime/pagination` package: authenticated, versioned,
+  query-bound cursor tokens with key rotation, and strict `limit`/`after`/
+  `before` parsing. Generated applications gain the `CursorPage` OpenAPI
+  contract, the `CURSOR_SIGNING_KEY`, `CURSOR_RETIRED_KEYS`, and `CURSOR_TTL`
+  settings, and `invalid_pagination`/`cursor_expired` Problem types.
 
 ## Release policy
 

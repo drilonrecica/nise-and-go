@@ -214,6 +214,16 @@ state. Single resources are returned directly. Collections define concrete,
 closed `{ "items": [...], "page": {...} }` schemas with `[]` for no items;
 do not introduce a generic `data`, `result`, or runtime envelope.
 
+Operational lists page by cursor: `limit`, `after`, and `before` in, a
+`CursorPage` out, with `next_cursor` and `prev_cursor` absent rather than null
+when there is no page that way. A cursor is an opaque HMAC-authenticated token
+that expires after `CURSOR_TTL`, is bound to the exact query it was issued for,
+and may only be used in the direction it was issued for. Set
+`CURSOR_SIGNING_KEY` to `<id>:<base64 secret>`; production refuses to start
+without it, and `CURSOR_RETIRED_KEYS` rotates it without breaking outstanding
+cursors. `runtime/pagination` owns the token; `api.go` owns the per-collection
+binding, page issuing, and `400` mapping.
+
 Declared JSON request bodies are limited to 1 MiB and require the exact
 declared media type (parameters are allowed), one value, no unknown fields,
 and no repeated object keys, including case variants at any nesting level.
