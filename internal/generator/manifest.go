@@ -156,6 +156,7 @@ var templateFiles = []templateFile{
 	{Template: "frontend/README.md.tmpl", Output: "frontend/README.md", Owner: OwnerApp},
 	{Template: "frontend/gitignore.tmpl", Output: "frontend/.gitignore", Owner: OwnerApp},
 	{Template: "frontend/package.json.tmpl", Output: "frontend/package.json", Owner: OwnerApp},
+	{Template: "frontend/scripts/check-runes.mjs.tmpl", Output: "frontend/scripts/check-runes.mjs", Owner: OwnerApp},
 	{Template: "frontend/src/app.css.tmpl", Output: "frontend/src/app.css", Owner: OwnerApp},
 	{Template: "frontend/src/app.d.ts.tmpl", Output: "frontend/src/app.d.ts", Owner: OwnerApp},
 	{Template: "frontend/src/app.html.tmpl", Output: "frontend/src/app.html", Owner: OwnerApp},

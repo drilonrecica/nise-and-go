@@ -10,7 +10,7 @@ where this page says otherwise.
 pnpm install     # once
 pnpm dev         # Vite dev server, hot reload
 pnpm build       # production build — see below
-pnpm check       # svelte-check type checking
+pnpm check       # stale models, runes-only lint, then svelte-check
 pnpm test:unit   # typed API-client unit contracts
 ```
 
@@ -39,6 +39,33 @@ empty `items` as `[]`, never `null`, and do not add a client-side envelope.
 `pnpm build` and `pnpm check` both refuse stale models. The initial Vitest
 suite is Node-only and covers the fetch wrapper. Browser component and
 Playwright coverage arrive with the application-shell milestone.
+
+## Runes only
+
+This application is Svelte 5 runes-only, and `pnpm check` refuses Svelte 4
+syntax:
+
+| Svelte 4 | Use instead |
+|---|---|
+| `$: value = …` | `$derived` for a value, `$effect` for a side effect |
+| `export let prop` | destructure from `$props()` |
+| `$$props`, `$$restProps`, `$$slots` | take the rest of `$props()` explicitly; snippets replace slots |
+| `createEventDispatcher` | a callback prop, such as `onselect` |
+| `beforeUpdate` / `afterUpdate` | `$effect`, or `$effect.pre` |
+| `import { writable } from 'svelte/store'` | a `.svelte.ts` module holding `$state` |
+| `on:click={…}` | `onclick={…}` |
+| `<slot />`, `let:item` | a snippet prop and `{@render …}` |
+
+Svelte 5 accepts every construct on the left, which is why this is checked
+rather than assumed: none of them is a compile error or a `svelte-check`
+finding. Shared reactive state belongs in a `.svelte.ts` module holding
+`$state`, not in a store.
+
+The checker is `scripts/check-runes.mjs` — one owned file, no dependency,
+run by `pnpm check:runes` and by `pnpm check`. It reads `<script>` blocks
+and markup separately, so a Tailwind `md:` class, a `$:` inside a string,
+and an `on:` inside a comment are not findings. Edit its rules, add to them,
+or delete the file; prefer editing over leaving a violation unreported.
 
 ## `pnpm build` writes outside this directory
 
