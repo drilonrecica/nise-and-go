@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -99,7 +100,20 @@ func TestLoader_Secret_FileErrorNamesVariableNotValue(t *testing.T) {
 	}
 }
 
+// TestLoader_Secret_PermissionWarningIsCollected proves the warning
+// readSecretFile produces for a group- or world-readable secret file
+// survives the trip through Loader and is reported to the caller, rather
+// than being produced and then dropped.
+//
+// It skips on Windows for the same reason
+// TestReadSecretFile_PermissionsWarning does: checkSecretFilePermissions
+// deliberately returns false there, because the POSIX bits it reads do not
+// describe who can actually open the file. Asserting a warning appears would
+// be asserting against the documented behaviour.
 func TestLoader_Secret_PermissionWarningIsCollected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not meaningful on windows")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "db_password")
 	if err := os.WriteFile(path, []byte("hunter2"), 0o644); err != nil {
