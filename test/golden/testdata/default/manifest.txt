@@ -15,7 +15,7 @@ README.md file 0644 3c2c53af13d7ab43efb23f3fedf6ec8338cc673a22fea8cf82da417ce5e4
 api dir 0755
 api/README.md file 0644 fba9f6667e73ebeef26daaf09e235bef9ac18d4f5167d838b1280d8794a49c8d
 api/oapi-codegen.yaml file 0644 d309bcb97daca34cbe295ab8deeb503f7a9081599ec52ad266360f5e7e329ae7
-api/openapi.yaml file 0644 00624e6b1270f6db76c6e661f7f55cd8c5f845543151be153f22d0d60aa17f03
+api/openapi.yaml file 0644 eff3d04d73703fb649e821b2b5dfba7aafe4d04e13f25d491e01df9371357001
 cmd dir 0755
 cmd/myapp dir 0755
 cmd/myapp/main.go file 0644 d6f227794c5945329be1ca938b309b6eda1ebb6e74eb982a551b1a88749fb144
@@ -58,7 +58,7 @@ frontend/src/lib/api/client.test.ts file 0644 36096cc0043e747e968f94fc81049c2a5a
 frontend/src/lib/api/client.ts file 0644 c0c2aee1d64c938ed6564304226dc263ff3e5c3dae917154c485408d5b87ef48
 frontend/src/lib/api/problem.test.ts file 0644 10d98186a29ac2fc7f3a1f734705572965124461794bb7e425adc8357383d382
 frontend/src/lib/api/problem.ts file 0644 1128ddfe426bf87e0d120851cc0bff3374ac9899878722634ec8569030965d7c
-frontend/src/lib/api/schema.d.ts file 0644 5102ff4af5e9046506352bd593e780f7c953ef2f87870c2677480e8f5249717d
+frontend/src/lib/api/schema.d.ts file 0644 b24f13fb4fd92aa299cce14305d0948975e4c5498c85ebf35c0f471e724aeae2
 frontend/src/lib/components dir 0755
 frontend/src/lib/components/LocaleControl.svelte file 0644 ab43b85f47d02188eb4b024dbb5b6ab11e8042fa8d8880e24c13597ef1fa249d
 frontend/src/lib/components/ThemeControl.svelte file 0644 581de32d5dbb8f9f96159fed91536b8838c56c3603434d3d9cd73b834633b452
@@ -116,7 +116,9 @@ frontend/src/routes/(app)/+page.svelte file 0644 be93ddd8d3b96935a5da64a6e9e8477
 frontend/src/routes/(app)/account dir 0755
 frontend/src/routes/(app)/account/+page.svelte file 0644 11b10d3b0e2d73601dde159a78a7e2ccc6d36ecd327b8a55b7b153914bbf75df
 frontend/src/routes/(app)/settings dir 0755
-frontend/src/routes/(app)/settings/+page.svelte file 0644 239330df3d0d706cd7c41e1bb9017f0969446753b4f69413dbf344cc12b368a7
+frontend/src/routes/(app)/settings/+page.svelte file 0644 bea180f32bac0e56421f4ecc92a469734c9751769d7506b53e611762fef1d946
+frontend/src/routes/(app)/settings/about dir 0755
+frontend/src/routes/(app)/settings/about/+page.svelte file 0644 840450cc7b918722940a5549ac48a636f8f5375ec7e67ffdcf500c60bfe0dbfa
 frontend/src/routes/(app)/sign-out dir 0755
 frontend/src/routes/(app)/sign-out/+page.svelte file 0644 8063cdebb7876d73a9810f71b4f624aeafdbb4da20414a5ed0fb5df7c0aee7e7
 frontend/src/routes/(public) dir 0755
@@ -140,7 +142,7 @@ frontend/vitest.config.ts file 0644 a4746c6c2e536dacf48fa3e3bdb390cdf76d60d1fd2a
 go.mod file 0644 b79a68cf369fcca7aef313df1c98499bb2b1568207193aeef6dd31aefb440ede
 internal dir 0755
 internal/app dir 0755
-internal/app/app.go file 0644 701478089465ee4ac3e493ebfa2d937f835e21387bfcd2eb63224fb242afde2f
+internal/app/app.go file 0644 75d7fb8b579817062220c8f125d01d7964f0961a82233b8bc2d1c6592b27a60b
 internal/app/database.go file 0644 0dda4beca6185845806aafa2f0211db9b8c8c832cbf9ead38290ad78bfe98318
 internal/app/database_runtime.go file 0644 cebda86bbdf1a0094abe173b61e8785fc752dea884089bbddcaa8108598ff4d5
 internal/app/enroll.go file 0644 6850a71425dac91d0f9dbfc20c0efbf38284ab4d0607da61e5f6470fb0649268
@@ -192,7 +194,7 @@ internal/platform dir 0755
 internal/platform/authorization dir 0755
 internal/platform/authorization/authorizer.go file 0644 ef65d2b58634cc0c618b6569cdd574ad164ee191566301b55c67dc59f3431789
 internal/platform/authorization/authorizer_test.go file 0644 4e7012c1a0a35c9333ca95a06d1934056debecd69e41a467a2df8add784a02d9
-internal/platform/authorization/catalog.go file 0644 52a3fd2c7942d5d37bd8663a34527252d019dee14bd7eb281dd61d95a095567c
+internal/platform/authorization/catalog.go file 0644 2f7b3c6099a59f125b373a23581f0df75bc69ec463c8c738f8c93892505477cd
 internal/platform/authorization/catalog_test.go file 0644 56224c25b9c0205c4ebed9a7d33e2e8b033f6369f87f9afe6144d728a64ea5bd
 internal/platform/config dir 0755
 internal/platform/config/config.go file 0644 d20bab24f778e91afa4ac7e28d8884c3c7fe812c0c73b0335619f0bdc7a848a8
@@ -221,13 +223,13 @@ internal/platform/database/testdata/migration-upgrades/00001_baseline.sql file 0
 internal/platform/database/transaction.go file 0644 ce4a448d06884dc199f3e5b496d96815fef57fa4ae0ab1237a6f264f2e28742b
 internal/platform/database/transaction_test.go file 0644 afd0840cc8f1c8f4a845367865af78be3875699f781d63c1a12a11e92b3bd9fd
 internal/platform/httpapi dir 0755
-internal/platform/httpapi/api.go file 0644 a274d52840ea03af15aec71956aae357c1e5d8892e915f48f772a0f55200d490
+internal/platform/httpapi/api.go file 0644 4f81f7f58bdec8379ff723e9825c2d89345aabc7db8f32da033a208e8809e71b
 internal/platform/httpapi/api_test.go file 0644 0bedce52e0624e5de57c6638f48d85e928e8901741824cb17b3cf953392ad381
 internal/platform/httpapi/httpjson dir 0755
 internal/platform/httpapi/httpjson/json.go file 0644 a3044e4abe486e569be1f815539f66b6b99ce447d624469a18e9b965b8f94ac6
 internal/platform/httpapi/httpjson/json_test.go file 0644 ff605f3f45c132946f7c514cf62786d2d7f99cd1894a6c0d889f3fb29c186237
 internal/platform/httpapi/openapigen dir 0755
-internal/platform/httpapi/openapigen/openapi.gen.go file 0644 df2d25f90d2e28c4b1ba84a895b18773492cff893784bdbc8316781e2d56a913
+internal/platform/httpapi/openapigen/openapi.gen.go file 0644 ffd8120ff0522427576cf56c74ea63da08f7ef063e80285fe2bab34dbd714bcc
 internal/platform/httpapi/problem dir 0755
 internal/platform/httpapi/problem/problem.go file 0644 ee6d8a7ecfaeb9b6ca381463f1b37ae4333d152893c16b6232f2a357d31ff408
 internal/platform/httpapi/problem/problem_test.go file 0644 58ec205b552c9bfb69ba04c2e13d263f39f27ef129023b78776f44321583be0c
@@ -235,6 +237,7 @@ internal/platform/httpapi/router.go file 0644 2167a5c087950075c8c1e3be19cbe57e80
 internal/platform/httpapi/router_test.go file 0644 6504f432871bea9fe1b5a9d2a31f4de9285dafb6bf92a331ec243411da545999
 internal/platform/httpapi/session.go file 0644 eb68eb3cb96fb30fe2ee1a8e4b9679f8a7d1cdb60d68071d521277406929d708
 internal/platform/httpapi/session_test.go file 0644 8c597199902f0910c5d9f206e71b536fc89f4b70976abcc7aa710e8443183355
+internal/platform/httpapi/system.go file 0644 a85380179f5cbc601c347db8ed88356e7a9846cec4249065d9f662195e7c1f4c
 internal/platform/httpapi/transport_test.go file 0644 882b12b5dd6407158f081bad7b800d84479d1e4bccbe7afdb57bf5f0a86473db
 internal/platform/httpauth dir 0755
 internal/platform/httpauth/context.go file 0644 762930651454ba19a825e4ecfd9627ea6eda5feebef62268a0319cc9978d9f5b

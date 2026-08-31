@@ -1,0 +1,84 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { api } from '$lib/api/client';
+	import type { components } from '$lib/api/schema';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import ProblemAlert from '$lib/components/ui/ProblemAlert.svelte';
+	import Skeleton from '$lib/components/ui/Skeleton.svelte';
+
+	let info = $state<components['schemas']['SystemInfo'] | null>(null);
+	let failure = $state<unknown>(null);
+
+	async function load() {
+		failure = null;
+		try {
+			info = await api.get('/system');
+		} catch (error) {
+			failure = error;
+		}
+	}
+
+	$effect(() => void load());
+</script>
+
+<svelte:head>
+	<title>About · {{.AppName}}</title>
+</svelte:head>
+
+<div class="mx-auto max-w-3xl space-y-6 px-4 py-8 sm:px-6">
+	<div>
+		<h1 class="text-2xl font-semibold tracking-tight text-text">About this deployment</h1>
+		<p class="mt-2 text-sm text-text-muted">
+			What the running binary is. It needs the
+			<code class="rounded-xs bg-surface-muted px-1 font-mono text-[0.8125rem]">system.read</code>
+			permission, because a version is the first thing anybody looking for a known vulnerability asks
+			for.
+		</p>
+	</div>
+
+	{#if failure}
+		<ProblemAlert error={failure} onretry={load} />
+	{:else if info === null}
+		<div class="space-y-2" aria-busy="true">
+			<Skeleton class="h-6 w-64" />
+			<Skeleton class="h-6 w-48" />
+		</div>
+	{:else}
+		<dl class="divide-y divide-line rounded-lg border border-line bg-surface text-sm">
+			<div class="flex justify-between gap-4 px-5 py-3">
+				<dt class="text-text-muted">Application version</dt>
+				<dd class="font-mono text-text">{info.application_version}</dd>
+			</div>
+			<div class="flex justify-between gap-4 px-5 py-3">
+				<dt class="text-text-muted">Environment</dt>
+				<dd class="text-text">{info.environment}</dd>
+			</div>
+			<div class="flex justify-between gap-4 px-5 py-3">
+				<dt class="text-text-muted">Framework</dt>
+				<dd class="text-right font-mono text-text">
+					{info.framework_module}<br />{info.framework_version}
+				</dd>
+			</div>
+			<div class="flex justify-between gap-4 px-5 py-3">
+				<dt class="text-text-muted">Optional modules</dt>
+				<dd class="flex flex-wrap justify-end gap-1">
+					{#each info.modules as module (module)}
+						<Badge tone="info">{module}</Badge>
+					{:else}
+						<span class="text-text-muted">none</span>
+					{/each}
+				</dd>
+			</div>
+		</dl>
+	{/if}
+
+	<!--
+		The one place this application mentions the framework it was built
+		with, and it is behind a permission. Delete this paragraph and the
+		reference is gone: nothing else in the application, and nothing in
+		`nise check`, requires it to be here.
+	-->
+	<p class="text-xs text-text-subtle">
+		Built with Nise &amp; Go. This line is application-owned; delete it freely.
+	</p>
+</div>

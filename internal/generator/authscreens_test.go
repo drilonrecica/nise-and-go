@@ -313,3 +313,64 @@ func TestGeneratedInterfaceStates(t *testing.T) {
 		}
 	}
 }
+
+// TestGeneratedAboutPageIsPermissionedAndRemovable pins both halves of the
+// branding rule (Nise task M6-013): the version information is behind a
+// permission, and the framework reference is one paragraph an application can
+// delete.
+func TestGeneratedAboutPageIsPermissionedAndRemovable(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, defaultOptions())
+
+	// The permission exists, is in the catalog, and belongs to the
+	// administrator bundle only.
+	catalog := content["internal/platform/authorization/catalog.go"]
+	for _, fragment := range []string{
+		`SystemRead = authz.MustPermission("system.read")`,
+		"\t\tSystemRead,\n",
+	} {
+		if !strings.Contains(catalog, fragment) {
+			t.Errorf("the permission catalog lacks %q", fragment)
+		}
+	}
+	if strings.Contains(catalog, "authz.NewRole(RoleAuditor, UsersRead, RolesRead, AuditRead, SystemRead)") {
+		t.Error("the auditor role holds system.read; the deployment's version is not part of looking at the business")
+	}
+
+	// The handler checks it, and checks for a session first.
+	system := content["internal/platform/httpapi/system.go"]
+	for _, fragment := range []string{
+		"if _, err := requireSession(ctx); err != nil {",
+		"authorization.Require(ctx, authorization.SystemRead)",
+		"problem.Wrap(problem.PermissionDenied(), err)",
+		// Read from the build rather than from a linker flag, so the answer
+		// is true for `go build`, `go install`, and a release alike.
+		"debug.ReadBuildInfo()",
+	} {
+		if !strings.Contains(system, fragment) {
+			t.Errorf("system.go lacks %q", fragment)
+		}
+	}
+
+	// The framework reference appears exactly once in the generated frontend,
+	// on that page, and says it may be deleted.
+	mentions := 0
+	for path, body := range content {
+		if !strings.HasPrefix(path, "frontend/src/") {
+			continue
+		}
+		if strings.Contains(body, "Built with Nise") {
+			mentions++
+			if path != "frontend/src/routes/(app)/settings/about/+page.svelte" {
+				t.Errorf("%s carries a framework reference; it belongs only on the admin About page", path)
+			}
+			if !strings.Contains(body, "delete it freely") {
+				t.Errorf("%s does not say the reference may be removed", path)
+			}
+		}
+	}
+	if mentions != 1 {
+		t.Errorf("the framework is mentioned in %d generated frontend files, want exactly 1", mentions)
+	}
+}

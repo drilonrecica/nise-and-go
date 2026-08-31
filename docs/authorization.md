@@ -45,11 +45,19 @@ check it in the use case that needs it.
 | `roles.manage` | Grant and revoke roles — the permission that leads to every other one. |
 | `sessions.revoke` | End another account's sessions. |
 | `audit.read` | Read the audit log. |
+| `system.read` | See the About/System page: the running binary's version, the framework it was built against, and its optional modules. |
 
 | Role | Holds |
 |---|---|
 | `administrator` | Everything above. |
 | `auditor` | The three reads, and nothing that changes anything. |
+
+`system.read` is its own permission because the answer describes the deployment
+rather than the business: a version is the first thing anybody looking for a
+known vulnerability asks for, and an ordinary account has no reason to hold it.
+It belongs to the administrator bundle and deliberately not to the auditor's —
+looking at what the business did is a different job from knowing what the
+binary is.
 
 `audit.read` is separate from `users.manage` on purpose: the people who can
 change things and the people who can see what was changed do not have to be the

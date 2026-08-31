@@ -1,0 +1,100 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpapi
+
+import (
+	"context"
+	"errors"
+	"runtime/debug"
+	"slices"
+	"sync"
+
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
+	"{{.ModulePath}}/internal/platform/httpapi/problem"
+)
+
+// The About/System surface: what this binary is.
+//
+// It is behind a permission rather than merely behind a session, because the
+// answer describes the deployment rather than the business — a version is the
+// first thing anybody looking for a known vulnerability asks for, and an
+// ordinary account has no reason to hold it.
+
+// unknownVersion is what a value reads as when the build carries no version.
+// A source build genuinely has none, and "(devel)" is what the Go toolchain
+// itself calls that, so it is repeated rather than invented.
+const unknownVersion = "(devel)"
+
+// GetSystemInfo describes the running binary.
+func (s *Server) GetSystemInfo(ctx context.Context, _ openapigen.GetSystemInfoRequestObject) (openapigen.GetSystemInfoResponseObject, error) {
+	if _, err := requireSession(ctx); err != nil {
+		return nil, err
+	}
+	if err := authorization.Require(ctx, authorization.SystemRead); err != nil {
+		if errors.Is(err, authorization.ErrDenied) {
+			return nil, problem.Wrap(problem.PermissionDenied(), err)
+		}
+		return nil, err
+	}
+
+	build := buildVersions()
+	// The module list is copied before it leaves this function: it is derived
+	// once and shared, and a handler that returned the shared slice would let
+	// a caller's later append reach every subsequent response.
+	return openapigen.GetSystemInfo200JSONResponse{
+		ApplicationVersion: build.application,
+		FrameworkModule:    build.frameworkModule,
+		FrameworkVersion:   build.frameworkVersion,
+		Environment:        s.environment,
+		Modules:            slices.Clone(s.modules),
+	}, nil
+}
+
+// versions is what the binary knows about itself.
+type versions struct {
+	application      string
+	frameworkModule  string
+	frameworkVersion string
+}
+
+// buildVersions reads the embedded build information once.
+//
+// It is read from debug.ReadBuildInfo rather than from a variable set by a
+// linker flag, so the answer is true for `go build`, `go install`, and a
+// release build alike — and true for the framework module as well, which no
+// linker flag of this application's could know.
+var buildVersions = sync.OnceValue(func() versions {
+	found := versions{
+		application:      unknownVersion,
+		frameworkModule:  frameworkModulePath,
+		frameworkVersion: unknownVersion,
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return found
+	}
+	if info.Main.Version != "" {
+		found.application = info.Main.Version
+	}
+	for _, dependency := range info.Deps {
+		if dependency.Path == frameworkModulePath {
+			// A replace directive points at a local checkout, which has no
+			// version. Reporting the replacement's path is more useful than
+			// reporting an empty string.
+			if dependency.Replace != nil {
+				found.frameworkVersion = unknownVersion
+				break
+			}
+			if dependency.Version != "" {
+				found.frameworkVersion = dependency.Version
+			}
+			break
+		}
+	}
+	return found
+})
+
+// frameworkModulePath is the module a generated application imports its
+// runtime packages from.
+const frameworkModulePath = "github.com/drilonrecica/nise-and-go"
