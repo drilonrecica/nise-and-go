@@ -1,25 +1,73 @@
 <!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
 <script lang="ts">
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+
 	import Button from '$lib/components/ui/Button.svelte';
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
+	import Input from '$lib/components/ui/Input.svelte';
+	import Pagination from '$lib/components/ui/Pagination.svelte';
 	import ProblemAlert from '$lib/components/ui/ProblemAlert.svelte';
 	import Skeleton from '$lib/components/ui/Skeleton.svelte';
 	import Table from '$lib/components/ui/Table.svelte';
-	import { list{{.TitlePlural}}, type {{.Type}} } from '$lib/features/{{.Singular}}/api';
+	import { list{{.TitlePlural}}, type {{.Type}}Page } from '$lib/features/{{.Singular}}/api';
+	import { listHref, listQuery, readListState } from '$lib/table/list-state';
 
-	let items = $state<{{.Type}}[] | null>(null);
+	// The filters this list understands. Naming them is what keeps an
+	// unrelated parameter — a tracking tag somebody pasted — out of the
+	// request, and therefore out of the cursor binding the server derives
+	// from it.
+	const filters = [] as const;
+
+	// The URL is the state. Search and the page somebody is on live in the
+	// query string and nowhere else, which is what makes a filtered list
+	// something you can bookmark, send to a colleague, and reach again with
+	// the back button.
+	// Not named `state`: `$state` beside a local called `state` reads as a
+	// store subscription of it, which the compiler is right to refuse.
+	const listState = $derived(readListState(page.url, filters));
+
+	let result = $state<{{.Type}}Page | null>(null);
 	let failure = $state<unknown>(null);
+	let search = $state(page.url.searchParams.get('q') ?? '');
 
-	async function load() {
+	// Reloading on every URL change is what makes the back button work: a
+	// list that loaded once and then mutated its own state would show the
+	// previous page's rows under the previous page's URL.
+	$effect(() => {
+		const query = listQuery(listState);
+		const controller = new AbortController();
+		result = null;
 		failure = null;
-		try {
-			items = (await list{{.TitlePlural}}({})).items;
-		} catch (error) {
-			failure = error;
-		}
+		list{{.TitlePlural}}(query, controller.signal)
+			.then((page) => (result = page))
+			.catch((error) => {
+				// An abort is this effect being superseded, not a failure to
+				// report: the request it cancelled is one nobody is waiting for.
+				if (error instanceof Error && error.name === 'AbortError') return;
+				failure = error;
+			});
+		return () => controller.abort();
+	});
+
+	// Searching is a navigation, so it replaces the history entry rather than
+	// adding one: the back button should leave the list, not walk back through
+	// every keystroke somebody submitted.
+	async function submitSearch(event: SubmitEvent) {
+		event.preventDefault();
+		await goto(listHref(page.url, { search }, filters), { replaceState: true, keepFocus: true });
 	}
 
-	$effect(() => void load());
+	const nextHref = $derived(
+		result?.page.next_cursor
+			? listHref(page.url, { after: result.page.next_cursor }, filters)
+			: undefined
+	);
+	const previousHref = $derived(
+		result?.page.prev_cursor
+			? listHref(page.url, { before: result.page.prev_cursor }, filters)
+			: undefined
+	);
 
 	function when(value: string): string {
 		return new Date(value).toLocaleString();
@@ -36,24 +84,60 @@
 		<Button variant="primary" href="/{{.Plural}}/new">New {{.Singular}}</Button>
 	</div>
 
+	<form class="mt-5 flex max-w-md items-end gap-2" onsubmit={submitSearch} role="search">
+		<div class="flex-1">
+			<label for="{{.Singular}}-search" class="mb-1.5 block text-sm font-medium text-text">
+				Search
+			</label>
+			<Input
+				id="{{.Singular}}-search"
+				type="search"
+				name="q"
+				placeholder="Name starts with…"
+				bind:value={search}
+			/>
+		</div>
+		<Button type="submit">Search</Button>
+		{#if listState.search}
+			<Button href={listHref(page.url, { search: '' }, filters)}>Clear</Button>
+		{/if}
+	</form>
+
+	<!--
+		Sorting is deliberately not wired yet, and the reason is worth knowing
+		before you add it: this collection pages with a cursor, and a cursor
+		encodes the position of a row *in a particular order*. Adding a
+		sortable column means adding that column's value to the cursor's key as
+		well, and to the query's tuple comparison — otherwise a sorted page and
+		its cursor disagree about where the boundary is, and rows are silently
+		skipped or repeated. Sort by one column at a time, put it in the URL
+		with listHref({ sort }), and keep the id as the final tiebreaker.
+	-->
+
 	{#if failure}
 		<div class="mt-6">
-			<ProblemAlert error={failure} onretry={load} />
+			<ProblemAlert error={failure} />
 		</div>
-	{:else if items === null}
+	{:else if result === null}
 		<div class="mt-6 space-y-2" aria-busy="true">
 			<Skeleton class="h-10 w-full" />
 			<Skeleton class="h-10 w-full" />
 			<Skeleton class="h-10 w-full" />
 		</div>
-	{:else if items.length === 0}
+	{:else if result.items.length === 0}
 		<div class="mt-6">
 			<EmptyState
-				title="No {{.Plural}} yet"
-				description="Create the first one, or adjust the filter if you were expecting some."
+				title={listState.search ? `No {{.Plural}} match “${listState.search}”` : 'No {{.Plural}} yet'}
+				description={listState.search
+					? 'Try a shorter search, or clear it to see everything.'
+					: 'Create the first one.'}
 			>
 				{#snippet action()}
-					<Button variant="primary" href="/{{.Plural}}/new">New {{.Singular}}</Button>
+					{#if listState.search}
+						<Button href={listHref(page.url, { search: '' }, filters)}>Clear search</Button>
+					{:else}
+						<Button variant="primary" href="/{{.Plural}}/new">New {{.Singular}}</Button>
+					{/if}
 				{/snippet}
 			</EmptyState>
 		</div>
@@ -68,7 +152,7 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each items as item (item.id)}
+					{#each result.items as item (item.id)}
 						<tr class="border-b border-line last:border-0">
 							<td class="px-4 py-2">
 								<a
@@ -85,5 +169,12 @@
 				</tbody>
 			</Table>
 		</div>
+
+		<Pagination
+			label="{{.TitlePlural}}"
+			{previousHref}
+			{nextHref}
+			summary={`Showing ${result.items.length} {{.Plural}}`}
+		/>
 	{/if}
 </div>

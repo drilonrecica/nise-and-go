@@ -505,3 +505,47 @@ func TestResourceFrontendIsACompleteFlow(t *testing.T) {
 		t.Error("the form's schema does not mirror the server's 200-character bound")
 	}
 }
+
+// TestGeneratedListPutsItsStateInTheURL pins the list contract (Nise task
+// M7-006): search and the page somebody is on live in the query string,
+// changing the search drops the cursor, and the page reloads when the URL
+// changes so the back button works.
+func TestGeneratedListPutsItsStateInTheURL(t *testing.T) {
+	t.Parallel()
+
+	list := planContent(t, resourceOptions())["frontend/src/routes/(app)/orders/+page.svelte"]
+	for _, fragment := range []string{
+		"import { listHref, listQuery, readListState } from '$lib/table/list-state';",
+		"readListState(page.url, filters)",
+		"listQuery(listState)",
+		// Paging is navigation: real hrefs, in history, openable in a new tab.
+		"listHref(page.url, { after: result.page.next_cursor }, filters)",
+		"listHref(page.url, { before: result.page.prev_cursor }, filters)",
+		// Reloading on every URL change is what makes the back button work.
+		"const controller = new AbortController();",
+		"return () => controller.abort();",
+		// A superseded request is not a failure to report.
+		"error.name === 'AbortError'",
+		// Searching replaces the history entry rather than adding one per
+		// keystroke somebody submitted.
+		"{ replaceState: true, keepFocus: true }",
+	} {
+		if !strings.Contains(list, fragment) {
+			t.Errorf("the list page lacks %q", fragment)
+		}
+	}
+
+	// Sorting is deliberately not wired, and the file has to say why: a cursor
+	// encodes a position in a particular order, so a sortable column has to
+	// join the cursor's key and the query's tuple comparison, or a sorted page
+	// and its cursor disagree about the boundary.
+	if !strings.Contains(list, "Sorting is deliberately not wired yet") {
+		t.Error("the list page does not explain why sorting needs a decision before it is added")
+	}
+
+	// The empty state distinguishes "nothing yet" from "nothing matched",
+	// which are two different things to do next.
+	if !strings.Contains(list, "listState.search ?") {
+		t.Error("the list's empty state does not distinguish an empty collection from an empty search")
+	}
+}
