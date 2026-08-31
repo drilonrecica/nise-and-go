@@ -67,6 +67,14 @@ var (
 		"/problems/request-body-too-large", "Request Body Too Large", http.StatusRequestEntityTooLarge,
 		"The request body exceeds the allowed size.", "request_body_too_large",
 	)
+	invalidPagination = mustDefinition(
+		"/problems/invalid-pagination", "Invalid Pagination", http.StatusBadRequest,
+		"The pagination parameters are not valid for this collection.", "invalid_pagination",
+	)
+	cursorExpired = mustDefinition(
+		"/problems/cursor-expired", "Cursor Expired", http.StatusBadRequest,
+		"The pagination cursor has expired; start the listing again.", "cursor_expired",
+	)
 	unsupportedMediaType = mustDefinition(
 		"/problems/unsupported-media-type", "Unsupported Media Type", http.StatusUnsupportedMediaType,
 		"The request Content-Type is not supported for this operation.", "unsupported_media_type",
@@ -88,6 +96,17 @@ func MethodNotAllowed() Definition { return methodNotAllowed }
 
 // RequestBodyTooLarge returns the bounded-request failure.
 func RequestBodyTooLarge() Definition { return requestBodyTooLarge }
+
+// InvalidPagination returns the generic pagination-parameter failure. It
+// covers a malformed, forged, misdirected, or wrong-query cursor as well as an
+// out-of-range limit: none of those distinctions is something a caller should
+// learn from a public response body.
+func InvalidPagination() Definition { return invalidPagination }
+
+// CursorExpired returns the expired-cursor failure. It is separate from
+// InvalidPagination because it is the one pagination failure a correct client
+// can recover from on its own, by restarting the listing.
+func CursorExpired() Definition { return cursorExpired }
 
 // UnsupportedMediaType returns the request media-type failure.
 func UnsupportedMediaType() Definition { return unsupportedMediaType }

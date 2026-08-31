@@ -5,17 +5,17 @@
 # <path> dir <mode>
 # <path> file <mode> <sha256>
 .dockerignore file 0644 e67c07ed17a9271672b7bac7dd99034f3f55e864a847558d67481a4f31e8a392
-.env.example file 0644 ea5322e84d917345bb6b550620cae29163d5260ec06b06f2743f9b6eb0ee5a21
+.env.example file 0644 6a306e2feff6af07c1821e51e58ab3535e090235d2bc5bec9cd77333ee54fe13
 .gitignore file 0644 ccc454e599a681107318bf8e887057052022fe2f44dc80a4267d879ae7fc8e21
 .nise dir 0755
 .nise/architecture.json file 0644 c5f99dd6feb30c2ab68a3f065cca28b47eb18d278e68865a0ce46899e85b2329
 AGENTS.md file 0644 f2319ec39ff71d3dc81ba77ef2907a60e90ab7eed55eaa9196c6192068f8ec1f
 Makefile file 0644 972bb2e915d46ae0f6997aa08265399e8a8faa84b00c9640267f3a9d230afc78
-README.md file 0644 5b8ac85ebbc7056387669fc12f98a2ea41ac26d8eab79e4a91e2499ffd12b7a3
+README.md file 0644 3ccd0f42648606b25a8ff4d846c8afd142e4077db2a18d6cf3f13d013d7f8e33
 api dir 0755
-api/README.md file 0644 bb86bea4b9f1806aff456f78c5e19b6a9ae3567c16f8bfe917bc751f66152571
+api/README.md file 0644 08ddefdb8d466ec31a9f48ff80ecc35b956ef76af027ba08eb20977c5f0ce563
 api/oapi-codegen.yaml file 0644 d309bcb97daca34cbe295ab8deeb503f7a9081599ec52ad266360f5e7e329ae7
-api/openapi.yaml file 0644 af378e3d34e19916d8ac7691fe95c5f02ae6e9c84dc8d5d341fe1c7b79f178c2
+api/openapi.yaml file 0644 79ec83ca2153a7f312868426f815bd5a150a22781d9e050b3fd93e98d295e524
 cmd dir 0755
 cmd/myapp dir 0755
 cmd/myapp/main.go file 0644 63f3365d397387f6a33691be538d77a893a16e95ec1f674be2e8e4eef0a65c7a
@@ -40,9 +40,9 @@ frontend/src/app.d.ts file 0644 d231593a748a2379dc8248d2a06d2d8ef723c8e8f8a4a3b1
 frontend/src/app.html file 0644 7e5338b791f818f9e4cbb2d84d9a2e04dc674415292da1061d6634cb206dbb18
 frontend/src/lib dir 0755
 frontend/src/lib/api dir 0755
-frontend/src/lib/api/client.test.ts file 0644 0057bcc260c56f6ba0b02a12916ca2619d26db2296d48307c53d84253512742b
+frontend/src/lib/api/client.test.ts file 0644 4ee83d823ae2daab98f3d829a96fec8e96d54806d44d6752fc2b529f0d71066c
 frontend/src/lib/api/client.ts file 0644 f117bc9d9a514bb145fe4ed8ce0433410af11c47aad45bc7a17f54da4eb3dd66
-frontend/src/lib/api/schema.d.ts file 0644 e130c654a63883c5fd3b846ed5a77c35591082751210e194ec08b1f140246902
+frontend/src/lib/api/schema.d.ts file 0644 1d63d139c45af517dd701519ed0d4b6dbb3ef803b65db9be25f67a498fc72cfb
 frontend/src/routes dir 0755
 frontend/src/routes/+layout.svelte file 0644 7fd5a3d417470dc49c42f74fbfa39e12d138f22e5c879215d9738c2800c5d1a6
 frontend/src/routes/+layout.ts file 0644 48e77d596307eaae3c74ffe8785ead5af1bda4a96218306fab7ee34658d132e1
@@ -56,7 +56,7 @@ frontend/vitest.config.ts file 0644 490ddf8c71d0f94c3a09775e0919bf8cf2a16ef3a244
 go.mod file 0644 992cd8286e02ae25334928367e216b804312106218d023d080e21dbac6e2a648
 internal dir 0755
 internal/app dir 0755
-internal/app/app.go file 0644 7f315d93b203087643bee42afbc36f7c5f18eb0515472168c3cf7f4bddb045f3
+internal/app/app.go file 0644 cad394ec19cf955955401e64e3cc367fdff2b3a9e4b73849ef5ef21738a337e3
 internal/app/database.go file 0644 0dda4beca6185845806aafa2f0211db9b8c8c832cbf9ead38290ad78bfe98318
 internal/app/database_runtime.go file 0644 cebda86bbdf1a0094abe173b61e8785fc752dea884089bbddcaa8108598ff4d5
 internal/app/modes.go file 0644 0ce6c95c483fe4cf922ae6c44cd80ad6c5c5583d403b469161520633fef9875d
@@ -65,8 +65,8 @@ internal/features dir 0755
 internal/features/README.md file 0644 e16f247b07414f63ca7ff3b17910caae0f8200b09fb95227e7c5f38c84b4d108
 internal/platform dir 0755
 internal/platform/config dir 0755
-internal/platform/config/config.go file 0644 9f9ffd3904469a23f93f2cd8fd522d927bc7a3e14401e89f24a6372eff3c7882
-internal/platform/config/config_test.go file 0644 e49a0166d50bbb3b8f86f610537872673b7b028d4544a7f1af1a126b18dd3a7b
+internal/platform/config/config.go file 0644 021848f05b53d94ee1987bad952e9801a028dd6446dd2ee2b583c45a4200c1d2
+internal/platform/config/config_test.go file 0644 683ca976caf164bea9bcd043c07612c2442f3b8379f8f7db90ac95a8cb3060b6
 internal/platform/database dir 0755
 internal/platform/database/README.md file 0644 379bfe9051325823ea59d37f173c811ab03c0267f5c3f217f46fb0b477f01675
 internal/platform/database/compatibility.go file 0644 696f985b188edb40c9045583126f2abccdc26ce66d3c17c74fe8044d3f46d56e
@@ -91,15 +91,15 @@ internal/platform/database/testdata/migration-upgrades/00001_baseline.sql file 0
 internal/platform/database/transaction.go file 0644 ce4a448d06884dc199f3e5b496d96815fef57fa4ae0ab1237a6f264f2e28742b
 internal/platform/database/transaction_test.go file 0644 afd0840cc8f1c8f4a845367865af78be3875699f781d63c1a12a11e92b3bd9fd
 internal/platform/httpapi dir 0755
-internal/platform/httpapi/api.go file 0644 5331adc9678b169d273acf8313519600eef7f5125fafd1cc4ea31daf88ffff52
-internal/platform/httpapi/api_test.go file 0644 c87e5159cd40acbf9c8937c54a1f70e4e6a8433c43d67857837930b037e8ddc5
+internal/platform/httpapi/api.go file 0644 1008bcd805d7bf9df85d6fdf104b09f9ecc5d758323d1480d94d391ac4f26ce9
+internal/platform/httpapi/api_test.go file 0644 dfc441ca6ae95dda4bf4ecb14aea6526d8834f646a3043f6fd9adf25e9c7557b
 internal/platform/httpapi/httpjson dir 0755
 internal/platform/httpapi/httpjson/json.go file 0644 a3044e4abe486e569be1f815539f66b6b99ce447d624469a18e9b965b8f94ac6
 internal/platform/httpapi/httpjson/json_test.go file 0644 f25721346a0b16cbfe5f9746dabcba2b10892fe2e09a3f72b2d136a3138b48db
 internal/platform/httpapi/openapigen dir 0755
-internal/platform/httpapi/openapigen/openapi.gen.go file 0644 305d0ccb48024fcf38ea5104dbbf1aaf9ca61885383a8a870f6747266373ae1e
+internal/platform/httpapi/openapigen/openapi.gen.go file 0644 c944fd592706a0c8c688d5619c0c2ac97aae9753c09579edeaa0e2866f395a23
 internal/platform/httpapi/problem dir 0755
-internal/platform/httpapi/problem/problem.go file 0644 65fe32aa67c6fc0769cc8bd7a5dc249c0c2ebd0da30223f6577ee493f3dbb6c0
+internal/platform/httpapi/problem/problem.go file 0644 49267ddd9d29276b75decaabc5677f38d21eb70810dd7c4cdbfe134ed8aad42d
 internal/platform/httpapi/problem/problem_test.go file 0644 58ec205b552c9bfb69ba04c2e13d263f39f27ef129023b78776f44321583be0c
 internal/platform/httpapi/router.go file 0644 4665aa0e8d1735e567d41f19ad7cbfb96fb8cf50865960d37c4077091f8884f0
 internal/platform/httpapi/router_test.go file 0644 02fff81185d8745269bb13cc00000ae7727be7c7466617c5cc1e4fbaf3d8a1fe

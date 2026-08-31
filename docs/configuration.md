@@ -179,6 +179,25 @@ for small deployments. The application proves one connection during startup,
 registers the pool ping with readiness, reports bounded pool metrics, and
 closes the pool during shutdown.
 
+## Generated pagination cursor settings
+
+The golden-profile application signs the opaque cursors its collections issue.
+See [Pagination](pagination.md) for the wire contract and the rotation
+procedure.
+
+| Variable | Default | Constraint |
+|---|---:|---|
+| `CURSOR_SIGNING_KEY` | *(generated)* | `<id>:<base64 secret>`; identifier lowercase alphanumeric with `-`/`_`, secret at least 32 bytes |
+| `CURSOR_RETIRED_KEYS` | *(none)* | comma-separated keys in the same form, identifiers distinct from each other and from the signing key |
+| `CURSOR_TTL` | `1h` | greater than zero and at most `24h` |
+
+Both key variables accept the `_FILE` indirection. An unset
+`CURSOR_SIGNING_KEY` generates a random key for the process and emits a
+configuration warning; production refuses to start on that path, because every
+restart and every replica would then reject the others' cursors. There is no
+built-in default key. `CURSOR_RETIRED_KEYS` without a signing key is an error:
+a retired key verifies cursors but cannot issue them.
+
 The slow-query threshold applies to pgx query, batch, and copy round trips.
 Crossing it emits a bounded operation label, outcome, duration, threshold, and
 available validated correlation IDs; SQL, arguments, copied rows, results, and

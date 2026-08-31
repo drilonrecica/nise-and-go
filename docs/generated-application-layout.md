@@ -110,8 +110,8 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
         ├── config/                    [app]   typed configuration over runtime/config
         ├── database/                  [app]   pgxpool, transactions, query tracing, Goose, dbtest, SQL safety
         ├── httpapi/
-        │   ├── api.go                 [app]   strict interface adapter and explicit route registration
-        │   ├── api_test.go            [app]   real generated-binding route contract
+        │   ├── api.go                 [app]   strict interface adapter, route registration, cursor binding and page issuing
+        │   ├── api_test.go            [app]   real generated-binding route, collection, and cursor contracts
         │   ├── httpjson/
         │   │   ├── json.go            [app]   bounded strict JSON decoder and response writer
         │   │   └── json_test.go       [app]   hostile-input and response-bound contracts

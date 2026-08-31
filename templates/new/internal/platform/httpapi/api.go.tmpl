@@ -7,9 +7,13 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/drilonrecica/nise-and-go/runtime/pagination"
 
 	"{{.ModulePath}}/internal/platform/httpapi/httpjson"
 	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
@@ -19,11 +23,21 @@ import (
 // Server adapts application behavior to the strict interface generated from
 // api/openapi.yaml. Add dependencies as explicit fields when operations need
 // them; transport methods should delegate business behavior to use cases.
-type Server struct{}
+type Server struct {
+	cursors *pagination.Codec
+}
 
 // NewServer constructs the application's strict OpenAPI adapter.
-func NewServer() *Server {
-	return &Server{}
+//
+// cursors issues and verifies the opaque pagination tokens every cursor-paged
+// collection uses. It is required rather than optional: a collection that
+// silently fell back to an unauthenticated position would be exactly the
+// defect the codec exists to prevent.
+func NewServer(cursors *pagination.Codec) (*Server, error) {
+	if cursors == nil {
+		return nil, errors.New("httpapi: a cursor codec is required")
+	}
+	return &Server{cursors: cursors}, nil
 }
 
 var _ openapigen.StrictServerInterface = (*Server)(nil)
@@ -54,12 +68,101 @@ func requestTransportError(w http.ResponseWriter, r *http.Request, err error) {
 	problem.Handler(definition)(w, r, err)
 }
 
+// paginationProblem maps one pagination parsing failure onto this
+// application's public catalog.
+//
+// Every pagination failure is the client's, so none of them is a 5xx. An
+// expired cursor gets its own code because it is the one case a well-behaved
+// client can act on without changing anything: start the listing again.
+func paginationProblem(err error) problem.Definition {
+	if errors.Is(err, pagination.ErrCursorExpired) {
+		return problem.CursorExpired()
+	}
+	return problem.InvalidPagination()
+}
+
 // GetAPIIndex returns the versioned API root directly, without a generic
 // response envelope. It remains distinct from the public health probes.
 func (*Server) GetAPIIndex(context.Context, openapigen.GetAPIIndexRequestObject) (openapigen.GetAPIIndexResponseObject, error) {
 	return openapigen.GetAPIIndex200JSONResponse{
 		Version: openapigen.V1,
 	}, nil
+}
+
+// cursorBinding fingerprints the query a cursor belongs to: the collection's
+// path and every request parameter except the pagination parameters
+// themselves.
+//
+// Excluding exactly those three is what lets a client walk pages without
+// invalidating its own cursor, while changing any filter, sort, or search term
+// invalidates it. A collection with a filter that does not travel in the query
+// string — a path parameter, or the caller's tenant — includes it in resource
+// so that two different result sets can never share a binding.
+func cursorBinding(r *http.Request, resource string) pagination.Binding {
+	query := r.URL.Query()
+	filters := make(url.Values, len(query))
+	for key, values := range query {
+		switch key {
+		case pagination.LimitParam, pagination.AfterParam, pagination.BeforeParam:
+			continue
+		default:
+			filters[key] = values
+		}
+	}
+	return pagination.NewBinding(resource, filters)
+}
+
+// pageBoundaries is what a use case reports about one page of rows: the sort
+// key of its first and last row, and whether rows exist on either side.
+type pageBoundaries struct {
+	// First is the sort key of the first row on this page, in the query's
+	// sort order. It is empty for an empty page.
+	First []string
+	// Last is the sort key of the last row on this page.
+	Last []string
+	// HasMore reports that rows exist after Last in the direction the page
+	// was read.
+	HasMore bool
+	// HasPrevious reports that rows exist before First.
+	HasPrevious bool
+}
+
+// issueCursorPage turns those boundaries into the wire contract, minting one
+// authenticated cursor per direction that actually has a further page.
+//
+// A cursor member stays absent rather than becoming an empty string or null:
+// the contract says an absent member means there is no page that way, and a
+// client testing for presence must not have to also test for emptiness.
+func issueCursorPage(codec *pagination.Codec, binding pagination.Binding, boundaries pageBoundaries) (openapigen.CursorPage, error) {
+	page := openapigen.CursorPage{HasMore: boundaries.HasMore}
+	if boundaries.HasMore && len(boundaries.Last) > 0 {
+		next, err := codec.Encode(binding, pagination.Forward, boundaries.Last)
+		if err != nil {
+			return openapigen.CursorPage{}, fmt.Errorf("issuing the next cursor: %w", err)
+		}
+		page.NextCursor = &next
+	}
+	if boundaries.HasPrevious && len(boundaries.First) > 0 {
+		previous, err := codec.Encode(binding, pagination.Backward, boundaries.First)
+		if err != nil {
+			return openapigen.CursorPage{}, fmt.Errorf("issuing the previous cursor: %w", err)
+		}
+		page.PrevCursor = &previous
+	}
+	return page, nil
+}
+
+// newAPIRootCursorCollection keeps the cursor-paginated fixture faithful to
+// its non-null OpenAPI contract, for the same reason
+// newAPIRootCollection does.
+func newAPIRootCursorCollection(items []openapigen.APIRoot, page openapigen.CursorPage) openapigen.APIRootCursorCollection {
+	if items == nil {
+		items = []openapigen.APIRoot{}
+	}
+	return openapigen.APIRootCursorCollection{
+		Items: items,
+		Page:  page,
+	}
 }
 
 // newAPIRootCollection keeps the concrete collection fixture faithful to its

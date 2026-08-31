@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-27
-- **Amended by:** [ADR 0015](0015-use-case-owned-transactions.md)
+- **Amended by:** [ADR 0015](0015-use-case-owned-transactions.md), [ADR 0016](0016-authenticated-cursor-pagination.md)
 
 ## Context
 
@@ -27,6 +27,7 @@ Six milestone-2 tasks create packages here at roughly the same time. They need t
 | `runtime/observability` | HTTP, database-pool, and job metrics, and the optional tracing interface |
 | `runtime/secure` | Security headers and Content Security Policy (ADR 0013, pending) |
 | `runtime/transaction` | Driver-independent use-case transaction lifecycle and closed transaction options (ADR 0015) |
+| `runtime/pagination` | Authenticated versioned cursor tokens, key rotation, and cursor request parsing (ADR 0016) |
 
 No other package may be added to `runtime/` without an ADR.
 

@@ -16,6 +16,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Database query instrumentation](database-query-instrumentation.md)
 - [API routing and middleware](api-routing.md)
 - [OpenAPI server bindings and frontend client](openapi.md)
+- [Pagination](pagination.md)
 - [Database migrations](database-migrations.md)
 - [Database transactions](database-transactions.md)
 - [PostgreSQL integration testing](database-testing.md)

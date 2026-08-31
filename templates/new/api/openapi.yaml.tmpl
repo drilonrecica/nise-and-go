@@ -35,12 +35,35 @@ components:
     Page:
       type: object
       additionalProperties: false
-      description: Pagination metadata shared by collection response fixtures.
+      description: Neutral pagination metadata for a collection with no paging strategy of its own.
       required:
         - has_more
       properties:
         has_more:
           type: boolean
+    CursorPage:
+      type: object
+      additionalProperties: false
+      description: >-
+        Cursor pagination metadata. has_more reports whether another page exists
+        in the direction this page was read. A cursor member is absent, never
+        null, when there is no page in that direction.
+      required:
+        - has_more
+      properties:
+        has_more:
+          type: boolean
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
+        prev_cursor:
+          $ref: '#/components/schemas/Cursor'
+    Cursor:
+      type: string
+      description: >-
+        An opaque authenticated position token. Return it verbatim in after or
+        before; never parse, construct, or store it beyond the current listing.
+      minLength: 1
+      maxLength: 4096
     APIRootCollection:
       type: object
       additionalProperties: false
@@ -55,6 +78,20 @@ components:
             $ref: '#/components/schemas/APIRoot'
         page:
           $ref: '#/components/schemas/Page'
+    APIRootCursorCollection:
+      type: object
+      additionalProperties: false
+      description: A concrete cursor-paginated collection fixture; domain collections define their own schemas.
+      required:
+        - items
+        - page
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/APIRoot'
+        page:
+          $ref: '#/components/schemas/CursorPage'
     Problem:
       type: object
       additionalProperties: false
@@ -104,6 +141,38 @@ components:
           minLength: 1
           maxLength: 128
           pattern: '^[A-Za-z0-9_-]+$'
+  parameters:
+    CursorLimit:
+      name: limit
+      in: query
+      required: false
+      description: >-
+        Page size. Absent means the collection's default. A value outside
+        1..200, or outside the collection's own smaller maximum, is refused
+        rather than clamped.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 200
+    CursorAfter:
+      name: after
+      in: query
+      required: false
+      description: >-
+        Read the page following this cursor. Only a cursor this collection
+        issued as next_cursor is accepted; it cannot be combined with before.
+      schema:
+        $ref: '#/components/schemas/Cursor'
+    CursorBefore:
+      name: before
+      in: query
+      required: false
+      description: >-
+        Read the page preceding this cursor. Only a cursor this collection
+        issued as prev_cursor is accepted; it cannot be combined with after.
+      schema:
+        $ref: '#/components/schemas/Cursor'
   responses:
     Problem:
       description: The request failed with an RFC 9457 Problem Details response.

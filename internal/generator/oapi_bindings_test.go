@@ -51,7 +51,7 @@ func TestGeneratedProjectDefinesStrictOpenAPIBindings(t *testing.T) {
 			`"/api/v1/"`,
 		},
 		"internal/app/app.go": {
-			"apiServer := httpapi.NewServer()",
+			"apiServer, err := httpapi.NewServer(cursors)",
 			"RegisterAPI: apiServer.Register",
 		},
 		"Makefile": {

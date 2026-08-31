@@ -41,11 +41,33 @@ type APIRootVersion string
 type APIRootCollection struct {
 	Items []APIRoot `json:"items"`
 
-	// Page Pagination metadata shared by collection response fixtures.
+	// Page Neutral pagination metadata for a collection with no paging strategy of its own.
 	Page Page `json:"page"`
 }
 
-// Page Pagination metadata shared by collection response fixtures.
+// APIRootCursorCollection A concrete cursor-paginated collection fixture; domain collections define their own schemas.
+type APIRootCursorCollection struct {
+	Items []APIRoot `json:"items"`
+
+	// Page Cursor pagination metadata. has_more reports whether another page exists in the direction this page was read. A cursor member is absent, never null, when there is no page in that direction.
+	Page CursorPage `json:"page"`
+}
+
+// Cursor An opaque authenticated position token. Return it verbatim in after or before; never parse, construct, or store it beyond the current listing.
+type Cursor = string
+
+// CursorPage Cursor pagination metadata. has_more reports whether another page exists in the direction this page was read. A cursor member is absent, never null, when there is no page in that direction.
+type CursorPage struct {
+	HasMore bool `json:"has_more"`
+
+	// NextCursor An opaque authenticated position token. Return it verbatim in after or before; never parse, construct, or store it beyond the current listing.
+	NextCursor *Cursor `json:"next_cursor,omitempty"`
+
+	// PrevCursor An opaque authenticated position token. Return it verbatim in after or before; never parse, construct, or store it beyond the current listing.
+	PrevCursor *Cursor `json:"prev_cursor,omitempty"`
+}
+
+// Page Neutral pagination metadata for a collection with no paging strategy of its own.
 type Page struct {
 	HasMore bool `json:"has_more"`
 }
@@ -61,6 +83,15 @@ type Problem struct {
 	Title         string  `json:"title"`
 	Type          string  `json:"type"`
 }
+
+// CursorAfter An opaque authenticated position token. Return it verbatim in after or before; never parse, construct, or store it beyond the current listing.
+type CursorAfter = Cursor
+
+// CursorBefore An opaque authenticated position token. Return it verbatim in after or before; never parse, construct, or store it beyond the current listing.
+type CursorBefore = Cursor
+
+// CursorLimit defines model for CursorLimit.
+type CursorLimit = int32
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {

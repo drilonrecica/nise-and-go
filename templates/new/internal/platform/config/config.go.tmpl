@@ -18,6 +18,7 @@ import (
 
 	rtconfig "github.com/drilonrecica/nise-and-go/runtime/config"
 	"github.com/drilonrecica/nise-and-go/runtime/lifecycle"
+	"github.com/drilonrecica/nise-and-go/runtime/pagination"
 	"github.com/drilonrecica/nise-and-go/runtime/secure"
 
 	"{{.ModulePath}}/internal/platform/database"
@@ -63,6 +64,16 @@ type Config struct {
 	// DatabaseSlowQueryThreshold controls when a sanitized query observation
 	// is logged at warning level.
 	DatabaseSlowQueryThreshold time.Duration
+	// CursorKeys signs and verifies opaque pagination cursors. Its active
+	// key signs; its retired keys verify cursors issued before the last
+	// rotation.
+	CursorKeys *pagination.KeyRing
+	// CursorKeysAreEphemeral reports that no cursor key was configured and a
+	// random one was generated for this process. Outstanding cursors stop
+	// verifying when the process restarts, which production refuses.
+	CursorKeysAreEphemeral bool
+	// CursorTTL is how long an issued cursor stays valid.
+	CursorTTL time.Duration
 }
 
 // Addr is the host:port the HTTP server listens on.
@@ -100,6 +111,12 @@ func Load() (Config, []string, error) {
 	healthCheckPeriod := l.Duration("DB_HEALTH_CHECK_PERIOD", rtconfig.Default("30s"))
 	connectTimeout := l.Duration("DB_CONNECT_TIMEOUT", rtconfig.Default("5s"))
 	slowQueryThreshold := l.Duration("DB_SLOW_QUERY_THRESHOLD", rtconfig.Default("250ms"))
+	cursorTTL := l.Duration("CURSOR_TTL", rtconfig.Default("1h"))
+	// The two cursor key variables are read into locals rather than kept as
+	// Config fields: once the ring is built, holding the raw material would
+	// only add a second place for it to escape from.
+	cursorSigningKey := l.Secret("CURSOR_SIGNING_KEY", rtconfig.Default(""))
+	cursorRetiredKeys := l.Secret("CURSOR_RETIRED_KEYS", rtconfig.Default(""))
 
 	cfg := Config{
 		Env:                        env,
@@ -113,6 +130,7 @@ func Load() (Config, []string, error) {
 		DatabaseURL:                l.Secret("DATABASE_URL"),
 		DatabasePassword:           l.Secret("DATABASE_PASSWORD", rtconfig.Default("")),
 		DatabaseSlowQueryThreshold: time.Duration(slowQueryThreshold),
+		CursorTTL:                  time.Duration(cursorTTL),
 	}
 	if err := l.Err(); err != nil {
 		return Config{}, nil, err
@@ -147,6 +165,19 @@ func Load() (Config, []string, error) {
 		return Config{}, warnings, errors.New("DB_SLOW_QUERY_THRESHOLD: must be greater than zero")
 	}
 
+	keys, ephemeral, err := resolveCursorKeys(cursorSigningKey, cursorRetiredKeys)
+	if err != nil {
+		return Config{}, warnings, err
+	}
+	cfg.CursorKeys = keys
+	cfg.CursorKeysAreEphemeral = ephemeral
+	if ephemeral {
+		warnings = append(warnings, "CURSOR_SIGNING_KEY is unset: pagination cursors are signed with a key generated for this process and stop verifying when it restarts")
+	}
+	if cfg.CursorTTL <= 0 || cfg.CursorTTL > maxCursorTTL {
+		return Config{}, warnings, fmt.Errorf("CURSOR_TTL: must be greater than zero and at most %s, found %s", maxCursorTTL, cfg.CursorTTL)
+	}
+
 	if cfg.LogFormat != "json" && cfg.LogFormat != "text" {
 		return Config{}, warnings, fmt.Errorf(`LOG_FORMAT: must be "json" or "text", found %q`, cfg.LogFormat)
 	}
@@ -162,11 +193,79 @@ func Load() (Config, []string, error) {
 		v.Check(!isWildcardAddr(cfg.BindAddr) || cfg.AllowPublicBind, "BIND_ADDR",
 			"bound to every interface without an explicit opt-in",
 			"set BIND_ADDR to a private address, or set ALLOW_PUBLIC_BIND=true if a public bind is intended")
+		v.Check(!cfg.CursorKeysAreEphemeral, "CURSOR_SIGNING_KEY",
+			"pagination cursors would be signed with a key generated for this process, so every restart and every replica rejects outstanding cursors",
+			"set CURSOR_SIGNING_KEY to <id>:<base64 secret>; generate one with: openssl rand -base64 32")
 	}); err != nil {
 		return Config{}, warnings, err
 	}
 
 	return cfg, warnings, nil
+}
+
+// maxCursorTTL bounds how long an issued cursor stays valid. A cursor pins a
+// position in a result set that is still changing underneath it; a lifetime
+// measured in days would let a client resume a listing whose ordering no
+// longer resembles the one the cursor was cut from.
+const maxCursorTTL = 24 * time.Hour
+
+// resolveCursorKeys builds the cursor key ring from configuration.
+//
+// An unset CURSOR_SIGNING_KEY generates an ephemeral key rather than falling
+// back to a fixed one: a checked-in default key would be a signing key
+// everyone who has ever read this repository holds. Production refuses the
+// ephemeral path in Load's validation below, so this convenience exists only
+// for a development machine.
+func resolveCursorKeys(signing, retired rtconfig.Secret) (*pagination.KeyRing, bool, error) {
+	if !signing.IsSet() {
+		if retired.IsSet() {
+			return nil, false, errors.New("CURSOR_RETIRED_KEYS: set without CURSOR_SIGNING_KEY; a retired key verifies cursors but cannot sign them")
+		}
+		key, err := pagination.GenerateKey("ephemeral")
+		if err != nil {
+			return nil, false, fmt.Errorf("CURSOR_SIGNING_KEY: generating an ephemeral development key: %w", err)
+		}
+		ring, err := pagination.NewKeyRing(key)
+		if err != nil {
+			return nil, false, fmt.Errorf("CURSOR_SIGNING_KEY: %w", err)
+		}
+		return ring, true, nil
+	}
+
+	active, err := pagination.ParseKey(signing.Reveal())
+	if err != nil {
+		return nil, false, fmt.Errorf("CURSOR_SIGNING_KEY: %w", err)
+	}
+	previous, err := parseRetiredCursorKeys(retired)
+	if err != nil {
+		return nil, false, err
+	}
+	ring, err := pagination.NewKeyRing(active, previous...)
+	if err != nil {
+		return nil, false, fmt.Errorf("CURSOR_SIGNING_KEY: %w", err)
+	}
+	return ring, false, nil
+}
+
+// parseRetiredCursorKeys reads the comma-separated verification-only keys.
+func parseRetiredCursorKeys(retired rtconfig.Secret) ([]pagination.Key, error) {
+	if !retired.IsSet() {
+		return nil, nil
+	}
+	entries := strings.Split(retired.Reveal(), ",")
+	keys := make([]pagination.Key, 0, len(entries))
+	for i, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("CURSOR_RETIRED_KEYS: entry %d is empty", i+1)
+		}
+		key, err := pagination.ParseKey(entry)
+		if err != nil {
+			return nil, fmt.Errorf("CURSOR_RETIRED_KEYS: entry %d: %w", i+1, err)
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
 }
 
 // parseLevel converts a LOG_LEVEL value into a slog.Level. It refuses an
