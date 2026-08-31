@@ -145,6 +145,12 @@ type Record struct {
 	ExpiresAt time.Time
 	// RevokedAt is when the session was revoked, or the zero time.
 	RevokedAt time.Time
+	// ProvenAt is when the holder last proved themselves with a credential
+	// — at issue, and again at each reauthentication. It is what
+	// [Record.ProvenWithin] measures, and it is stored on the session rather
+	// than on the account so that proving yourself in one browser does not
+	// make a session on another machine fresh.
+	ProvenAt time.Time
 }
 
 // Evaluate reports whether the session may be used, and if not, the strongest

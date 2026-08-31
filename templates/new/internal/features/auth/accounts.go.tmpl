@@ -17,6 +17,7 @@ import (
 	"{{.ModulePath}}/internal/features/auth/store"
 	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/reauth"
 )
 
 // Bounds on an address, matching the column checks. They are repeated in Go so
@@ -198,6 +199,15 @@ func (a *Accounts) SetStatus(ctx context.Context, userID, status string) error {
 	}
 	if status != StatusActive && status != StatusDisabled {
 		return fmt.Errorf("%w: %q", ErrStatus, status)
+	}
+	// Enabling an account restores a way in and asks for a recent proof.
+	// Disabling one closes it and deliberately does not: closing a door
+	// quickly is the whole point of having one, and a hijacked administrative
+	// session is not made safer by slowing down the response to it.
+	if status == StatusActive {
+		if err := reauth.Require(ctx, reauth.ActionUsersEnable); err != nil {
+			return err
+		}
 	}
 	id, err := parseUUID(userID)
 	if err != nil {

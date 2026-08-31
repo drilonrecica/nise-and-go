@@ -33,6 +33,7 @@ import (
 	"{{.ModulePath}}/internal/platform/httpapi/problem"
 	"{{.ModulePath}}/internal/platform/httpauth"
 	"{{.ModulePath}}/internal/platform/passwords"
+	"{{.ModulePath}}/internal/platform/reauth"
 	"{{.ModulePath}}/internal/platform/throttle"
 	"{{.ModulePath}}/internal/platform/webui"
 )
@@ -183,6 +184,18 @@ func Run(ctx context.Context, modeOverride string) error {
 		return fmt.Errorf("building the authorization resolver: %w", err)
 	}
 
+	// The reauthentication matrix is code for the same reason the permission
+	// catalog is: an action's meaning is decided by the use case that checks
+	// it, and every replica has to agree about which actions need a proof.
+	reauthMatrix, err := reauth.DefaultMatrix()
+	if err != nil {
+		return fmt.Errorf("building the reauthentication matrix: %w", err)
+	}
+	reauthResolver, err := reauth.NewResolver(reauthMatrix, httpauth.FromContext)
+	if err != nil {
+		return fmt.Errorf("building the reauthentication resolver: %w", err)
+	}
+
 	originPolicy, err := httpauth.NewOriginPolicy(cfg.AllowedOrigins)
 	if err != nil {
 		return fmt.Errorf("building the allowed-origin policy: %w", err)
@@ -224,9 +237,12 @@ func Run(ctx context.Context, modeOverride string) error {
 			// resolved for this request.
 			// Authority is resolved after the session it belongs to and
 			// before the guard, so one request resolves it once and every
-			// use case behind the handler sees the same answer.
-			API:      []httpapi.Middleware{sessionResolver.Middleware, authorizationResolver.Middleware, apiGuard.Middleware},
-			Document: []httpapi.Middleware{sessionResolver.Middleware, authorizationResolver.Middleware, documentGuard.Middleware},
+			// use case behind the handler sees the same answer. The
+			// reauthentication position is resolved alongside it, from the
+			// same session, so "may you" and "is it still you" cannot be
+			// answered from two different reads.
+			API:      []httpapi.Middleware{sessionResolver.Middleware, authorizationResolver.Middleware, reauthResolver.Middleware, apiGuard.Middleware},
+			Document: []httpapi.Middleware{sessionResolver.Middleware, authorizationResolver.Middleware, reauthResolver.Middleware, documentGuard.Middleware},
 		},
 	})
 	if err != nil {

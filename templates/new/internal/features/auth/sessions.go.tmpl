@@ -151,7 +151,7 @@ func (s *Sessions) Issue(ctx context.Context, userID string) (Issued, error) {
 		if err != nil {
 			return fmt.Errorf("creating the session: %w", err)
 		}
-		record = recordFrom(row.ID, row.UserID, row.CreatedAt, row.LastSeenAt, row.ExpiresAt, row.RevokedAt)
+		record = recordFrom(row.ID, row.UserID, row.CreatedAt, row.LastSeenAt, row.ExpiresAt, row.RevokedAt, row.ProvenAt)
 		return nil
 	})
 	if err != nil {
@@ -184,7 +184,7 @@ func (s *Sessions) Authenticate(ctx context.Context, presented string) (session.
 			return fmt.Errorf("looking up the session: %w", err)
 		}
 
-		found := recordFrom(row.ID, row.UserID, row.CreatedAt, row.LastSeenAt, row.ExpiresAt, row.RevokedAt)
+		found := recordFrom(row.ID, row.UserID, row.CreatedAt, row.LastSeenAt, row.ExpiresAt, row.RevokedAt, row.ProvenAt)
 		if state := found.Evaluate(now, s.lifetime); state != session.Active {
 			return &InactiveError{State: state}
 		}
@@ -270,13 +270,50 @@ func (s *Sessions) Rotate(ctx context.Context, sessionID, reason string) (Issued
 		if revoked == 0 {
 			return ErrSessionNotFound
 		}
-		record = recordFrom(row.ID, row.UserID, row.CreatedAt, row.LastSeenAt, row.ExpiresAt, row.RevokedAt)
+		record = recordFrom(row.ID, row.UserID, row.CreatedAt, row.LastSeenAt, row.ExpiresAt, row.RevokedAt, row.ProvenAt)
 		return nil
 	})
 	if err != nil {
 		return Issued{}, err
 	}
 	return Issued{Token: token, Record: record}, nil
+}
+
+// RecordProof records that this session's holder proved themselves again, and
+// reports when.
+//
+// It is what makes a reauthentication mean something later: the proof is
+// written on the session that gave it, so proving yourself in one browser
+// leaves a session on another machine as stale as it was. It moves no other
+// column — a proof is not activity, and it must not extend the absolute
+// deadline. Reauthenticating hourly forever would otherwise be a session that
+// never ends, which is the bound the deadline exists to impose.
+func (s *Sessions) RecordProof(ctx context.Context, sessionID string) (time.Time, error) {
+	id, err := parseUUID(sessionID)
+	if err != nil {
+		return time.Time{}, ErrSessionNotFound
+	}
+	now := s.now().UTC()
+
+	err = s.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		stamped, err := store.New(tx).StampSessionProof(ctx, store.StampSessionProofParams{
+			ID:       id,
+			ProvenAt: timestamp(now),
+		})
+		if err != nil {
+			return fmt.Errorf("recording the proof of identity: %w", err)
+		}
+		if stamped == 0 {
+			// The session was revoked, or already carries a later proof.
+			// Either way this request proved nothing about it.
+			return ErrSessionNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	return now, nil
 }
 
 // Revoke ends one session. Revoking an already-revoked session reports
@@ -461,7 +498,7 @@ func checkReason(reason string) error {
 	return nil
 }
 
-func recordFrom(id, userID pgtype.UUID, createdAt, lastSeenAt, expiresAt, revokedAt pgtype.Timestamptz) session.Record {
+func recordFrom(id, userID pgtype.UUID, createdAt, lastSeenAt, expiresAt, revokedAt, provenAt pgtype.Timestamptz) session.Record {
 	return session.Record{
 		ID:         uuidString(id),
 		UserID:     uuidString(userID),
@@ -469,6 +506,7 @@ func recordFrom(id, userID pgtype.UUID, createdAt, lastSeenAt, expiresAt, revoke
 		LastSeenAt: lastSeenAt.Time.UTC(),
 		ExpiresAt:  expiresAt.Time.UTC(),
 		RevokedAt:  revokedTime(revokedAt),
+		ProvenAt:   provenAt.Time.UTC(),
 	}
 }
 

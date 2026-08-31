@@ -11,7 +11,7 @@ This document records the planned baseline, not an audit or guarantee.
 - Argon2id password hashing with versioned, benchmarked parameters and rehash-on-login, plus a length-only policy with a local known-compromised check. Implemented; see [password hashing](passwords.md). The parameter history is application-owned Go code, retiring a set is explicit, and the unknown-account login path pays the same cost as a real one.
 - Closed registration by default through administrators or invitations. Implemented; see [enrollment](enrollment.md). Acceptance is one transaction, every unusable-invitation reason is the same error, and the first-administrator bootstrap withdraws earlier links so only the newest works.
 - Optional TOTP and recovery codes.
-- Planned default session policy of roughly 12 hours idle and 30 days absolute, configurable, with reauthentication for sensitive actions.
+- Default session policy of 12 hours idle and 30 days absolute, configurable, with reauthentication for sensitive actions. Implemented; see [reauthentication](reauthentication.md). The proof is stored per session, an undeclared action denies, and reauthenticating shares the sign-in throttle.
 
 ## Authorization
 
@@ -19,7 +19,7 @@ This document records the planned baseline, not an audit or guarantee.
 - Roles are named permission bundles.
 - Policies default to deny. Implemented: the zero permission set holds nothing, an unresolved request holds nothing, and requiring an empty permission list is a denial.
 - Use cases enforce authorization; hidden buttons are not security controls. Implemented; see [authorization](authorization.md). `Require` takes a context rather than a permission set, denies on every unresolved path, and a resolution failure denies rather than erroring.
-- Sensitive actions may require recent reauthentication and an audited reason.
+- Sensitive actions may require recent reauthentication and an audited reason. Reauthentication implemented; see [reauthentication](reauthentication.md). The closed matrix covers only actions that create or widen access — withdrawal is deliberately never gated, because the withdrawal is the response to a compromise.
 
 ## Tenant isolation
 

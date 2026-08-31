@@ -33,6 +33,16 @@
 // order revoked, expired, idle. A caller that only asked "is it active" would
 // have nothing to log and nothing to tell the user.
 //
+// # Freshness is a third clock
+//
+// An active session says a credential was presented at some point. It does not
+// say the person is still there. [Freshness] measures the age of the last
+// proof, per action, so an application can let an ordinary request through on a
+// twelve-hour session and still ask for the password again before something
+// that cannot be undone. The proof time lives on the session row, so proving
+// yourself in one browser leaves a session on another machine as stale as it
+// was.
+//
 // # Touching
 //
 // Sliding a session's idle window on every request turns every authenticated

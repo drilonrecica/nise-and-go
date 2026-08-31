@@ -12,9 +12,9 @@ import (
 )
 
 const createSession = `-- name: CreateSession :one
-INSERT INTO sessions (user_id, token_digest, created_at, last_seen_at, expires_at)
-VALUES ($1, $2, $3, $3, $4)
-RETURNING id, user_id, created_at, last_seen_at, expires_at, revoked_at
+INSERT INTO sessions (user_id, token_digest, created_at, last_seen_at, expires_at, proven_at)
+VALUES ($1, $2, $3, $3, $4, $3)
+RETURNING id, user_id, created_at, last_seen_at, expires_at, revoked_at, proven_at
 `
 
 type CreateSessionParams struct {
@@ -31,6 +31,7 @@ type CreateSessionRow struct {
 	LastSeenAt pgtype.Timestamptz
 	ExpiresAt  pgtype.Timestamptz
 	RevokedAt  pgtype.Timestamptz
+	ProvenAt   pgtype.Timestamptz
 }
 
 // CreateSession stores one issued session. Only the token digest is written;
@@ -50,6 +51,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (C
 		&i.LastSeenAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.ProvenAt,
 	)
 	return i, err
 }
@@ -87,6 +89,7 @@ SELECT s.id,
        s.last_seen_at,
        s.expires_at,
        s.revoked_at,
+       s.proven_at,
        u.status AS user_status
 FROM sessions s
 JOIN users u ON u.id = s.user_id
@@ -104,6 +107,7 @@ type FindSessionByTokenDigestRow struct {
 	LastSeenAt pgtype.Timestamptz
 	ExpiresAt  pgtype.Timestamptz
 	RevokedAt  pgtype.Timestamptz
+	ProvenAt   pgtype.Timestamptz
 	UserStatus string
 }
 
@@ -120,6 +124,7 @@ func (q *Queries) FindSessionByTokenDigest(ctx context.Context, arg FindSessionB
 		&i.LastSeenAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.ProvenAt,
 		&i.UserStatus,
 	)
 	return i, err
@@ -254,12 +259,12 @@ func (q *Queries) RevokeUserSessions(ctx context.Context, arg RevokeUserSessions
 }
 
 const rotateSession = `-- name: RotateSession :one
-INSERT INTO sessions (user_id, token_digest, created_at, last_seen_at, expires_at)
-SELECT previous.user_id, $2, previous.created_at, $3, previous.expires_at
+INSERT INTO sessions (user_id, token_digest, created_at, last_seen_at, expires_at, proven_at)
+SELECT previous.user_id, $2, previous.created_at, $3, previous.expires_at, previous.proven_at
 FROM sessions AS previous
 WHERE previous.id = $1
   AND previous.revoked_at IS NULL
-RETURNING id, user_id, created_at, last_seen_at, expires_at, revoked_at
+RETURNING id, user_id, created_at, last_seen_at, expires_at, revoked_at, proven_at
 `
 
 type RotateSessionParams struct {
@@ -275,11 +280,15 @@ type RotateSessionRow struct {
 	LastSeenAt pgtype.Timestamptz
 	ExpiresAt  pgtype.Timestamptz
 	RevokedAt  pgtype.Timestamptz
+	ProvenAt   pgtype.Timestamptz
 }
 
 // RotateSession replaces one session with a new token, preserving the original
 // absolute deadline. Copying created_at and expires_at rather than recomputing
 // them is what stops repeated rotation from becoming an unbounded session.
+// The proof of identity is carried across as well: rotation is not a new proof
+// and not the loss of one, so a token replaced a moment after a password was
+// typed must not ask for that password again.
 func (q *Queries) RotateSession(ctx context.Context, arg RotateSessionParams) (RotateSessionRow, error) {
 	row := q.db.QueryRow(ctx, rotateSession, arg.ID, arg.TokenDigest, arg.LastSeenAt)
 	var i RotateSessionRow
@@ -290,8 +299,37 @@ func (q *Queries) RotateSession(ctx context.Context, arg RotateSessionParams) (R
 		&i.LastSeenAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.ProvenAt,
 	)
 	return i, err
+}
+
+const stampSessionProof = `-- name: StampSessionProof :execrows
+UPDATE sessions
+SET proven_at = $2
+WHERE id = $1
+  AND revoked_at IS NULL
+  AND proven_at <= $2
+`
+
+type StampSessionProofParams struct {
+	ID       pgtype.UUID
+	ProvenAt pgtype.Timestamptz
+}
+
+// StampSessionProof records that the holder proved themselves again.
+//
+// It touches one session, never the account's others: a proof given in one
+// browser must not make a session on another machine fresh. The proven_at guard
+// keeps the column monotonic, so a delayed write cannot move a proof backwards,
+// and the revoked_at guard stops a request in flight from proving anything
+// about a session that has just been ended.
+func (q *Queries) StampSessionProof(ctx context.Context, arg StampSessionProofParams) (int64, error) {
+	result, err := q.db.Exec(ctx, stampSessionProof, arg.ID, arg.ProvenAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const touchSession = `-- name: TouchSession :execrows

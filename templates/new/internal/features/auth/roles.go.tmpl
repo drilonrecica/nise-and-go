@@ -17,6 +17,7 @@ import (
 	"{{.ModulePath}}/internal/features/auth/store"
 	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/reauth"
 )
 
 // MaxRoleHolders bounds one page of "who holds this role".
@@ -93,6 +94,13 @@ func (r *Roles) Catalog() *authz.Catalog { return r.catalog }
 // record still says who first gave the privilege.
 func (r *Roles) Grant(ctx context.Context, userID, role, grantedBy string) error {
 	if err := authorization.Require(ctx, authorization.RolesManage); err != nil {
+		return err
+	}
+	// Holding the permission and being the person who holds it are two
+	// questions. Granting a role is the escalation path — the role given can
+	// carry every permission the granter has — so it is one of the few
+	// actions that asks the second question as well.
+	if err := reauth.Require(ctx, reauth.ActionRolesGrant); err != nil {
 		return err
 	}
 	return r.grant(ctx, userID, role, grantedBy)

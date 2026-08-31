@@ -1,0 +1,378 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/authz"
+	"github.com/drilonrecica/nise-and-go/runtime/session"
+
+	"{{.ModulePath}}/internal/features/audit"
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/passwords"
+	"{{.ModulePath}}/internal/platform/reauth"
+)
+
+// provenAt reads the stored proof directly, so a test can prove that a
+// reauthentication wrote one rather than merely reporting that it did.
+func (h *harness) provenAt(t *testing.T, sessionID string) time.Time {
+	t.Helper()
+
+	var stored time.Time
+	if err := h.pool.QueryRow(h.ctx, `SELECT proven_at FROM sessions WHERE id = $1`, sessionID).Scan(&stored); err != nil {
+		t.Fatalf("read the stored proof: %v", err)
+	}
+	return stored.UTC()
+}
+
+// onSession is the context a request carrying that session would have: the
+// account, the session, and the proof the session currently holds, judged
+// against the harness clock.
+func (h *harness) onSession(t *testing.T, record session.Record, permissions ...authz.Permission) context.Context {
+	t.Helper()
+
+	granted, err := authz.NewSet(permissions...)
+	if err != nil {
+		t.Fatalf("NewSet: %v", err)
+	}
+	matrix, err := reauth.DefaultMatrix()
+	if err != nil {
+		t.Fatalf("DefaultMatrix: %v", err)
+	}
+	ctx := authorization.WithGrants(h.ctx, authorization.Grants{
+		UserID:      record.UserID,
+		Permissions: granted,
+	})
+	return reauth.WithState(ctx, reauth.State{
+		UserID:    record.UserID,
+		SessionID: record.ID,
+		ProvenAt:  record.ProvenAt,
+		Matrix:    matrix,
+		At:        h.clock(),
+	})
+}
+
+// signIn produces a real session for an enrolled account.
+func signIn(t *testing.T, h *harness, credentials *Credentials, email, secret string) session.Record {
+	t.Helper()
+
+	login, err := credentials.Authenticate(h.ctx, email, secret)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	return login.Session.Record
+}
+
+// A session is proved when it is issued: the person typed the password a
+// moment ago, and asking them again immediately would teach them nothing
+// except that the prompt is noise.
+func TestIssuingASessionRecordsAProof(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentials(t, h, policy)
+	enrol(t, h, policy, "person@example.test", goodPassword)
+
+	record := signIn(t, h, credentials, "person@example.test", goodPassword)
+	if !record.ProvenAt.Equal(record.CreatedAt) {
+		t.Fatalf("ProvenAt = %s, want the creation time %s", record.ProvenAt, record.CreatedAt)
+	}
+	if !h.provenAt(t, record.ID).Equal(record.CreatedAt) {
+		t.Fatal("the stored proof does not match the returned one")
+	}
+}
+
+func TestReauthenticationProvesOneSessionAndNoOther(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentials(t, h, policy)
+	enrol(t, h, policy, "person@example.test", goodPassword)
+
+	first := signIn(t, h, credentials, "person@example.test", goodPassword)
+	second := signIn(t, h, credentials, "person@example.test", goodPassword)
+
+	h.advance(30 * time.Minute)
+	provenAt, err := credentials.Reauthenticate(h.onSession(t, first), goodPassword)
+	if err != nil {
+		t.Fatalf("Reauthenticate: %v", err)
+	}
+	if !provenAt.Equal(h.clock()) {
+		t.Fatalf("provenAt = %s, want %s", provenAt, h.clock())
+	}
+	if !h.provenAt(t, first.ID).Equal(h.clock()) {
+		t.Fatal("the proof was not written to the session that gave it")
+	}
+	// Proving yourself in one browser must leave a session on another machine
+	// exactly as stale as it was.
+	if !h.provenAt(t, second.ID).Equal(second.CreatedAt) {
+		t.Fatal("reauthenticating one session refreshed another")
+	}
+
+	// A proof is not activity and not a new lifetime: reauthenticating hourly
+	// forever must not be a session that never ends.
+	var expiresAt time.Time
+	if err := h.pool.QueryRow(h.ctx, `SELECT expires_at FROM sessions WHERE id = $1`, first.ID).Scan(&expiresAt); err != nil {
+		t.Fatalf("read the absolute deadline: %v", err)
+	}
+	if !expiresAt.UTC().Equal(first.ExpiresAt) {
+		t.Fatalf("the absolute deadline moved from %s to %s", first.ExpiresAt, expiresAt.UTC())
+	}
+}
+
+func TestAWrongPasswordProvesNothing(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentials(t, h, policy)
+	account := enrol(t, h, policy, "person@example.test", goodPassword)
+	record := signIn(t, h, credentials, "person@example.test", goodPassword)
+
+	h.advance(30 * time.Minute)
+	if _, err := credentials.Reauthenticate(h.onSession(t, record), "the wrong password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("error = %v, want ErrInvalidCredentials", err)
+	}
+	if !h.provenAt(t, record.ID).Equal(record.CreatedAt) {
+		t.Fatal("a refused proof moved the stored proof time")
+	}
+
+	recorder, err := audit.NewRecorder(h.transactor(t), audit.WithClock(h.clock))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	reader := authorized(t, account.ID, authorization.AuditRead)
+	records, err := recorder.List(reader, audit.Filter{Action: ActionReauthenticationDenied}, audit.Position{}, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("recorded %d refusals, want 1", len(records))
+	}
+	if records[0].Detail["reason"] != string(OutcomeWrongPassword) {
+		t.Fatalf("reason = %q, want %q", records[0].Detail["reason"], OutcomeWrongPassword)
+	}
+	if records[0].ActorID != account.ID {
+		t.Fatalf("actor = %q, want the account that could not prove itself", records[0].ActorID)
+	}
+}
+
+// The endpoint must not be an unmetered oracle for a password the sign-in page
+// counts. It shares the sign-in bucket, so guesses spent here are gone from
+// there too.
+func TestReauthenticationSharesTheSignInThrottle(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentialsWithThrottle(t, h, policy, tightThrottle(t, 3, 100))
+	enrol(t, h, policy, "person@example.test", goodPassword)
+	record := signIn(t, h, credentials, "person@example.test", goodPassword)
+
+	for i := range 3 {
+		if _, err := credentials.Reauthenticate(h.onSession(t, record), "the wrong password"); !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("attempt %d: error = %v, want ErrInvalidCredentials", i+1, err)
+		}
+	}
+	if _, err := credentials.Reauthenticate(h.onSession(t, record), "the wrong password"); !errors.Is(err, ErrThrottled) {
+		t.Fatalf("error = %v, want ErrThrottled", err)
+	}
+	// And the guesses were spent from the sign-in budget as well.
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword); !errors.Is(err, ErrThrottled) {
+		t.Fatalf("signing in was not throttled after the reauthentication attempts: %v", err)
+	}
+}
+
+// A session that has outlived its account's status may last one more request;
+// it must not be able to prove itself for a sensitive one.
+func TestADisabledAccountCannotProveItself(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentials(t, h, policy)
+	account := enrol(t, h, policy, "person@example.test", goodPassword)
+	record := signIn(t, h, credentials, "person@example.test", goodPassword)
+
+	admin := authorized(t, h.account(t, "admin@example.test").ID, authorization.UsersManage)
+	if err := h.accounts.SetStatus(admin, account.ID, StatusDisabled); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	if _, err := credentials.Reauthenticate(h.onSession(t, record), goodPassword); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("error = %v, want ErrInvalidCredentials", err)
+	}
+	if !h.provenAt(t, record.ID).Equal(record.CreatedAt) {
+		t.Fatal("a disabled account moved the stored proof time")
+	}
+}
+
+// A request that carries no resolved session proves nothing, whatever it
+// submits.
+func TestReauthenticationNeedsAResolvedSession(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentials(t, h, policy)
+	enrol(t, h, policy, "person@example.test", goodPassword)
+
+	if _, err := credentials.Reauthenticate(h.ctx, goodPassword); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("error = %v, want ErrNoSession", err)
+	}
+}
+
+func TestActionsInTheMatrixNeedARecentProof(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentials(t, h, policy)
+	roles := testRoles(t, h)
+	invitations := testInvitations(t, h, policy)
+	enrol(t, h, policy, "admin@example.test", goodPassword)
+	account := h.account(t, "person@example.test")
+	record := signIn(t, h, credentials, "admin@example.test", goodPassword)
+
+	// An hour later the sign-in is still a valid session and no longer a
+	// recent proof.
+	h.advance(time.Hour)
+	stale := h.onSession(t, record, authorization.RolesManage, authorization.RolesRead, authorization.UsersManage, authorization.UsersRead)
+
+	if err := roles.Grant(stale, account.ID, authorization.RoleAuditor, record.UserID); !errors.Is(err, reauth.ErrRequired) {
+		t.Fatalf("Grant error = %v, want reauth.ErrRequired", err)
+	}
+	if _, _, err := invitations.Create(stale, "new@example.test", nil, record.UserID); !errors.Is(err, reauth.ErrRequired) {
+		t.Fatalf("Create error = %v, want reauth.ErrRequired", err)
+	}
+	if err := h.accounts.SetStatus(stale, account.ID, StatusActive); !errors.Is(err, reauth.ErrRequired) {
+		t.Fatalf("SetStatus(active) error = %v, want reauth.ErrRequired", err)
+	}
+
+	// A refused action writes nothing.
+	grants, err := roles.Grants(stale, account.ID)
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 0 {
+		t.Fatalf("a refused grant wrote %d rows", len(grants))
+	}
+	if count := h.invitationCount(t); count != 0 {
+		t.Fatalf("a refused invitation wrote %d rows", count)
+	}
+
+	// Proving the password again is what makes the same request work, on the
+	// same session, without signing in anywhere.
+	if _, err := credentials.Reauthenticate(h.onSession(t, record), goodPassword); err != nil {
+		t.Fatalf("Reauthenticate: %v", err)
+	}
+	record.ProvenAt = h.clock()
+	fresh := h.onSession(t, record, authorization.RolesManage, authorization.RolesRead, authorization.UsersManage, authorization.UsersRead)
+
+	if err := roles.Grant(fresh, account.ID, authorization.RoleAuditor, record.UserID); err != nil {
+		t.Fatalf("Grant after reauthenticating: %v", err)
+	}
+	if _, _, err := invitations.Create(fresh, "new@example.test", nil, record.UserID); err != nil {
+		t.Fatalf("Create after reauthenticating: %v", err)
+	}
+	// Disabling needs no proof; enabling again does, and now has one.
+	if err := h.accounts.SetStatus(fresh, account.ID, StatusDisabled); err != nil {
+		t.Fatalf("SetStatus(disabled): %v", err)
+	}
+	if err := h.accounts.SetStatus(fresh, account.ID, StatusActive); err != nil {
+		t.Fatalf("SetStatus after reauthenticating: %v", err)
+	}
+}
+
+// Withdrawing access is deliberately not in the matrix. The withdrawal is the
+// response to a compromise, and a control that made the response slower than
+// the attack would be helping the wrong party.
+func TestWithdrawingAccessIsNotSlowedDown(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentials(t, h, policy)
+	roles := testRoles(t, h)
+	invitations := testInvitations(t, h, policy)
+	enrol(t, h, policy, "admin@example.test", goodPassword)
+	account := h.account(t, "person@example.test")
+	record := signIn(t, h, credentials, "admin@example.test", goodPassword)
+
+	permissions := []authz.Permission{
+		authorization.RolesManage,
+		authorization.RolesRead,
+		authorization.UsersManage,
+		authorization.UsersRead,
+		authorization.SessionsRevoke,
+	}
+	fresh := h.onSession(t, record, permissions...)
+	if err := roles.Grant(fresh, account.ID, authorization.RoleAuditor, record.UserID); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	invitation, _, err := invitations.Create(fresh, "new@example.test", nil, record.UserID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	h.advance(time.Hour)
+	stale := h.onSession(t, record, permissions...)
+	if err := roles.Revoke(stale, account.ID, authorization.RoleAuditor); err != nil {
+		t.Fatalf("Revoke with a stale proof: %v", err)
+	}
+	if err := h.accounts.SetStatus(stale, account.ID, StatusDisabled); err != nil {
+		t.Fatalf("SetStatus(disabled) with a stale proof: %v", err)
+	}
+	if err := invitations.Revoke(stale, invitation.ID); err != nil {
+		t.Fatalf("invitation Revoke with a stale proof: %v", err)
+	}
+	if _, err := h.sessions.RevokeForAccount(stale, account.ID, "compromised"); err != nil {
+		t.Fatalf("RevokeForAccount with a stale proof: %v", err)
+	}
+}
+
+// Changing a password already takes the current password, which is a stronger
+// proof than a recent one. It records that proof rather than asking for the
+// same secret twice in one form.
+func TestAPasswordChangeIsItsOwnProof(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentials(t, h, policy)
+	roles := testRoles(t, h)
+	enrol(t, h, policy, "admin@example.test", goodPassword)
+	account := h.account(t, "person@example.test")
+	record := signIn(t, h, credentials, "admin@example.test", goodPassword)
+
+	h.advance(time.Hour)
+	compromised, err := passwords.Compromised()
+	if err != nil {
+		t.Fatalf("Compromised: %v", err)
+	}
+	const nextPassword = "a completely different passphrase"
+	rotated, err := credentials.ChangePassword(h.ctx, record.UserID, goodPassword, nextPassword, compromised, record.ID)
+	if err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+	if !rotated.Record.ProvenAt.Equal(h.clock()) {
+		t.Fatalf("ProvenAt = %s, want %s", rotated.Record.ProvenAt, h.clock())
+	}
+	if !h.provenAt(t, rotated.Record.ID).Equal(h.clock()) {
+		t.Fatal("the proof was not stored on the rotated session")
+	}
+
+	fresh := h.onSession(t, rotated.Record, authorization.RolesManage)
+	if err := roles.Grant(fresh, account.ID, authorization.RoleAuditor, record.UserID); err != nil {
+		t.Fatalf("Grant after a password change: %v", err)
+	}
+}
+
+// Rotation is not a proof and not the loss of one. A token replaced a moment
+// after a password was typed must not ask for that password again.
+func TestRotationCarriesTheProof(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentials(t, h, policy)
+	enrol(t, h, policy, "person@example.test", goodPassword)
+	record := signIn(t, h, credentials, "person@example.test", goodPassword)
+
+	h.advance(10 * time.Minute)
+	rotated, err := h.sessions.Rotate(h.ctx, record.ID, "privilege change")
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if !rotated.Record.ProvenAt.Equal(record.ProvenAt) {
+		t.Fatalf("ProvenAt = %s, want the previous session's %s", rotated.Record.ProvenAt, record.ProvenAt)
+	}
+	if !h.provenAt(t, rotated.Record.ID).Equal(record.ProvenAt) {
+		t.Fatal("the rotated session stored a different proof than it carried")
+	}
+}
