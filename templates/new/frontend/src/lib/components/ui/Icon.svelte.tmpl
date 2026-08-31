@@ -1,0 +1,36 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { icons, type IconName } from './icons';
+
+	let {
+		name,
+		label,
+		class: className = 'size-5'
+	}: {
+		name: IconName;
+		/**
+		 * The accessible name, when this icon is the only thing conveying
+		 * meaning. Leave it out beside real text: a decorative duplicate read
+		 * aloud is noise, and aria-hidden is then the correct answer.
+		 */
+		label?: string;
+		class?: string;
+	} = $props();
+</script>
+
+<svg
+	class={className}
+	viewBox="0 0 24 24"
+	fill="none"
+	stroke="currentColor"
+	stroke-width="1.5"
+	stroke-linecap="round"
+	stroke-linejoin="round"
+	role={label ? 'img' : 'presentation'}
+	aria-hidden={label ? undefined : 'true'}
+	aria-label={label}
+>
+	{#each icons[name] as d (d)}
+		<path {d} />
+	{/each}
+</svg>

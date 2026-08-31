@@ -218,17 +218,44 @@
 		ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
 
 	/* Functional motion only: 120–200ms, and every one of them is suppressed
-	 * under prefers-reduced-motion. */
+	 * under prefers-reduced-motion.
+	 *
+	 * Tailwind has no --duration-* namespace, so these three are plain
+	 * variables and the three utilities that read them are defined below with
+	 * @utility. The defaults are overridden here as well, so a bare
+	 * `transition-colors` is already this application's timing rather than
+	 * Tailwind's 150ms and its own easing curve. */
 	--duration-fast: 120ms;
 	--duration-base: 160ms;
 	--duration-slow: 200ms;
 	--ease-standard: cubic-bezier(0.2, 0, 0, 1);
+	--default-transition-duration: var(--duration-base);
+	--default-transition-timing-function: var(--ease-standard);
 
 	/* Balanced operational density: comfortable controls, compact tables. */
 	--spacing-control-sm: 1.75rem;
 	--spacing-control-md: 2.25rem;
 	--spacing-control-lg: 2.75rem;
 	--spacing-row: 2.5rem;
+}
+
+/*
+ * The three motion utilities. Tailwind's `duration-*` takes bare numbers and
+ * has no theme namespace to hang a name on, so `duration-fast` would silently
+ * not exist — a class that looks right, generates nothing, and leaves the
+ * default timing in place. Defining them explicitly is what makes the tokens
+ * above reachable from markup.
+ */
+@utility duration-fast {
+	transition-duration: var(--duration-fast);
+}
+
+@utility duration-base {
+	transition-duration: var(--duration-base);
+}
+
+@utility duration-slow {
+	transition-duration: var(--duration-slow);
 }
 
 @layer base {

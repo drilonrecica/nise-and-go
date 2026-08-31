@@ -1,0 +1,73 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// The application shell's own small pieces of state.
+//
+// Two of them, and they are different in kind. The desktop sidebar's
+// collapsed state is a preference: a person sets it once and expects it back
+// tomorrow, so it is stored. The mobile drawer's open state is not a
+// preference at all — an application that opened its navigation drawer on
+// load because you left it open last week would be broken — so it lives only
+// for the life of the page.
+
+/** The localStorage key holding the desktop sidebar's collapsed state. */
+export const sidebarStorageKey = 'sidebar-collapsed';
+
+/** A storage this module can survive without; see theme.svelte.ts. */
+export interface ShellStorage {
+	getItem(key: string): string | null;
+	setItem(key: string, value: string): void;
+}
+
+/** Read the stored collapsed state. Anything unrecognised means expanded. */
+export function readCollapsed(storage: ShellStorage | undefined): boolean {
+	try {
+		return storage?.getItem(sidebarStorageKey) === 'true';
+	} catch {
+		return false;
+	}
+}
+
+/** Store the collapsed state, ignoring a storage that refuses. */
+export function writeCollapsed(storage: ShellStorage | undefined, collapsed: boolean): void {
+	try {
+		storage?.setItem(sidebarStorageKey, String(collapsed));
+	} catch {
+		// A sidebar that forgets is a smaller failure than one that cannot move.
+	}
+}
+
+class Shell {
+	#collapsed = $state(false);
+	#drawerOpen = $state(false);
+
+	/** Whether the desktop sidebar is showing icons only. */
+	get sidebarCollapsed(): boolean {
+		return this.#collapsed;
+	}
+
+	/** Whether the mobile navigation drawer is open. */
+	get drawerOpen(): boolean {
+		return this.#drawerOpen;
+	}
+
+	/** Adopt the stored sidebar preference. Call once, from the shell layout. */
+	start(): void {
+		this.#collapsed = readCollapsed(globalThis.localStorage);
+	}
+
+	toggleSidebar(): void {
+		this.#collapsed = !this.#collapsed;
+		writeCollapsed(globalThis.localStorage, this.#collapsed);
+	}
+
+	openDrawer(): void {
+		this.#drawerOpen = true;
+	}
+
+	closeDrawer(): void {
+		this.#drawerOpen = false;
+	}
+}
+
+/** The application shell's state. One shell, one instance. */
+export const shell = new Shell();

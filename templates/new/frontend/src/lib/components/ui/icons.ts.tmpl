@@ -1,0 +1,31 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// The application's icons, as path data.
+//
+// There is no icon package. An icon here is one or more `d` attributes drawn
+// on a 24×24 grid with a 1.5px round stroke, which is the entire contract —
+// so adding one is pasting a path, and the set stays as small as the
+// application actually needs rather than as large as a library ships.
+//
+// They are stroked rather than filled so a single set reads correctly on both
+// themes: the stroke takes `currentColor`, and `currentColor` is a token.
+
+/** Every icon this application draws. */
+export const icons = {
+	home: ['M3 10.5 12 3l9 7.5', 'M5.25 9.75V20.25h13.5V9.75', 'M9.75 20.25v-6h4.5v6'],
+	settings: [
+		'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z',
+		'M19.5 12a7.5 7.5 0 0 0-.09-1.15l1.86-1.45-1.8-3.12-2.2.88a7.5 7.5 0 0 0-2-1.16L14.9 3.7h-3.6l-.37 2.3a7.5 7.5 0 0 0-2 1.16l-2.2-.88-1.8 3.12 1.86 1.45a7.6 7.6 0 0 0 0 2.3L4.93 14.6l1.8 3.12 2.2-.88a7.5 7.5 0 0 0 2 1.16l.37 2.3h3.6l.37-2.3a7.5 7.5 0 0 0 2-1.16l2.2.88 1.8-3.12-1.86-1.45c.06-.38.09-.76.09-1.15Z'
+	],
+	list: ['M8.25 6.75h12', 'M8.25 12h12', 'M8.25 17.25h12', 'M3.75 6.75h.008', 'M3.75 12h.008', 'M3.75 17.25h.008'],
+	menu: ['M3.75 6.75h16.5', 'M3.75 12h16.5', 'M3.75 17.25h16.5'],
+	close: ['M6 6l12 12', 'M18 6 6 18'],
+	chevronDown: ['m6 9 6 6 6-6'],
+	chevronRight: ['m9 6 6 6-6 6'],
+	panelLeft: ['M4.5 5.25h15v13.5h-15z', 'M10.5 5.25v13.5'],
+	user: ['M12 12a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z', 'M4.5 20.25a7.5 7.5 0 0 1 15 0'],
+	signOut: ['M15.75 9V5.25h-10.5v13.5h10.5V15', 'M12 12h9.75', 'm18.75 9 3 3-3 3']
+} as const;
+
+/** The name of an icon in the set above. */
+export type IconName = keyof typeof icons;

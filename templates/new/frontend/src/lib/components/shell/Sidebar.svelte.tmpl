@@ -1,0 +1,45 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import Icon from '$lib/components/ui/Icon.svelte';
+	import SidebarNav from '$lib/components/shell/SidebarNav.svelte';
+	import { shell } from '$lib/shell.svelte';
+
+	let { name }: { name: string } = $props();
+</script>
+
+<!--
+	The desktop rail. It is hidden below the medium breakpoint, where the same
+	navigation is reached through the drawer, and it is a landmark with a name
+	because an application with more than one <nav> needs each one labelled or
+	a screen-reader user gets a list of identical "navigation" entries.
+-->
+<aside
+	class="hidden shrink-0 border-r border-line bg-surface transition-[width] duration-base ease-standard md:flex md:flex-col {shell.sidebarCollapsed
+		? 'md:w-16'
+		: 'md:w-60'}"
+>
+	<div class="flex h-14 items-center gap-2 border-b border-line px-4">
+		<a
+			href="/"
+			class="truncate rounded-xs text-sm font-semibold tracking-tight text-text"
+			class:sr-only={shell.sidebarCollapsed}>{name}</a
+		>
+	</div>
+
+	<nav aria-label="Main" class="flex-1 overflow-y-auto p-2">
+		<SidebarNav collapsed={shell.sidebarCollapsed} />
+	</nav>
+
+	<div class="border-t border-line p-2">
+		<button
+			type="button"
+			class="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-text-muted transition-colors duration-fast ease-standard hover:bg-surface-muted hover:text-text"
+			class:justify-center={shell.sidebarCollapsed}
+			aria-pressed={shell.sidebarCollapsed}
+			onclick={() => shell.toggleSidebar()}
+		>
+			<Icon name="panelLeft" class="size-5 shrink-0" />
+			<span class:sr-only={shell.sidebarCollapsed}>Collapse sidebar</span>
+		</button>
+	</div>
+</aside>
