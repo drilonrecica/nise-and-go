@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 
 	"github.com/go-chi/chi/v5"
 
@@ -36,6 +37,8 @@ type Server struct {
 	invitations Enrollment
 	cookies     *httpauth.Cookies
 	compromised password.Compromised
+	modules     []string
+	environment string
 }
 
 // The four interfaces below are declared here, by the consumer, rather than
@@ -93,6 +96,11 @@ type ServerDeps struct {
 	// Compromised is the known-breached password list a new password is
 	// checked against.
 	Compromised password.Compromised
+	// Modules are the optional compile-time modules this binary carries, for
+	// the About/System page.
+	Modules []string
+	// Environment is the deployment environment, for the same page.
+	Environment string
 }
 
 // NewServer constructs the application's strict OpenAPI adapter.
@@ -123,6 +131,8 @@ func NewServer(deps ServerDeps) (*Server, error) {
 		invitations: deps.Invitations,
 		cookies:     deps.Cookies,
 		compromised: deps.Compromised,
+		modules:     slices.Clone(deps.Modules),
+		environment: deps.Environment,
 	}, nil
 }
 

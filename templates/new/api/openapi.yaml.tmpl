@@ -19,6 +19,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/APIRoot'
+  /system:
+    get:
+      operationId: getSystemInfo
+      summary: Describe the running binary, for an administrator
+      description: >-
+        The version of this application, the framework it was built against,
+        and which optional modules it carries. It needs the system.read
+        permission: this describes the deployment rather than the business, and
+        it is not something to hand an unauthenticated caller.
+      responses:
+        "200":
+          description: What this binary is.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemInfo'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
   /session:
     get:
       operationId: getCurrentSession
@@ -186,6 +206,35 @@ paths:
           $ref: '#/components/responses/Problem'
 components:
   schemas:
+    SystemInfo:
+      type: object
+      additionalProperties: false
+      required:
+        - application_version
+        - framework_module
+        - framework_version
+        - environment
+        - modules
+      properties:
+        application_version:
+          type: string
+          maxLength: 128
+          description: This application's own build version, or "(devel)" for a source build.
+        framework_module:
+          type: string
+          maxLength: 255
+        framework_version:
+          type: string
+          maxLength: 128
+        environment:
+          type: string
+          maxLength: 32
+        modules:
+          type: array
+          description: The optional compile-time modules this binary carries.
+          items:
+            type: string
+            maxLength: 64
     Account:
       type: object
       additionalProperties: false

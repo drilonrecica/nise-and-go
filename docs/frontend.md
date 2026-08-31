@@ -269,3 +269,7 @@ Nise's default palette is held to the same table by a Go test over the generated
 
 Normal application chrome carries the application's identity, not Nise branding. An application may retain a small “Built with Nise & Go” reference on an admin-only About/System page. It may remove that reference entirely.
 
+That page is `(app)/settings/about`, and both halves of the rule are enforced by a test. The version information is behind the `system.read` permission — a version is the first thing anybody looking for a known vulnerability asks for, and it describes the deployment rather than the business, so an ordinary account has no reason to hold it. And the framework reference is exactly one paragraph, appearing in exactly one generated file, which says in its own comment that it may be deleted: nothing else in the application and nothing in `nise check` requires it to be there.
+
+The versions are read from the binary's own build information rather than from a linker flag, so the answer is true for `go build`, `go install`, and a release build alike — and true for the framework module, which no linker flag of the application's could know.
+

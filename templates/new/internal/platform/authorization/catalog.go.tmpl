@@ -44,6 +44,12 @@ var (
 	// people who can see what was changed do not have to be the same, and in
 	// some organizations must not be.
 	AuditRead = authz.MustPermission("audit.read")
+	// SystemRead permits seeing the About/System page: the running binary's
+	// version, the framework it was built against, and which optional
+	// modules it carries. It is its own permission because that information
+	// describes the deployment rather than the business, and an ordinary
+	// account has no reason to hold it.
+	SystemRead = authz.MustPermission("system.read")
 )
 
 // Role names this application grants.
@@ -66,13 +72,14 @@ func permissions() []authz.Permission {
 		RolesManage,
 		SessionsRevoke,
 		AuditRead,
+		SystemRead,
 	}
 }
 
 // roles are the bundles this application grants.
 func roles() ([]authz.Role, error) {
 	administrator, err := authz.NewRole(RoleAdministrator,
-		UsersRead, UsersManage, RolesRead, RolesManage, SessionsRevoke, AuditRead)
+		UsersRead, UsersManage, RolesRead, RolesManage, SessionsRevoke, AuditRead, SystemRead)
 	if err != nil {
 		return nil, err
 	}

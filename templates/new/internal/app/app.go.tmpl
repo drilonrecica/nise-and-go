@@ -230,6 +230,8 @@ func Run(ctx context.Context, modeOverride string) error {
 		Invitations: invitations,
 		Cookies:     sessionCookies,
 		Compromised: compromisedPasswords,
+		Modules:     SelectedModules(),
+		Environment: string(cfg.Env),
 	})
 	if err != nil {
 		return fmt.Errorf("building the API adapter: %w", err)

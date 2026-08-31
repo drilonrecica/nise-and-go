@@ -232,6 +232,18 @@ type SignInResult struct {
 // SignInResultStatus defines model for SignInResult.Status.
 type SignInResultStatus string
 
+// SystemInfo defines model for SystemInfo.
+type SystemInfo struct {
+	// ApplicationVersion This application's own build version, or "(devel)" for a source build.
+	ApplicationVersion string `json:"application_version"`
+	Environment        string `json:"environment"`
+	FrameworkModule    string `json:"framework_module"`
+	FrameworkVersion   string `json:"framework_version"`
+
+	// Modules The optional compile-time modules this binary carries.
+	Modules []string `json:"modules"`
+}
+
 // CursorAfter An opaque authenticated position token. Return it verbatim in after or before; never parse, construct, or store it beyond the current listing.
 type CursorAfter = Cursor
 
@@ -294,6 +306,9 @@ type ServerInterface interface {
 	// RevokeSession End one of the signed-in account's sessions
 	// (DELETE /sessions/{sessionId})
 	RevokeSession(w http.ResponseWriter, r *http.Request, sessionId string)
+	// GetSystemInfo Describe the running binary, for an administrator
+	// (GET /system)
+	GetSystemInfo(w http.ResponseWriter, r *http.Request)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -357,6 +372,12 @@ func (_ Unimplemented) ListSessions(w http.ResponseWriter, r *http.Request) {
 // RevokeSession End one of the signed-in account's sessions
 // (DELETE /sessions/{sessionId})
 func (_ Unimplemented) RevokeSession(w http.ResponseWriter, r *http.Request, sessionId string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetSystemInfo Describe the running binary, for an administrator
+// (GET /system)
+func (_ Unimplemented) GetSystemInfo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -521,6 +542,20 @@ func (siw *ServerInterfaceWrapper) RevokeSession(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
+// GetSystemInfo operation middleware
+func (siw *ServerInterfaceWrapper) GetSystemInfo(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSystemInfo(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -636,6 +671,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/", wrapper.GetAPIIndex)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/system", wrapper.GetSystemInfo)
 	})
 	r.Group(func(r chi.Router) {
 		r.Delete(options.BaseURL+"/session", wrapper.SignOut)
@@ -1144,6 +1182,66 @@ func (response RevokeSession404ApplicationProblemPlusJSONResponse) VisitRevokeSe
 	return err
 }
 
+type GetSystemInfoRequestObject struct {
+}
+
+type GetSystemInfoResponseObject interface {
+	VisitGetSystemInfoResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error
+}
+
+type GetSystemInfo200JSONResponse SystemInfo
+
+func (response GetSystemInfo200JSONResponse) VisitGetSystemInfoResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSystemInfo401ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response GetSystemInfo401ApplicationProblemPlusJSONResponse) VisitGetSystemInfoResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetSystemInfo403ApplicationProblemPlusJSONResponse Problem
+
+func (response GetSystemInfo403ApplicationProblemPlusJSONResponse) VisitGetSystemInfoResponse(w http.ResponseWriter, checkJSONResponseSize func(size int) error) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	if err := checkJSONResponseSize(buf.Len()); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// GetAPIIndex Describe the versioned API boundary
@@ -1176,6 +1274,9 @@ type StrictServerInterface interface {
 	// RevokeSession End one of the signed-in account's sessions
 	// (DELETE /sessions/{sessionId})
 	RevokeSession(ctx context.Context, request RevokeSessionRequestObject) (RevokeSessionResponseObject, error)
+	// GetSystemInfo Describe the running binary, for an administrator
+	// (GET /system)
+	GetSystemInfo(ctx context.Context, request GetSystemInfoRequestObject) (GetSystemInfoResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -1522,6 +1623,30 @@ func (sh *strictHandler) RevokeSession(w http.ResponseWriter, r *http.Request, s
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RevokeSessionResponseObject); ok {
 		if err := validResponse.VisitRevokeSessionResponse(w, sh.options.JSONResponseSizeChecker); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetSystemInfo operation middleware
+func (sh *strictHandler) GetSystemInfo(w http.ResponseWriter, r *http.Request) {
+	var request GetSystemInfoRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetSystemInfo(ctx, request.(GetSystemInfoRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetSystemInfo")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetSystemInfoResponseObject); ok {
+		if err := validResponse.VisitGetSystemInfoResponse(w, sh.options.JSONResponseSizeChecker); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
