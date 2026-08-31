@@ -187,15 +187,35 @@ func TestValidateDevPortsRejectsBadValues(t *testing.T) {
 func TestValidateDevPortsNeverProbesTheDatabasePort(t *testing.T) {
 	t.Parallel()
 	held := listenOnAPort(t)
-	f := devFlags{
-		port: "0", appPort: "0", vitePort: "0", dbPort: held,
-		pollMilli: 300, graceMs: 6000, embedded: false,
+
+	// Choosing a free port and then asserting it is still free is racy by
+	// construction: between the two, any other parallel test in this binary
+	// — several of which bind a loopback port of their own — can be handed
+	// the port the kernel just released. There is no way to close that
+	// window, because holding the port would make it occupied, which is the
+	// opposite of what this test needs.
+	//
+	// So it is retried rather than pretended away. What is under test is a
+	// rule about which ports are probed at all, not port allocation; a
+	// refusal that names the app port is the race, and a refusal that names
+	// the database port is the regression. Three attempts make a spurious
+	// failure vanishingly unlikely without ever hiding the real one.
+	var err error
+	for attempt := range 3 {
+		app, vite, proxy := freePorts(t, 3)
+		f := devFlags{
+			port: proxy, appPort: app, vitePort: vite, dbPort: held,
+			pollMilli: 300, graceMs: 6000, embedded: false,
+		}
+		if err = validateDevPorts(f); err == nil {
+			return
+		}
+		if strings.Contains(err.Error(), held) {
+			t.Fatalf("validateDevPorts = %v; a database port held by this project's own container must not be a refusal", err)
+		}
+		t.Logf("attempt %d: a chosen port was taken between allocation and validation: %v", attempt+1, err)
 	}
-	// Ports "0" fail validation first; use real free ones instead.
-	f.port, f.appPort, f.vitePort = freePort(t), freePort(t), freePort(t)
-	if err := validateDevPorts(f); err != nil {
-		t.Fatalf("validateDevPorts = %v; a database port held by this project's own container must not be a refusal", err)
-	}
+	t.Fatalf("validateDevPorts never saw three free ports across three attempts; last error: %v", err)
 }
 
 // TestFrontendPreconditionIsCheckedBeforeTheDatabase pins the ordering the
@@ -448,19 +468,36 @@ func listenOnAPort(t *testing.T) string {
 	return port
 }
 
-// freePort returns a loopback port that was just bound and released.
-func freePort(t *testing.T) string {
+// freePorts returns n distinct loopback ports that were just released.
+//
+// All n listeners are opened before any is closed. Binding and releasing one
+// at a time would let the kernel hand the same ephemeral port back on the
+// next call, so three "free ports" could be one port three times — a project
+// whose proxy, app, and Vite ports collided, tested as if they did not.
+func freePorts(t *testing.T, n int) (string, string, string) {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listening: %v", err)
+	if n != 3 {
+		t.Fatalf("freePorts: this helper returns exactly three ports, asked for %d", n)
 	}
-	_, port, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		t.Fatalf("splitting the address: %v", err)
+
+	listeners := make([]net.Listener, 0, n)
+	ports := make([]string, 0, n)
+	for range n {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listening: %v", err)
+		}
+		listeners = append(listeners, ln)
+		_, port, err := net.SplitHostPort(ln.Addr().String())
+		if err != nil {
+			t.Fatalf("splitting the address: %v", err)
+		}
+		ports = append(ports, port)
 	}
-	if err := ln.Close(); err != nil {
-		t.Fatalf("closing: %v", err)
+	for _, ln := range listeners {
+		if err := ln.Close(); err != nil {
+			t.Fatalf("closing: %v", err)
+		}
 	}
-	return port
+	return ports[0], ports[1], ports[2]
 }
