@@ -43,11 +43,12 @@ pgx round trip: one ordinary query/exec, one copy, or one whole batch. Changing
 an established count needs an explanation; batch tests also bound the queued
 statement count because batching hides statements, not PostgreSQL work.
 
-`auth/` is the first feature and the worked example of every rule above: its
+`auth/` and `audit/` are the first features and the worked example of every
+rule above: its
 queries are hand-written SQL in `queries/`, its `store/` is complete sqlc
 output, and `sessions.go` and `accounts.go` are use cases that own their
-transaction boundaries. Authorization and the audit log join it as the
-authentication milestone continues, and custom features are written by
+transaction boundaries. Authorization joins them as the authentication milestone continues, and custom
+features are written by
 `nise generate feature` from the generation milestone onward. Nothing in the
 layout moves when they land.
 

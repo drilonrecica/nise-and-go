@@ -64,6 +64,23 @@ func DefaultDenyKeys() []string {
 	return out
 }
 
+// IsSensitiveKey reports whether key names something that must not be recorded
+// in the clear, under the same rule this package's handlers apply.
+//
+// It is exported so a second store of structured data — an audit record, say —
+// can refuse a field the logger would have redacted, using this rule rather
+// than a copy of it. Two deny lists in one codebase drift, and the one that
+// drifts is discovered by whatever it failed to redact.
+//
+// extra adds fragments beyond [DefaultDenyKeys], matched the same way.
+func IsSensitiveKey(key string, extra ...string) bool {
+	fragments := defaultDenyFragments
+	if len(extra) > 0 {
+		fragments = append(append([]string(nil), defaultDenyFragments...), extra...)
+	}
+	return isDeniedKey(key, fragments)
+}
+
 // RedactOptions configures newRedactingHandler and Redact's query-parameter
 // matching.
 type RedactOptions struct {

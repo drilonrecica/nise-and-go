@@ -28,6 +28,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Security model](security.md)
 - [Password hashing](passwords.md)
 - [Sessions](sessions.md)
+- [Audit log](audit.md)
 - [Security headers and Content Security Policy](security-headers.md)
 - [CLI and distribution](cli-and-distribution.md)
 - [No telemetry](no-telemetry.md)

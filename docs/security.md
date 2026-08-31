@@ -32,7 +32,7 @@ The optional organization module combines application checks with PostgreSQL RLS
 - Generic authentication failures.
 - Quarantine and validation for uploads.
 - Central redaction for credentials, cookies, tokens, and sensitive fields.
-- Separate persistent audit records and operational logs.
+- Separate persistent audit records and operational logs. Implemented; see [audit log](audit.md). The table is append-only, its retention sweep cannot be pointed at anything newer than 30 days, and a detail key the logger would redact is refused outright.
 - Security headers and a Content Security Policy for the embedded frontend are part of the V0.1 baseline; the exact policy is documented once the frontend build stabilizes.
 
 ## Supply chain

@@ -391,3 +391,51 @@ func TestDefaultDenyKeys_ReturnsIndependentCopy(t *testing.T) {
 		t.Fatal("mutating the result of DefaultDenyKeys affected a later call")
 	}
 }
+
+func TestIsSensitiveKey(t *testing.T) {
+	t.Parallel()
+
+	// The exported rule must be the one the handlers apply, not a second
+	// list: these are the fragments and the normalization that matter.
+	sensitive := []string{
+		"password", "Password", "db_password", "passwd",
+		"secret", "client_secret",
+		"token", "access_token", "Auth-Token", "refreshToken",
+		"authorization", "Authorization",
+		"cookie", "Set-Cookie",
+		"apikey", "api_key", "API-Key",
+		"csrf", "csrf_token",
+		"privatekey", "private_key",
+		"credential", "credentials",
+		"session", "session_id", "sessionToken",
+	}
+	for _, key := range sensitive {
+		if !IsSensitiveKey(key) {
+			t.Errorf("%q is not reported sensitive", key)
+		}
+	}
+
+	// "session" is deliberately narrower than plain containment, so ordinary
+	// operator metrics are not swept up.
+	ordinary := []string{
+		"user_id", "email", "action", "outcome", "count",
+		"session_count", "session_start_time",
+		"request_id", "correlation_id", "route", "status",
+	}
+	for _, key := range ordinary {
+		if IsSensitiveKey(key) {
+			t.Errorf("%q is reported sensitive", key)
+		}
+	}
+
+	// Extra fragments extend the rule without replacing it.
+	if !IsSensitiveKey("recovery_phrase", "phrase") {
+		t.Error("an extra fragment did not match")
+	}
+	if IsSensitiveKey("recovery_phrase") {
+		t.Error("an extra fragment leaked into the default rule")
+	}
+	if IsSensitiveKey("password", "phrase") == false {
+		t.Error("extra fragments replaced the defaults instead of adding to them")
+	}
+}

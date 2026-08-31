@@ -1,0 +1,436 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package audit
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/drilonrecica/nise-and-go/runtime/forwarded"
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+)
+
+const auditTestTimeout = 30 * time.Second
+
+var fixedNow = time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+
+// A stable identifier for the acting account. There is no users row behind it,
+// deliberately: the audit table carries no foreign key, because deleting a user
+// must not delete or fail on the record of what they did.
+const actorID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+
+type harness struct {
+	ctx        context.Context
+	pool       *pgxpool.Pool
+	transactor *database.Transactor
+	recorder   *Recorder
+	advance    func(time.Duration)
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+
+	testDatabase := dbtest.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), auditTestTimeout)
+	t.Cleanup(cancel)
+
+	settings, err := database.NewSettings(4, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	databaseURL := testDatabase.URL().Reveal()
+	databasePassword := testDatabase.Password().Reveal()
+	pool, err := database.Open(ctx, databaseURL, databasePassword, settings, database.OpenOptions{})
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	migrator, err := database.OpenMigrator(ctx, databaseURL, databasePassword, 5*time.Second, migrationdb.Migrations())
+	if err != nil {
+		t.Fatalf("OpenMigrator: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := migrator.Close(); err != nil {
+			t.Errorf("close migrator: %v", err)
+		}
+	})
+	if _, err := migrator.Up(ctx); err != nil {
+		t.Fatalf("migrate test database: %v", err)
+	}
+
+	transactor, err := database.NewTransactor(pool)
+	if err != nil {
+		t.Fatalf("NewTransactor: %v", err)
+	}
+
+	var (
+		mu      sync.Mutex
+		current = fixedNow
+	)
+	h := &harness{ctx: ctx, pool: pool, transactor: transactor}
+	h.advance = func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		current = current.Add(d)
+	}
+	recorder, err := NewRecorder(transactor, WithClock(func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	h.recorder = recorder
+	return h
+}
+
+// requestContext carries what a real request would: a client address resolved
+// by the trusted-proxy middleware and validated request identity.
+func requestContext(t *testing.T, parent context.Context) context.Context {
+	t.Helper()
+
+	policy, err := forwarded.NewPolicy(0, nil)
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+	var resolved context.Context
+	policy.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		resolved = r.Context()
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(parent))
+
+	ctx := logging.WithRequestID(resolved, "request_123")
+	return logging.WithCorrelationID(ctx, "correlation_456")
+}
+
+func loginEvent() Event {
+	return Event{
+		Action:      "session.created",
+		Outcome:     Succeeded,
+		ActorKind:   ActorUser,
+		ActorID:     actorID,
+		SubjectKind: "session",
+		SubjectID:   "s-1",
+		Detail:      map[string]string{"method": "password"},
+	}
+}
+
+func TestRecordStoresWhatTheRequestCarried(t *testing.T) {
+	h := newHarness(t)
+	ctx := requestContext(t, h.ctx)
+
+	stored, err := h.recorder.Record(ctx, loginEvent())
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if stored.ID == 0 || !stored.OccurredAt.Equal(fixedNow) {
+		t.Fatalf("record = %#v", stored)
+	}
+	// Request identity comes from the context, not the caller, so it cannot
+	// be forgotten at a call site or filled in with something else.
+	if stored.RequestID != "request_123" || stored.CorrelationID != "correlation_456" {
+		t.Errorf("identity = %q/%q, want the request's own", stored.RequestID, stored.CorrelationID)
+	}
+	if stored.ClientIP == "" {
+		t.Error("no client address was recorded")
+	}
+	if stored.Detail["method"] != "password" {
+		t.Errorf("detail = %v", stored.Detail)
+	}
+
+	listed, err := h.recorder.List(h.ctx, Filter{}, Position{}, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("listed %d records, want 1", len(listed))
+	}
+	if listed[0].Action != "session.created" || listed[0].ActorID != actorID {
+		t.Fatalf("listed = %#v", listed[0])
+	}
+	if listed[0].Detail["method"] != "password" {
+		t.Errorf("round-tripped detail = %v", listed[0].Detail)
+	}
+	// recorded_at is the database's own clock, not the application's: this
+	// test controls the application clock, so the two must differ.
+	if listed[0].RecordedAt.IsZero() {
+		t.Error("no write time was recorded")
+	}
+	if listed[0].RecordedAt.Equal(listed[0].OccurredAt) {
+		t.Error("the write time came from the application clock, not the database's")
+	}
+}
+
+func TestRecordWithinCommitsWithItsChange(t *testing.T) {
+	h := newHarness(t)
+	ctx := requestContext(t, h.ctx)
+	failure := errors.New("the change decided not to")
+
+	// A rolled-back change must not leave a record claiming it happened.
+	err := h.transactor.Within(ctx, transactionOptions(), func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := h.recorder.RecordWithin(ctx, tx, loginEvent()); err != nil {
+			return err
+		}
+		return failure
+	})
+	if !errors.Is(err, failure) {
+		t.Fatalf("error = %v, want the caller's own", err)
+	}
+	if got := h.count(t); got != 0 {
+		t.Fatalf("%d records survived a rolled-back change", got)
+	}
+
+	// And a committed one must.
+	if err := h.transactor.Within(ctx, transactionOptions(), func(ctx context.Context, tx pgx.Tx) error {
+		_, err := h.recorder.RecordWithin(ctx, tx, loginEvent())
+		return err
+	}); err != nil {
+		t.Fatalf("Within: %v", err)
+	}
+	if got := h.count(t); got != 1 {
+		t.Fatalf("%d records after a committed change, want 1", got)
+	}
+}
+
+func TestRecordRefusesMalformedEvents(t *testing.T) {
+	h := newHarness(t)
+	ctx := requestContext(t, h.ctx)
+
+	tests := []struct {
+		name  string
+		event func(Event) Event
+		want  error
+	}{
+		{name: "no action", event: func(e Event) Event { e.Action = ""; return e }, want: ErrAction},
+		{name: "an undotted action", event: func(e Event) Event { e.Action = "created"; return e }, want: ErrAction},
+		{name: "an uppercase action", event: func(e Event) Event { e.Action = "Session.Created"; return e }, want: ErrAction},
+		{name: "an action with a space", event: func(e Event) Event { e.Action = "session created"; return e }, want: ErrAction},
+		{name: "an oversized action", event: func(e Event) Event { e.Action = "a." + strings.Repeat("b", MaxActionBytes); return e }, want: ErrAction},
+		{name: "an unknown outcome", event: func(e Event) Event { e.Outcome = "maybe"; return e }, want: ErrOutcome},
+		{name: "an unknown actor kind", event: func(e Event) Event { e.ActorKind = "robot"; return e }, want: ErrActor},
+		{name: "a user actor with no identity", event: func(e Event) Event { e.ActorID = ""; return e }, want: ErrActor},
+		{name: "a user actor with a bad identity", event: func(e Event) Event { e.ActorID = "not-a-uuid"; return e }, want: ErrActor},
+		{
+			name: "a system actor carrying an identity",
+			event: func(e Event) Event {
+				e.ActorKind = ActorSystem
+				return e
+			},
+			want: ErrActor,
+		},
+		{name: "a half-specified subject", event: func(e Event) Event { e.SubjectID = ""; return e }, want: ErrSubject},
+		{name: "an uppercase subject kind", event: func(e Event) Event { e.SubjectKind = "Session"; return e }, want: ErrSubject},
+		{name: "an oversized subject id", event: func(e Event) Event { e.SubjectID = strings.Repeat("s", MaxSubjectIDBytes+1); return e }, want: ErrSubject},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := h.recorder.Record(ctx, tc.event(loginEvent())); !errors.Is(err, tc.want) {
+				t.Fatalf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+	if got := h.count(t); got != 0 {
+		t.Fatalf("%d malformed events were stored", got)
+	}
+}
+
+func TestRecordRefusesDetailThatMustNotBeRecorded(t *testing.T) {
+	h := newHarness(t)
+	ctx := requestContext(t, h.ctx)
+
+	// A key the logger would redact is refused rather than redacted, so a
+	// caller who tried to put a credential here finds out at the call site.
+	sensitive := []string{"password", "session_token", "api_key", "authorization", "csrf_token", "client_secret"}
+	for _, key := range sensitive {
+		event := loginEvent()
+		event.Detail = map[string]string{key: "value"}
+		if _, err := h.recorder.Record(ctx, event); !errors.Is(err, ErrDetail) {
+			t.Errorf("detail key %q was accepted: %v", key, err)
+		}
+	}
+
+	tooMany := map[string]string{}
+	for i := range MaxDetailKeys + 1 {
+		tooMany[string(rune('a'+i))+"_field"] = "v"
+	}
+	oversizedValue := map[string]string{"note": strings.Repeat("x", MaxDetailValueBytes+1)}
+	bounds := map[string]map[string]string{
+		"too many fields":    tooMany,
+		"an oversized value": oversizedValue,
+		"an uppercase key":   {"Method": "password"},
+		"a key with a dash":  {"log-in": "password"},
+		"an empty key":       {"": "password"},
+	}
+	for name, detail := range bounds {
+		t.Run(name, func(t *testing.T) {
+			event := loginEvent()
+			event.Detail = detail
+			if _, err := h.recorder.Record(ctx, event); !errors.Is(err, ErrDetail) {
+				t.Fatalf("error = %v, want ErrDetail", err)
+			}
+		})
+	}
+	if got := h.count(t); got != 0 {
+		t.Fatalf("%d refused events were stored", got)
+	}
+}
+
+func TestListFiltersAndPagesNewestFirst(t *testing.T) {
+	h := newHarness(t)
+	ctx := requestContext(t, h.ctx)
+
+	// Several events share an instant on purpose: that is the case a
+	// timestamp-only cursor gets wrong.
+	for i := range 5 {
+		event := loginEvent()
+		event.Detail = map[string]string{"index": string(rune('0' + i))}
+		if _, err := h.recorder.Record(ctx, event); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	h.advance(time.Hour)
+	other := loginEvent()
+	other.Action = "user.disabled"
+	other.ActorKind = ActorSystem
+	other.ActorID = ""
+	other.SubjectKind = "user"
+	other.SubjectID = actorID
+	if _, err := h.recorder.Record(ctx, other); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	all, err := h.recorder.List(h.ctx, Filter{}, Position{}, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(all) != 6 || all[0].Action != "user.disabled" {
+		t.Fatalf("listing = %d records starting with %q", len(all), all[0].Action)
+	}
+
+	// Paging must not skip or repeat across the shared instant.
+	seen := map[int64]struct{}{}
+	position := Position{}
+	for range 6 {
+		page, err := h.recorder.List(h.ctx, Filter{}, position, 2)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, record := range page {
+			if _, repeat := seen[record.ID]; repeat {
+				t.Fatalf("record %d appeared on two pages", record.ID)
+			}
+			seen[record.ID] = struct{}{}
+		}
+		last := page[len(page)-1]
+		position = Position{OccurredAt: last.OccurredAt, ID: last.ID}
+	}
+	if len(seen) != 6 {
+		t.Fatalf("paging saw %d of 6 records", len(seen))
+	}
+
+	filters := map[string]Filter{
+		"by action":  {Action: "session.created"},
+		"by actor":   {ActorID: actorID},
+		"by subject": {SubjectKind: "session", SubjectID: "s-1"},
+		"by time":    {Until: fixedNow.Add(time.Minute)},
+	}
+	for name, filter := range filters {
+		t.Run(name, func(t *testing.T) {
+			records, err := h.recorder.List(h.ctx, filter, Position{}, 10)
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(records) != 5 {
+				t.Fatalf("filter matched %d records, want the five logins", len(records))
+			}
+		})
+	}
+
+	total, err := h.recorder.Count(h.ctx, Filter{Action: "session.created"})
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if total != 5 {
+		t.Fatalf("Count = %d, want 5", total)
+	}
+}
+
+func TestSweepCannotBePointedAtRecentEvidence(t *testing.T) {
+	h := newHarness(t)
+	ctx := requestContext(t, h.ctx)
+
+	if _, err := h.recorder.Record(ctx, loginEvent()); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	h.advance(40 * 24 * time.Hour)
+	if _, err := h.recorder.Record(ctx, loginEvent()); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	// This is the bound that matters: a sweep that could be pointed at
+	// yesterday would make the log erasable by whoever can set a
+	// configuration value.
+	for _, retention := range []time.Duration{0, -time.Hour, time.Hour, MinRetention - time.Second} {
+		if _, err := h.recorder.Sweep(h.ctx, retention, 100); !errors.Is(err, ErrRetention) {
+			t.Errorf("Sweep(%s) error = %v, want ErrRetention", retention, err)
+		}
+	}
+	for _, limit := range []int{0, -1, MaxSweepSize + 1} {
+		if _, err := h.recorder.Sweep(h.ctx, MinRetention, limit); !errors.Is(err, ErrSweepLimit) {
+			t.Errorf("Sweep(limit=%d) error = %v, want ErrSweepLimit", limit, err)
+		}
+	}
+	if got := h.count(t); got != 2 {
+		t.Fatalf("a refused sweep removed records: %d remain", got)
+	}
+
+	removed, err := h.recorder.Sweep(h.ctx, MinRetention, 100)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("swept %d records, want the one past retention", removed)
+	}
+	if got := h.count(t); got != 1 {
+		t.Fatalf("%d records remain, want the recent one", got)
+	}
+}
+
+func TestRecorderRequiresATransactor(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewRecorder(nil); err == nil {
+		t.Fatal("NewRecorder accepted a nil transactor")
+	}
+}
+
+// transactionOptions is the default option set, named so the test reads as
+// what it is: an ordinary use-case transaction the audit record joins.
+func transactionOptions() transaction.Options { return transaction.Options{} }
+
+func (h *harness) count(t *testing.T) int64 {
+	t.Helper()
+	var total int64
+	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM audit_events`).Scan(&total); err != nil {
+		t.Fatalf("count audit records: %v", err)
+	}
+	return total
+}

@@ -12,7 +12,7 @@ Import path prefix: `github.com/drilonrecica/nise-and-go/runtime/…` ([ADR 0007
 |---|---|---|---|
 | `runtime` | Documentation only. Declares the stability policy; exports nothing. | implemented | M2-009 |
 | `runtime/config` | Typed environment configuration, `_FILE` secret variants, fail-closed production validation. | implemented | M2-001, M2-002, M2-003 |
-| `runtime/logging` | Structured JSON and human-readable logs over `log/slog`, request and correlation IDs, central redaction. | implemented | M2-004, M2-005 |
+| `runtime/logging` | Structured JSON and human-readable logs over `log/slog`, request and correlation IDs, central redaction, and the exported sensitivity rule. | implemented | M2-004, M2-005, M5-016 |
 | `runtime/health` | Startup, liveness, and readiness checks and their handlers. | implemented | M2-006 |
 | `runtime/lifecycle` | Process modes `all`, `web`, and `worker`; HTTP server construction; graceful shutdown and bounded draining. | implemented | M2-007, M2-008 |
 | `runtime/observability` | HTTP, database-pool, and job metrics, and the optional tracing interface. | implemented | M2-011 |

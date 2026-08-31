@@ -1,0 +1,56 @@
+-- Generated once by nise; owned by this application. Nise will not overwrite it.
+--
+-- The audit log is append-only by design. There is no UPDATE query against
+-- this table anywhere in the application, and the only DELETE is a retention
+-- sweep that cannot be pointed at anything recent. An audit record an
+-- application can quietly rewrite is not evidence of anything.
+
+-- +goose Up
+CREATE TABLE audit_events (
+    id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    -- When the thing happened, as the application saw it, and when the row
+    -- was written. They differ when an event is recorded from a job or a
+    -- retried request, and an investigator needs both.
+    occurred_at    timestamptz NOT NULL,
+    recorded_at    timestamptz NOT NULL DEFAULT now(),
+    action         text NOT NULL,
+    outcome        text NOT NULL,
+    actor_kind     text NOT NULL,
+    -- Null for a system or anonymous actor. There is deliberately no foreign
+    -- key: deleting a user must not delete or fail on the record of what they
+    -- did, and an audit row that cascades away with its subject is worthless.
+    actor_id       uuid,
+    subject_kind   text,
+    subject_id     text,
+    client_ip      inet,
+    request_id     text,
+    correlation_id text,
+    detail         jsonb NOT NULL DEFAULT '{}'::jsonb,
+    CONSTRAINT audit_events_action CHECK (action ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$' AND char_length(action) <= 64),
+    CONSTRAINT audit_events_outcome CHECK (outcome IN ('succeeded', 'failed', 'denied')),
+    CONSTRAINT audit_events_actor_kind CHECK (actor_kind IN ('user', 'system', 'anonymous')),
+    CONSTRAINT audit_events_actor_identity CHECK (
+        (actor_kind = 'user' AND actor_id IS NOT NULL)
+        OR (actor_kind <> 'user' AND actor_id IS NULL)
+    ),
+    CONSTRAINT audit_events_subject CHECK (
+        (subject_kind IS NULL AND subject_id IS NULL)
+        OR (subject_kind IS NOT NULL AND subject_id IS NOT NULL)
+    ),
+    CONSTRAINT audit_events_subject_kind CHECK (subject_kind IS NULL OR subject_kind ~ '^[a-z][a-z0-9_]{0,31}$'),
+    CONSTRAINT audit_events_subject_id CHECK (subject_id IS NULL OR char_length(subject_id) BETWEEN 1 AND 128),
+    CONSTRAINT audit_events_request_id CHECK (request_id IS NULL OR request_id ~ '^[A-Za-z0-9_-]{1,128}$'),
+    CONSTRAINT audit_events_correlation_id CHECK (correlation_id IS NULL OR correlation_id ~ '^[A-Za-z0-9_-]{1,128}$'),
+    CONSTRAINT audit_events_detail_object CHECK (jsonb_typeof(detail) = 'object'),
+    CONSTRAINT audit_events_detail_size CHECK (pg_column_size(detail) <= 4096)
+);
+
+-- The listing is newest first within a filter, so every index leads with the
+-- ordering key pair the cursor pages on.
+CREATE INDEX audit_events_occurred_at_idx ON audit_events (occurred_at DESC, id DESC);
+CREATE INDEX audit_events_actor_idx ON audit_events (actor_id, occurred_at DESC, id DESC) WHERE actor_id IS NOT NULL;
+CREATE INDEX audit_events_subject_idx ON audit_events (subject_kind, subject_id, occurred_at DESC, id DESC) WHERE subject_kind IS NOT NULL;
+CREATE INDEX audit_events_action_idx ON audit_events (action, occurred_at DESC, id DESC);
+
+-- +goose Down
+DROP TABLE audit_events;

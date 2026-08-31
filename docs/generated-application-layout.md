@@ -105,6 +105,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │       │   └── <feature>.sql      [app]   hand-written SQL, input to sqlc
     │       ├── store/                 [nise]  sqlc output for this feature
     │       └── <feature>_test.go      [app]
+    │   audit/                         [app]   the append-only audit log and its query API
     │   auth/                          [app]   the first feature: accounts, sessions, and their SQL
     │
     └── platform/
