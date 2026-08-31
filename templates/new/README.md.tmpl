@@ -224,6 +224,15 @@ without it, and `CURSOR_RETIRED_KEYS` rotates it without breaking outstanding
 cursors. `runtime/pagination` owns the token; `api.go` owns the per-collection
 binding, page issuing, and `400` mapping.
 
+The session cookie is `__Host-session`, `Secure`, `HttpOnly`, `SameSite=Lax`,
+`Path=/`, with no `Domain`, in **every** environment. `http://localhost` and
+`http://127.0.0.1` are secure contexts in every current browser, so development
+runs the production cookie path rather than a weaker branch that only users
+would find bugs in. `SESSION_COOKIE_INSECURE=true` is the single escape hatch,
+for a development origin that is not localhost; it drops `Secure` and the
+`__Host-` prefix together because a browser discards a `__Host-` cookie that is
+not `Secure`, it warns at startup, and production refuses to start with it set.
+
 `internal/platform/httpapi/transport_test.go` is the end-to-end contract over
 the real handler: routing, negotiation, strict input, pagination, idempotency,
 and response bounds, plus a fuzz target that holds every API response to a
