@@ -66,6 +66,10 @@ type Credentials struct {
 	policy   *password.Policy
 }
 
+// Policy returns the password policy this use case hashes with, for the
+// enrollment path that has to hash inside its own transaction.
+func (c *Credentials) Policy() *password.Policy { return c.policy }
+
 // NewCredentials constructs the login use case.
 func NewCredentials(accounts *Accounts, sessions *Sessions, policy *password.Policy) (*Credentials, error) {
 	if accounts == nil || sessions == nil {

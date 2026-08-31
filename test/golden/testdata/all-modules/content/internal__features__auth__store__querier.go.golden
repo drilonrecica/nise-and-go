@@ -9,6 +9,13 @@ import (
 )
 
 type Querier interface {
+	// CountUsers answers whether the directory is empty, which is the one
+	// condition under which the first administrator may be created without an
+	// invitation.
+	CountUsers(ctx context.Context) (int64, error)
+	// CreateInvitation stores one invitation. Only the token digest is written;
+	// the token itself is returned to the caller once and never stored.
+	CreateInvitation(ctx context.Context, arg CreateInvitationParams) (CreateInvitationRow, error)
 	// CreateSession stores one issued session. Only the token digest is written;
 	// the token itself never reaches this layer.
 	CreateSession(ctx context.Context, arg CreateSessionParams) (CreateSessionRow, error)
@@ -16,9 +23,15 @@ type Querier interface {
 	// the password; this query does neither, so neither can be skipped by writing
 	// a second insert somewhere else.
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
+	// DeleteExpiredInvitations sweeps invitations nobody used, in bounded batches.
+	DeleteExpiredInvitations(ctx context.Context, arg DeleteExpiredInvitationsParams) (int64, error)
 	// The bounded subquery keeps one sweep a predictable amount of work rather
 	// than one statement holding locks over an unbounded backlog.
 	DeleteExpiredSessions(ctx context.Context, arg DeleteExpiredSessionsParams) (int64, error)
+	// FindInvitationByTokenDigest resolves a presented invitation. It is locked
+	// FOR UPDATE so two people following the same link cannot both create an
+	// account from it.
+	FindInvitationByTokenDigest(ctx context.Context, arg FindInvitationByTokenDigestParams) (FindInvitationByTokenDigestRow, error)
 	// The user's status is joined in rather than looked up separately: a disabled
 	// account must stop authenticating immediately, and a second round trip would
 	// be a window in which it did not.
@@ -32,6 +45,9 @@ type Querier interface {
 	// an administrator repeating themselves does not need a special case, and the
 	// original grant's time and granter are preserved.
 	GrantRole(ctx context.Context, arg GrantRoleParams) (int64, error)
+	// ListOpenInvitations shows what is outstanding, which is the question an
+	// administrator reviewing access actually asks.
+	ListOpenInvitations(ctx context.Context, arg ListOpenInvitationsParams) ([]ListOpenInvitationsRow, error)
 	// ListRoleHolders answers "who can do this", which is the question an audit or
 	// an offboarding review actually asks.
 	ListRoleHolders(ctx context.Context, arg ListRoleHoldersParams) ([]ListRoleHoldersRow, error)
@@ -40,6 +56,16 @@ type Querier interface {
 	// ListUserSessions is the account's own view of its sessions. It returns no
 	// digest: there is nothing a client could do with one but leak it.
 	ListUserSessions(ctx context.Context, arg ListUserSessionsParams) ([]ListUserSessionsRow, error)
+	// MarkInvitationAccepted closes an invitation. The guard makes acceptance
+	// happen at most once even if the same link is followed twice.
+	MarkInvitationAccepted(ctx context.Context, arg MarkInvitationAcceptedParams) (int64, error)
+	// RevokeAllOpenInvitations withdraws every outstanding invitation. The
+	// bootstrap path uses it: rerunning the bootstrap must not leave an earlier
+	// administrator link alive, because that link would still work after the
+	// directory stopped being empty.
+	RevokeAllOpenInvitations(ctx context.Context, arg RevokeAllOpenInvitationsParams) (int64, error)
+	// RevokeInvitation withdraws an outstanding invitation.
+	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (int64, error)
 	// RevokeOtherUserSessions ends every session except the one making the request,
 	// which is the "sign out everywhere else" action.
 	RevokeOtherUserSessions(ctx context.Context, arg RevokeOtherUserSessionsParams) (int64, error)

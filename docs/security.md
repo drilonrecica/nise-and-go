@@ -9,7 +9,7 @@ This document records the planned baseline, not an audit or guarantee.
 - Session-bound CSRF token plus Origin and Fetch Metadata checks. Implemented; see [sessions](sessions.md). The token is derived from the session token, so it has no separate key, column, or lifetime, and all three checks must pass for a state-changing request.
 - Future native clients use opaque, hashed, revocable bearer device tokens—not JWTs.
 - Argon2id password hashing with versioned, benchmarked parameters and rehash-on-login, plus a length-only policy with a local known-compromised check. Implemented; see [password hashing](passwords.md). The parameter history is application-owned Go code, retiring a set is explicit, and the unknown-account login path pays the same cost as a real one.
-- Closed registration by default through administrators or invitations.
+- Closed registration by default through administrators or invitations. Implemented; see [enrollment](enrollment.md). Acceptance is one transaction, every unusable-invitation reason is the same error, and the first-administrator bootstrap withdraws earlier links so only the newest works.
 - Optional TOTP and recovery codes.
 - Planned default session policy of roughly 12 hours idle and 30 days absolute, configurable, with reauthentication for sensitive actions.
 

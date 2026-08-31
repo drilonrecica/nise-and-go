@@ -242,6 +242,13 @@ whose method is outside chi's own table is dispatched into the matching
 surface's core rather than answered before the chain runs, so an unusual verb
 cannot produce the one response with no security headers.
 
+Registration is closed. Create the first administrator on an empty database
+with `<app> admin bootstrap --email you@example.com`; it prints an invitation
+token once and refuses once any account exists. Everyone else is invited by
+somebody holding `users.manage`. Rerunning the bootstrap while the directory is
+still empty withdraws the earlier link, so a lost token is recoverable without
+leaving a second unauthenticated way in.
+
 A command worth not repeating takes an `Idempotency-Key` header.
 `internal/platform/idempotency` writes its record in the same transaction as
 the command, so a rolled-back command leaves no claim and a visible record is
