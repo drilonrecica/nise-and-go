@@ -1,0 +1,102 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+// The ways a second step can be satisfied. They are values so a log line, a
+// metric, and an audit record all name the same thing.
+const (
+	// MethodTOTP is a code from an authenticator application.
+	MethodTOTP = "totp"
+	// MethodRecoveryCode is one of the printed single-use codes. It is
+	// reported separately rather than folded into the first, because a
+	// recovery code being spent is the signal that somebody has lost their
+	// authenticator — or that somebody else has their list.
+	MethodRecoveryCode = "recovery_code"
+)
+
+// ErrNoSecondFactor reports a second-factor operation on an application that
+// was not generated with one.
+//
+// It is an error rather than a silent success. An application built without the
+// module has no second step, and a caller that reached this point is asking for
+// something that does not exist here.
+var ErrNoSecondFactor = errors.New("this application has no second factor")
+
+// ErrSecondFactorRequired reports a correct password that did not, by itself,
+// finish a sign-in.
+//
+// It is an error rather than a successful Login with no session on purpose: a
+// caller checking only err would otherwise treat a half-finished sign-in as a
+// finished one, which is the entire failure mode a second factor exists to
+// prevent. The challenge to continue with is on the returned Login.
+var ErrSecondFactorRequired = errors.New("a second factor is required to finish signing in")
+
+// Challenge is a half-finished sign-in: the password was accepted and the
+// second step has not happened yet.
+//
+// The token stands in for a verified password for a few minutes, so it is
+// handled like one — minted once, stored as a digest, and single-use.
+type Challenge struct {
+	// Token is the value to hand the client for the second step.
+	Token string
+	// ExpiresAt is when the second step stops being available.
+	ExpiresAt time.Time
+}
+
+// IsZero reports whether c carries no challenge.
+func (c Challenge) IsZero() bool { return c.Token == "" }
+
+// Completion is a satisfied second step.
+type Completion struct {
+	// UserID is the account that completed it.
+	UserID string
+	// Method is how, one of the Method constants above.
+	Method string
+}
+
+// SecondFactor is the second step of a sign-in.
+//
+// It is declared here, by the consumer, and implemented by the optional TOTP
+// module. The login use case therefore depends on the idea of a second factor
+// rather than on the module, and an application generated without the module
+// still names what it does not have.
+type SecondFactor interface {
+	// Enrolled reports whether the account has a confirmed second factor.
+	// An error is not "no": a login path that treated a database failure as
+	// "no second factor" would drop the control exactly when something was
+	// already wrong.
+	Enrolled(ctx context.Context, userID string) (bool, error)
+	// Begin opens a second step for an account whose password has been
+	// accepted.
+	Begin(ctx context.Context, userID string) (Challenge, error)
+	// Complete verifies a submitted code against an open challenge.
+	Complete(ctx context.Context, token, code string) (Completion, error)
+}
+
+// NoSecondFactor is the second factor of an application that has none.
+//
+// It exists so that absence is declared rather than defaulted. The login use
+// case requires a SecondFactor, and a build without the module passes this
+// value explicitly — which is a line in the generated wiring somebody can read,
+// rather than a nil field nobody notices.
+type NoSecondFactor struct{}
+
+// Enrolled reports that nobody has a second factor, without a database round
+// trip.
+func (NoSecondFactor) Enrolled(context.Context, string) (bool, error) { return false, nil }
+
+// Begin refuses: there is no second step to open.
+func (NoSecondFactor) Begin(context.Context, string) (Challenge, error) {
+	return Challenge{}, ErrNoSecondFactor
+}
+
+// Complete refuses, for the same reason.
+func (NoSecondFactor) Complete(context.Context, string, string) (Completion, error) {
+	return Completion{}, ErrNoSecondFactor
+}

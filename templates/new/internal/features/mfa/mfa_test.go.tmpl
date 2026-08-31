@@ -1,0 +1,552 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package mfa
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/drilonrecica/nise-and-go/modules/totp"
+
+	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/features/audit"
+	"{{.ModulePath}}/internal/features/auth"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+	"{{.ModulePath}}/internal/platform/passwords"
+	"{{.ModulePath}}/internal/platform/reauth"
+)
+
+const mfaTestTimeout = 30 * time.Second
+
+// fixedNow is the instant every test in this package reads.
+var fixedNow = time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+
+// harness is one migrated, isolated database with the second-factor use case
+// over it and a clock the test controls.
+type harness struct {
+	ctx      context.Context
+	pool     *pgxpool.Pool
+	factors  *Factors
+	accounts *auth.Accounts
+	clock    func() time.Time
+	advance  func(time.Duration)
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+
+	testDatabase := dbtest.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), mfaTestTimeout)
+	t.Cleanup(cancel)
+
+	settings, err := database.NewSettings(6, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	databaseURL := testDatabase.URL().Reveal()
+	databasePassword := testDatabase.Password().Reveal()
+	pool, err := database.Open(ctx, databaseURL, databasePassword, settings, database.OpenOptions{})
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	migrator, err := database.OpenMigrator(ctx, databaseURL, databasePassword, 5*time.Second, migrationdb.Migrations())
+	if err != nil {
+		t.Fatalf("OpenMigrator: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := migrator.Close(); err != nil {
+			t.Errorf("close migrator: %v", err)
+		}
+	})
+	if _, err := migrator.Up(ctx); err != nil {
+		t.Fatalf("migrate test database: %v", err)
+	}
+
+	transactor, err := database.NewTransactor(pool)
+	if err != nil {
+		t.Fatalf("NewTransactor: %v", err)
+	}
+
+	var (
+		mu      sync.Mutex
+		current = fixedNow
+	)
+	clock := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}
+	h := &harness{ctx: ctx, pool: pool, clock: clock}
+	h.advance = func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		current = current.Add(d)
+	}
+
+	recorder, err := audit.NewRecorder(transactor, audit.WithClock(clock))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	if h.factors, err = New(transactor, recorder, "Example App", WithClock(clock)); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if h.accounts, err = auth.NewAccounts(transactor, auth.WithClock(clock)); err != nil {
+		t.Fatalf("NewAccounts: %v", err)
+	}
+	return h
+}
+
+// account creates one enrolled-nowhere account to hang a second factor on.
+func (h *harness) account(t *testing.T, email string) auth.Account {
+	t.Helper()
+
+	policy, err := passwords.Policy()
+	if err != nil {
+		t.Fatalf("Policy: %v", err)
+	}
+	encoded, err := policy.Hash("a password for " + email)
+	if err != nil {
+		t.Fatalf("Hash: %v", err)
+	}
+	account, err := h.accounts.Create(h.ctx, email, encoded)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	return account
+}
+
+// codeFor computes the code an authenticator would show at the harness clock.
+func codeFor(t *testing.T, secret totp.Secret, at time.Time) string {
+	t.Helper()
+
+	code, err := secret.Code(totp.Step(at))
+	if err != nil {
+		t.Fatalf("Code: %v", err)
+	}
+	return code
+}
+
+// proved returns a context carrying a proof of identity given a moment ago,
+// which is what Disable requires.
+func proved(t *testing.T, userID string, provenAt time.Time) context.Context {
+	t.Helper()
+
+	matrix, err := reauth.DefaultMatrix()
+	if err != nil {
+		t.Fatalf("DefaultMatrix: %v", err)
+	}
+	return reauth.WithState(context.Background(), reauth.State{
+		UserID:   userID,
+		Matrix:   matrix,
+		ProvenAt: provenAt,
+		At:       time.Now().UTC(),
+	})
+}
+
+// enrolled walks the whole enrollment: a secret, a code from it, and the
+// recovery codes that come back once.
+func enrolled(t *testing.T, h *harness, email string) (auth.Account, totp.Secret, []totp.RecoveryCode) {
+	t.Helper()
+
+	account := h.account(t, email)
+	enrollment, err := h.factors.Enrol(h.ctx, account.ID, email)
+	if err != nil {
+		t.Fatalf("Enrol: %v", err)
+	}
+	codes, err := h.factors.Confirm(h.ctx, account.ID, codeFor(t, enrollment.Secret, h.clock()))
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	return account, enrollment.Secret, codes
+}
+
+func TestEnrollmentIsNotASecondFactorUntilItIsConfirmed(t *testing.T) {
+	h := newHarness(t)
+	account := h.account(t, "person@example.test")
+
+	enrollment, err := h.factors.Enrol(h.ctx, account.ID, "person@example.test")
+	if err != nil {
+		t.Fatalf("Enrol: %v", err)
+	}
+	if enrollment.Secret.IsZero() {
+		t.Fatal("no secret was issued")
+	}
+	if !strings.HasPrefix(enrollment.ProvisioningURI, "otpauth://totp/Example%20App:person@example.test?") {
+		t.Fatalf("provisioning URI = %q", enrollment.ProvisioningURI)
+	}
+
+	// Nothing depends on it yet, which is what stops somebody being locked
+	// out by an enrollment they started and abandoned.
+	if factor, err := h.factors.Enrolled(h.ctx, account.ID); err != nil || factor {
+		t.Fatalf("Enrolled = %t, %v; an unconfirmed secret is not a second factor", factor, err)
+	}
+
+	// A second enrollment replaces the first: the person rescanned.
+	second, err := h.factors.Enrol(h.ctx, account.ID, "person@example.test")
+	if err != nil {
+		t.Fatalf("second Enrol: %v", err)
+	}
+	if second.Secret.Base32() == enrollment.Secret.Base32() {
+		t.Fatal("the second enrollment reused the first secret")
+	}
+	// The first secret's code no longer confirms anything.
+	if _, err := h.factors.Confirm(h.ctx, account.ID, codeFor(t, enrollment.Secret, h.clock())); !errors.Is(err, ErrCode) {
+		t.Fatalf("the replaced secret still confirmed: %v", err)
+	}
+
+	codes, err := h.factors.Confirm(h.ctx, account.ID, codeFor(t, second.Secret, h.clock()))
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	if len(codes) != totp.RecoveryCodeCount {
+		t.Fatalf("issued %d recovery codes, want %d", len(codes), totp.RecoveryCodeCount)
+	}
+	if factor, err := h.factors.Enrolled(h.ctx, account.ID); err != nil || !factor {
+		t.Fatalf("Enrolled = %t, %v after confirming", factor, err)
+	}
+
+	// A confirmed factor is not replaced by another enrollment. Swapping one
+	// out is a disable followed by an enrollment, and the disable is the part
+	// that has to be proved.
+	if _, err := h.factors.Enrol(h.ctx, account.ID, "person@example.test"); !errors.Is(err, ErrAlreadyEnrolled) {
+		t.Fatalf("Enrol over a confirmed factor: %v", err)
+	}
+}
+
+func TestConfirmRefusesAWrongCode(t *testing.T) {
+	h := newHarness(t)
+	account := h.account(t, "person@example.test")
+	if _, err := h.factors.Enrol(h.ctx, account.ID, "person@example.test"); err != nil {
+		t.Fatalf("Enrol: %v", err)
+	}
+
+	if _, err := h.factors.Confirm(h.ctx, account.ID, "000000"); !errors.Is(err, ErrCode) {
+		t.Fatalf("Confirm with a wrong code: %v", err)
+	}
+	if factor, err := h.factors.Enrolled(h.ctx, account.ID); err != nil || factor {
+		t.Fatalf("a refused confirmation enrolled the account: %t, %v", factor, err)
+	}
+	// Nothing to confirm at all is a different story from a wrong code, and
+	// both refuse.
+	other := h.account(t, "other@example.test")
+	if _, err := h.factors.Confirm(h.ctx, other.ID, "000000"); !errors.Is(err, ErrNotEnrolled) {
+		t.Fatalf("Confirm with no enrollment: %v", err)
+	}
+}
+
+// A code is arithmetically valid for its whole period. Without the stored step
+// the same six digits work twice, which is the difference between a one-time
+// code and a short-lived password.
+func TestAOneTimeCodeIsOneTime(t *testing.T) {
+	h := newHarness(t)
+	account, secret, _ := enrolled(t, h, "person@example.test")
+
+	// The confirming code already spent this step, so a challenge answered
+	// with it is refused without the clock moving at all.
+	challenge, err := h.factors.Begin(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	code := codeFor(t, secret, h.clock())
+	if _, err := h.factors.Complete(h.ctx, challenge.Token, code); !errors.Is(err, ErrCode) {
+		t.Fatalf("the confirming code was accepted again: %v", err)
+	}
+
+	// The next period's code works once.
+	h.advance(totp.Period)
+	next, err := h.factors.Begin(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	fresh := codeFor(t, secret, h.clock())
+	completion, err := h.factors.Complete(h.ctx, next.Token, fresh)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if completion.UserID != account.ID || completion.Method != auth.MethodTOTP {
+		t.Fatalf("completion = %#v", completion)
+	}
+
+	// And not twice, even within the same period and on a new challenge.
+	third, err := h.factors.Begin(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := h.factors.Complete(h.ctx, third.Token, fresh); !errors.Is(err, ErrCode) {
+		t.Fatalf("the same code completed a second challenge: %v", err)
+	}
+}
+
+func TestAChallengeIsSingleUseAndBounded(t *testing.T) {
+	h := newHarness(t)
+	account, secret, _ := enrolled(t, h, "person@example.test")
+
+	h.advance(totp.Period)
+	challenge, err := h.factors.Begin(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := h.factors.Complete(h.ctx, challenge.Token, codeFor(t, secret, h.clock())); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	// The challenge is gone, so the token is not a second chance.
+	h.advance(totp.Period)
+	if _, err := h.factors.Complete(h.ctx, challenge.Token, codeFor(t, secret, h.clock())); !errors.Is(err, ErrChallenge) {
+		t.Fatalf("a completed challenge was reusable: %v", err)
+	}
+
+	// A fresh challenge runs out of attempts, and then stops existing.
+	exhausted, err := h.factors.Begin(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	for i := range MaxChallengeAttempts {
+		if _, err := h.factors.Complete(h.ctx, exhausted.Token, "000000"); !errors.Is(err, ErrCode) {
+			t.Fatalf("attempt %d: %v", i+1, err)
+		}
+	}
+	h.advance(totp.Period)
+	if _, err := h.factors.Complete(h.ctx, exhausted.Token, codeFor(t, secret, h.clock())); !errors.Is(err, ErrChallenge) {
+		t.Fatalf("an exhausted challenge still accepted a correct code: %v", err)
+	}
+}
+
+func TestAnExpiredChallengeCannotBeCompletedOrSwept(t *testing.T) {
+	h := newHarness(t)
+	account, secret, _ := enrolled(t, h, "person@example.test")
+
+	challenge, err := h.factors.Begin(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if !challenge.ExpiresAt.Equal(fixedNow.Add(ChallengeLifetime)) {
+		t.Fatalf("ExpiresAt = %s", challenge.ExpiresAt)
+	}
+
+	h.advance(ChallengeLifetime + time.Second)
+	if _, err := h.factors.Complete(h.ctx, challenge.Token, codeFor(t, secret, h.clock())); !errors.Is(err, ErrChallenge) {
+		t.Fatalf("an expired challenge was completed: %v", err)
+	}
+
+	removed, err := h.factors.SweepChallenges(h.ctx, 100)
+	if err != nil {
+		t.Fatalf("SweepChallenges: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("swept %d challenges, want 1", removed)
+	}
+	if _, err := h.factors.SweepChallenges(h.ctx, 0); err == nil {
+		t.Error("SweepChallenges accepted an unbounded limit")
+	}
+}
+
+// A malformed or invented token is the same answer as an expired one: which of
+// a caller's guesses was structurally valid is not something to tell them.
+func TestAnInventedTokenIsTheSameAnswer(t *testing.T) {
+	h := newHarness(t)
+	_, _, _ = enrolled(t, h, "person@example.test")
+
+	for _, token := range []string{"", "not-a-token", ChallengeTokenPrefix + "_short", strings.Repeat("a", MaxChallengeTokenBytes+1)} {
+		if _, err := h.factors.Complete(h.ctx, token, "000000"); !errors.Is(err, ErrChallenge) {
+			t.Errorf("Complete(%q) = %v, want ErrChallenge", token, err)
+		}
+	}
+	valid, err := NewChallengeToken()
+	if err != nil {
+		t.Fatalf("NewChallengeToken: %v", err)
+	}
+	if _, err := h.factors.Complete(h.ctx, valid.Value(), "000000"); !errors.Is(err, ErrChallenge) {
+		t.Errorf("a well-formed token for no challenge = %v, want ErrChallenge", err)
+	}
+}
+
+func TestRecoveryCodesAreSingleUseAndReplaceableAsASet(t *testing.T) {
+	h := newHarness(t)
+	account, _, codes := enrolled(t, h, "person@example.test")
+
+	remaining, err := h.factors.UnusedRecoveryCodes(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("UnusedRecoveryCodes: %v", err)
+	}
+	if remaining != int64(totp.RecoveryCodeCount) {
+		t.Fatalf("remaining = %d, want %d", remaining, totp.RecoveryCodeCount)
+	}
+
+	challenge, err := h.factors.Begin(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	completion, err := h.factors.Complete(h.ctx, challenge.Token, codes[0].Value())
+	if err != nil {
+		t.Fatalf("Complete with a recovery code: %v", err)
+	}
+	// Which method was used is reported rather than hidden: a recovery code
+	// being spent is the signal that somebody lost their authenticator, or
+	// that somebody else has their list.
+	if completion.Method != auth.MethodRecoveryCode {
+		t.Fatalf("method = %q, want %q", completion.Method, auth.MethodRecoveryCode)
+	}
+
+	second, err := h.factors.Begin(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := h.factors.Complete(h.ctx, second.Token, codes[0].Value()); !errors.Is(err, ErrCode) {
+		t.Fatalf("a spent recovery code worked again: %v", err)
+	}
+	if remaining, err = h.factors.UnusedRecoveryCodes(h.ctx, account.ID); err != nil || remaining != int64(totp.RecoveryCodeCount)-1 {
+		t.Fatalf("remaining = %d, %v", remaining, err)
+	}
+
+	// Regenerating replaces the whole set. A code from a list somebody
+	// thought had leaked must stop working the moment they ask for a new one.
+	replaced, err := h.factors.RegenerateRecoveryCodes(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("RegenerateRecoveryCodes: %v", err)
+	}
+	if len(replaced) != totp.RecoveryCodeCount {
+		t.Fatalf("issued %d codes, want %d", len(replaced), totp.RecoveryCodeCount)
+	}
+	third, err := h.factors.Begin(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := h.factors.Complete(h.ctx, third.Token, codes[1].Value()); !errors.Is(err, ErrCode) {
+		t.Fatalf("a code from the replaced set still worked: %v", err)
+	}
+	if _, err := h.factors.Complete(h.ctx, third.Token, replaced[0].Value()); err != nil {
+		t.Fatalf("a code from the new set did not work: %v", err)
+	}
+}
+
+// An account with no second factor has nothing to regenerate, and asking must
+// not silently create a set nothing checks.
+func TestRegenerateNeedsAConfirmedFactor(t *testing.T) {
+	h := newHarness(t)
+	account := h.account(t, "person@example.test")
+
+	if _, err := h.factors.RegenerateRecoveryCodes(h.ctx, account.ID); !errors.Is(err, ErrNotEnrolled) {
+		t.Fatalf("RegenerateRecoveryCodes with no factor: %v", err)
+	}
+	if _, err := h.factors.Enrol(h.ctx, account.ID, "person@example.test"); err != nil {
+		t.Fatalf("Enrol: %v", err)
+	}
+	if _, err := h.factors.RegenerateRecoveryCodes(h.ctx, account.ID); !errors.Is(err, ErrNotEnrolled) {
+		t.Fatalf("RegenerateRecoveryCodes with an unconfirmed factor: %v", err)
+	}
+}
+
+// Removing a second factor widens what a stolen session can do, so it is in the
+// reauthentication matrix. Adding one narrows it, and asks for nothing.
+func TestDisablingNeedsARecentProof(t *testing.T) {
+	h := newHarness(t)
+	account, _, codes := enrolled(t, h, "person@example.test")
+
+	stale := proved(t, account.ID, time.Now().UTC().Add(-time.Hour))
+	if err := h.factors.Disable(stale, account.ID); !errors.Is(err, reauth.ErrRequired) {
+		t.Fatalf("Disable with a stale proof: %v", err)
+	}
+	// A request with no resolved position denies too.
+	if err := h.factors.Disable(h.ctx, account.ID); !errors.Is(err, reauth.ErrRequired) {
+		t.Fatalf("Disable with no resolved position: %v", err)
+	}
+	if factor, err := h.factors.Enrolled(h.ctx, account.ID); err != nil || !factor {
+		t.Fatal("a refused disable removed the second factor")
+	}
+
+	fresh := proved(t, account.ID, time.Now().UTC())
+	if err := h.factors.Disable(fresh, account.ID); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	if factor, err := h.factors.Enrolled(h.ctx, account.ID); err != nil || factor {
+		t.Fatal("the second factor survived a disable")
+	}
+	// The recovery codes go with it: a printed list that outlived the factor
+	// it belonged to would be a way in nobody remembers granting.
+	remaining, err := h.factors.UnusedRecoveryCodes(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("UnusedRecoveryCodes: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("%d recovery codes outlived the factor", remaining)
+	}
+	if _, err := h.factors.Begin(h.ctx, account.ID); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	_ = codes
+
+	if err := h.factors.Disable(fresh, account.ID); !errors.Is(err, ErrNotEnrolled) {
+		t.Fatalf("disabling twice: %v", err)
+	}
+}
+
+// The account was disabled between the two steps. The password was right; the
+// sign-in still does not finish.
+func TestADisabledAccountCannotFinishASignIn(t *testing.T) {
+	h := newHarness(t)
+	account, secret, _ := enrolled(t, h, "person@example.test")
+
+	challenge, err := h.factors.Begin(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := h.pool.Exec(h.ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, account.ID); err != nil {
+		t.Fatalf("disabling the account: %v", err)
+	}
+
+	h.advance(totp.Period)
+	if _, err := h.factors.Complete(h.ctx, challenge.Token, codeFor(t, secret, h.clock())); !errors.Is(err, ErrChallenge) {
+		t.Fatalf("a disabled account finished a sign-in: %v", err)
+	}
+}
+
+// The stored secret is never handed back. Somebody who has lost their
+// authenticator enrols a new secret; they do not ask for the old one.
+func TestTheSecretIsStoredOnceAndNotReadableBack(t *testing.T) {
+	h := newHarness(t)
+	account, secret, _ := enrolled(t, h, "person@example.test")
+
+	var stored []byte
+	if err := h.pool.QueryRow(h.ctx, `SELECT secret FROM totp_secrets WHERE user_id = $1`, account.ID).Scan(&stored); err != nil {
+		t.Fatalf("read the stored secret: %v", err)
+	}
+	if len(stored) != totp.SecretBytes {
+		t.Fatalf("stored secret is %d bytes, want %d", len(stored), totp.SecretBytes)
+	}
+	adopted, err := totp.SecretFromBytes(stored)
+	if err != nil {
+		t.Fatalf("SecretFromBytes: %v", err)
+	}
+	if adopted.Base32() != secret.Base32() {
+		t.Fatal("the stored secret is not the one that was issued")
+	}
+
+	// Only digests of the recovery codes are stored.
+	var digestLength int
+	if err := h.pool.QueryRow(h.ctx, `SELECT octet_length(code_digest) FROM recovery_codes WHERE user_id = $1 LIMIT 1`, account.ID).Scan(&digestLength); err != nil {
+		t.Fatalf("read a recovery-code digest: %v", err)
+	}
+	if digestLength != 32 {
+		t.Fatalf("recovery-code digest is %d bytes, want 32", digestLength)
+	}
+}
+
+func TestNewRefusesAnIncompleteWiring(t *testing.T) {
+	t.Parallel()
+
+	if _, err := New(nil, nil, "Example App"); err == nil {
+		t.Error("New accepted a missing transactor")
+	}
+	if _, err := New(&database.Transactor{}, nil, "Example App"); err == nil {
+		t.Error("New accepted a missing audit recorder")
+	}
+}

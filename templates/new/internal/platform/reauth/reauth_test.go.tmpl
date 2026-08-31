@@ -25,6 +25,12 @@ func TestDefaultMatrixDeclaresTheDocumentedActions(t *testing.T) {
 		ActionRolesGrant:        WindowEscalation,
 		ActionUsersEnable:       WindowAdministrative,
 		ActionInvitationsCreate: WindowAdministrative,
+{{- if .HasTOTP }}
+		// The optional TOTP module adds its own entry, on the same
+		// principle: removing a second factor widens what a stolen session
+		// can do.
+		ActionSecondFactorDisable: WindowEscalation,
+{{- end }}
 	}
 	actions := matrix.Actions()
 	if len(actions) != len(want) {

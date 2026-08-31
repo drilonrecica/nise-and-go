@@ -120,10 +120,24 @@ func (o Options) Recipe() (recipe.Recipe, error) {
 // mode that matters — a template silently rendering an empty value is how a
 // generated project ends up with a blank module path.
 type templateData struct {
-	AppName            string
-	ModulePath         string
-	Profile            string
-	Modules            []string
+	AppName    string
+	ModulePath string
+	Profile    string
+	Modules    []string
+	// The selected modules as named booleans. A template asks
+	// `{{ if .HasTOTP }}` rather than searching Modules, because a template
+	// that searched a slice would silently render nothing when a module was
+	// renamed, and a map index would be one typo away from the same.
+	HasNotifications bool
+	HasOrganizations bool
+	HasTOTP          bool
+	HasUploads       bool
+	// TOTPMigration is the zero-padded version the TOTP module's migration
+	// is written as. Module migrations are numbered contiguously after the
+	// core history, in module order, because the runtime's compatibility
+	// check requires a history with no gaps — and a gap is how a missing
+	// migration hides.
+	TOTPMigration      string
 	NiseModule         string
 	NiseVersion        string
 	ChiVersion         string
@@ -151,11 +165,20 @@ func newTemplateData(opts Options) templateData {
 	for _, m := range opts.Modules {
 		modules = append(modules, string(m))
 	}
+	selected := make(map[recipe.Module]bool, len(opts.Modules))
+	for _, m := range opts.Modules {
+		selected[m] = true
+	}
 	return templateData{
 		AppName:            opts.Name,
 		ModulePath:         opts.ModulePath,
 		Profile:            string(opts.Profile),
 		Modules:            modules,
+		HasNotifications:   selected[recipe.ModuleNotifications],
+		HasOrganizations:   selected[recipe.ModuleOrganizations],
+		HasTOTP:            selected[recipe.ModuleTOTP],
+		HasUploads:         selected[recipe.ModuleUploads],
+		TOTPMigration:      moduleMigrationVersions(selected)[recipe.ModuleTOTP],
 		NiseModule:         NiseModulePath,
 		NiseVersion:        NiseModuleVersion,
 		ChiVersion:         ChiVersion,
@@ -173,6 +196,34 @@ func newTemplateData(opts Options) templateData {
 		FrontendDeps:       FrontendDependencies(),
 		ReplacePlaceholder: ReplacePathPlaceholder,
 	}
+}
+
+// coreMigrations is how many migrations every generated project has before any
+// module adds one. It is the number a module's first migration follows.
+const coreMigrations = 8
+
+// modulesWithMigrations lists, in the order they are numbered, the modules that
+// contribute a migration. A module absent from this list adds none.
+var modulesWithMigrations = []recipe.Module{recipe.ModuleTOTP}
+
+// moduleMigrationVersions assigns each selected module's migration the next
+// version after the core history.
+//
+// The numbers depend on which modules were selected, which is fixed when the
+// project is generated and never changes afterwards: a migration file is
+// application-owned, and adding a module to an existing project means writing
+// the next forward migration, not renumbering the ones already applied.
+func moduleMigrationVersions(selected map[recipe.Module]bool) map[recipe.Module]string {
+	versions := make(map[recipe.Module]string, len(modulesWithMigrations))
+	next := coreMigrations
+	for _, module := range modulesWithMigrations {
+		if !selected[module] {
+			continue
+		}
+		next++
+		versions[module] = fmt.Sprintf("%05d", next)
+	}
+	return versions
 }
 
 // Plan renders the whole project into memory, sorted by path. Nothing is
@@ -216,8 +267,20 @@ func Plan(opts Options) ([]File, error) {
 		},
 	)
 
+	selected := make(map[recipe.Module]bool, len(normalized.Modules))
+	for _, m := range normalized.Modules {
+		selected[m] = true
+	}
+
 	data := newTemplateData(normalized)
 	for _, tf := range templateFiles {
+		// A module's files are absent, not empty, when the module is not
+		// selected: no import, no dead code, and nothing for a reader to
+		// wonder about. This is the whole of the module mechanism — there is
+		// no registry, no init() registration, and no discovery.
+		if tf.Module != "" && !selected[tf.Module] {
+			continue
+		}
 		source, err := templates.FS.ReadFile(path.Join(templateRoot, tf.Template))
 		if err != nil {
 			return nil, fmt.Errorf("reading template %s: %w", tf.Template, err)

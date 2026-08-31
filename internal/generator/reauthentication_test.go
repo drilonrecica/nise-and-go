@@ -105,7 +105,35 @@ func TestGeneratedProjectRequiresRecentProofForSensitiveActions(t *testing.T) {
 func TestGeneratedMatrixAndItsChecksAgree(t *testing.T) {
 	t.Parallel()
 
-	files, err := generator.Plan(defaultOptions())
+	for _, variant := range []struct {
+		name    string
+		options generator.Options
+		want    []string
+	}{
+		{
+			name:    "without modules",
+			options: defaultOptions(),
+			want:    []string{"invitations.create", "roles.grant", "users.enable"},
+		},
+		{
+			// A module may extend the matrix, on the same principle:
+			// removing a second factor widens what a stolen session can do.
+			name:    "with every module",
+			options: allModulesOptions(),
+			want:    []string{"invitations.create", "roles.grant", "second_factor.disable", "users.enable"},
+		},
+	} {
+		t.Run(variant.name, func(t *testing.T) {
+			t.Parallel()
+			assertMatrixAgrees(t, variant.options, variant.want)
+		})
+	}
+}
+
+func assertMatrixAgrees(t *testing.T, options generator.Options, want []string) {
+	t.Helper()
+
+	files, err := generator.Plan(options)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -150,7 +178,6 @@ func TestGeneratedMatrixAndItsChecksAgree(t *testing.T) {
 		names = append(names, action)
 	}
 	sort.Strings(names)
-	want := []string{"invitations.create", "roles.grant", "users.enable"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Errorf("the matrix declares %v, want %v; changing it is an ADR-sized decision", names, want)
 	}

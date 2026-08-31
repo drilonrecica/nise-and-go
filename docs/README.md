@@ -33,6 +33,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Enrollment](enrollment.md)
 - [Authentication throttling](throttling.md)
 - [Reauthentication](reauthentication.md)
+- [Second factor: TOTP and recovery codes](second-factor.md)
 - [Security headers and Content Security Policy](security-headers.md)
 - [CLI and distribution](cli-and-distribution.md)
 - [No telemetry](no-telemetry.md)

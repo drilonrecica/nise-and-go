@@ -56,6 +56,12 @@ const (
 	// OutcomeThrottled means the attempt was refused before any password was
 	// checked.
 	OutcomeThrottled Outcome = "throttled"
+	// OutcomeSecondFactorRequired means the password was right and the
+	// sign-in is not finished.
+	OutcomeSecondFactorRequired Outcome = "second_factor_required"
+	// OutcomeSecondFactorFailed means an open challenge was answered with a
+	// code that did not verify.
+	OutcomeSecondFactorFailed Outcome = "second_factor_failed"
 )
 
 // Audit actions this feature records.
@@ -79,6 +85,10 @@ const (
 	// says something different: somebody with that session could not produce
 	// the password.
 	ActionReauthenticationDenied = "session.reauthentication_denied"
+	// ActionSessionChallenged records a correct password that opened a
+	// second step. It is not a sign-in and not a denial, and recording it as
+	// either would make one of those two counts wrong.
+	ActionSessionChallenged = "session.challenged"
 )
 
 // Login is the result of an attempt.
@@ -96,6 +106,12 @@ type Login struct {
 	// Rehashed reports that the stored hash was written under superseded
 	// parameters and has been rewritten.
 	Rehashed bool
+	// Challenge is the second step to continue with, meaningful only when
+	// Outcome is OutcomeSecondFactorRequired.
+	Challenge Challenge
+	// SecondFactorMethod is how the second step was satisfied, meaningful
+	// only on a success that had one.
+	SecondFactorMethod string
 }
 
 // Throttler limits how often an attempt may be made. It is declared here, by
@@ -118,11 +134,12 @@ type Auditor interface {
 // be, and the two are exactly the controls whose absence is invisible until
 // somebody needs them.
 type Credentials struct {
-	accounts *Accounts
-	sessions *Sessions
-	policy   *password.Policy
-	throttle Throttler
-	auditor  Auditor
+	accounts     *Accounts
+	sessions     *Sessions
+	policy       *password.Policy
+	throttle     Throttler
+	auditor      Auditor
+	secondFactor SecondFactor
 }
 
 // Policy returns the password policy this use case hashes with, for the
@@ -130,7 +147,7 @@ type Credentials struct {
 func (c *Credentials) Policy() *password.Policy { return c.policy }
 
 // NewCredentials constructs the login use case.
-func NewCredentials(accounts *Accounts, sessions *Sessions, policy *password.Policy, limiter Throttler, auditor Auditor) (*Credentials, error) {
+func NewCredentials(accounts *Accounts, sessions *Sessions, policy *password.Policy, limiter Throttler, auditor Auditor, secondFactor SecondFactor) (*Credentials, error) {
 	if accounts == nil || sessions == nil {
 		return nil, errors.New("auth: account and session use cases are required")
 	}
@@ -140,7 +157,19 @@ func NewCredentials(accounts *Accounts, sessions *Sessions, policy *password.Pol
 	if limiter == nil || auditor == nil {
 		return nil, errors.New("auth: a throttle and an audit recorder are required")
 	}
-	return &Credentials{accounts: accounts, sessions: sessions, policy: policy, throttle: limiter, auditor: auditor}, nil
+	// An application with no second factor passes NoSecondFactor, which is a
+	// line somebody can read. A nil here would be the same absence, silently.
+	if secondFactor == nil {
+		return nil, errors.New("auth: a second factor is required; pass NoSecondFactor when the application has none")
+	}
+	return &Credentials{
+		accounts:     accounts,
+		sessions:     sessions,
+		policy:       policy,
+		throttle:     limiter,
+		auditor:      auditor,
+		secondFactor: secondFactor,
+	}, nil
 }
 
 // Authenticate verifies an address and password and issues a session.
@@ -173,6 +202,9 @@ func (c *Credentials) Authenticate(ctx context.Context, email, secret string) (L
 
 	login, err := c.authenticate(ctx, email, secret)
 	c.recordLogin(ctx, login, email)
+	// The counter is cleared by a finished sign-in, not by a correct
+	// password: a half-finished one has not proved anything a second factor
+	// exists to prove.
 	if err == nil {
 		// Only a success clears the address counter, and only that counter:
 		// the client bucket keeps its history.
@@ -227,12 +259,77 @@ func (c *Credentials) authenticate(ctx context.Context, email, secret string) (L
 		}
 	}
 
+	// The second factor is asked about only once the password is right. A
+	// path that asked first would tell an unauthenticated caller which
+	// accounts have one, which is a map of the accounts worth attacking.
+	enrolled, err := c.secondFactor.Enrolled(ctx, credential.ID)
+	if err != nil {
+		// Not "no". A login that treated a database failure as "no second
+		// factor" would drop the control exactly when something was already
+		// wrong.
+		return Login{}, fmt.Errorf("checking for a second factor: %w", err)
+	}
+	if enrolled {
+		challenge, err := c.secondFactor.Begin(ctx, credential.ID)
+		if err != nil {
+			return Login{}, fmt.Errorf("opening the second-factor challenge: %w", err)
+		}
+		result.Outcome = OutcomeSecondFactorRequired
+		result.Challenge = challenge
+		return result, ErrSecondFactorRequired
+	}
+
 	issued, err := c.sessions.Issue(ctx, credential.ID)
 	if err != nil {
 		return Login{}, fmt.Errorf("issuing the session: %w", err)
 	}
 	result.Session = issued
 	return result, nil
+}
+
+// CompleteSecondFactor finishes a sign-in whose password step already passed.
+//
+// It takes the challenge token rather than an account identifier: the account
+// comes from the challenge, so a caller cannot finish one person's sign-in with
+// another person's code. The session is issued here and nowhere else, so a
+// correct password alone never produces one.
+func (c *Credentials) CompleteSecondFactor(ctx context.Context, challengeToken, code string) (Login, error) {
+	completion, err := c.secondFactor.Complete(ctx, challengeToken, code)
+	if err != nil {
+		// The account is deliberately not named: a refused challenge may be
+		// an invented token, and recording an actor for it would let a
+		// stranger write arbitrary rows against an account they guessed.
+		c.record(ctx, ActionSessionDenied, audit.Failed, "", map[string]string{
+			"reason": string(OutcomeSecondFactorFailed),
+		})
+		return Login{Outcome: OutcomeSecondFactorFailed}, err
+	}
+
+	account, err := c.accounts.FindByID(ctx, completion.UserID)
+	if err != nil {
+		return Login{}, err
+	}
+	issued, err := c.sessions.Issue(ctx, completion.UserID)
+	if err != nil {
+		return Login{}, fmt.Errorf("issuing the session: %w", err)
+	}
+	login := Login{
+		Outcome:            OutcomeSucceeded,
+		Account:            account,
+		Session:            issued,
+		SecondFactorMethod: completion.Method,
+	}
+	c.record(ctx, ActionSessionCreated, audit.Succeeded, account.ID, map[string]string{
+		"rehashed":      boolText(false),
+		"second_factor": completion.Method,
+	})
+	// The sign-in is finished only now, so this is where the address counter
+	// is cleared.
+	if resetErr := c.throttle.Reset(ctx, account.Email); resetErr != nil {
+		logging.FromContext(ctx).Error("clearing the authentication throttle",
+			slog.String("error_type", fmt.Sprintf("%T", resetErr)))
+	}
+	return login, nil
 }
 
 // Reauthenticate proves that the holder of the current session is still the
@@ -345,6 +442,10 @@ func (c *Credentials) recordLogin(ctx context.Context, login Login, email string
 		c.record(ctx, ActionSessionCreated, audit.Succeeded, login.Account.ID, map[string]string{
 			"rehashed": boolText(login.Rehashed),
 		})
+		return
+	}
+	if login.Outcome == OutcomeSecondFactorRequired {
+		c.record(ctx, ActionSessionChallenged, audit.Succeeded, login.Account.ID, nil)
 		return
 	}
 	if login.Outcome == "" {

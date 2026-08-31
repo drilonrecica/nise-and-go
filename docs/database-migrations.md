@@ -47,7 +47,12 @@ immutability and controlled production DDL remain operational requirements.
 
 ## Authoring rules
 
-- Use zero-padded sequential names: `00002_add_accounts.sql`.
+- Use zero-padded sequential names: `00002_add_accounts.sql`. A
+  [compile-time module](adr/0022-compile-time-modules.md)'s migration continues
+  the same numbering — the TOTP module's is `00009_totp.sql` — because the
+  compatibility check refuses a history with gaps, and a gap is how a missing
+  migration hides. The number is assigned at generation time from the recorded
+  selection and never changes afterwards.
 - Include `-- +goose Up` and `-- +goose Down` sections. Production recovery
   normally uses a new forward migration even though Down remains valuable in
   disposable tests and deliberate rollback procedures.

@@ -1,0 +1,736 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package mfa is the optional TOTP module's feature: enrollment, verification,
+// recovery codes, and the short-lived challenge that ties a completed password
+// step to the second one.
+//
+// The primitives — codes, secrets, recovery-code generation — live in the
+// framework's modules/totp package. Everything here is the part that touches
+// this application: storage, the enrollment lifecycle, the replay window, the
+// attempt budget, and the audit trail.
+package mfa
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/drilonrecica/nise-and-go/modules/totp"
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/features/audit"
+	"{{.ModulePath}}/internal/features/auth"
+	"{{.ModulePath}}/internal/features/mfa/store"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/reauth"
+)
+
+// The challenge token's shape.
+//
+// It is a distinct type from a session token and from an invitation token, for
+// the same reason those two are distinct from each other: a credential that can
+// be presented in two places is a credential that will be, and a lookup against
+// the wrong table would otherwise compile.
+const (
+	// ChallengeTokenPrefix begins every challenge token.
+	ChallengeTokenPrefix = "mfa1"
+	// ChallengeSecretBytes is the amount of randomness in one.
+	ChallengeSecretBytes = 32
+	// MaxChallengeTokenBytes bounds an accepted token string.
+	MaxChallengeTokenBytes = 128
+	// ChallengeLifetime is how long the second step stays open. It is short
+	// because it is the window in which a correct password is worth
+	// something without a second factor.
+	ChallengeLifetime = 5 * time.Minute
+	// MaxChallengeAttempts is how many codes may be tried against one
+	// challenge before it is thrown away. Six digits is a million
+	// possibilities; five guesses inside five minutes is not a meaningful
+	// fraction of that, and it is more than a person mistypes.
+	MaxChallengeAttempts = 5
+	// MaxChallengeSweep bounds one expiry sweep.
+	MaxChallengeSweep = 5000
+)
+
+// Audit actions this feature records.
+const (
+	// ActionEnrolled records a confirmed second factor.
+	ActionEnrolled = "second_factor.enrolled"
+	// ActionDisabled records a removed one.
+	ActionDisabled = "second_factor.disabled"
+	// ActionRecoveryCodesIssued records a replaced set of recovery codes.
+	ActionRecoveryCodesIssued = "second_factor.recovery_codes_issued"
+	// ActionRecoveryCodeUsed records a code being spent. It is its own
+	// action because it is the signal that somebody has lost their
+	// authenticator — or that somebody else has their printed list.
+	ActionRecoveryCodeUsed = "second_factor.recovery_code_used"
+)
+
+// Errors this feature reports.
+var (
+	// ErrNotEnrolled reports an account with no confirmed second factor.
+	ErrNotEnrolled = errors.New("this account has no second factor")
+	// ErrAlreadyEnrolled reports an account that already has one. Replacing
+	// a confirmed factor is deliberately not an enrollment: it is a disable
+	// followed by an enrollment, and the disable is the part that has to be
+	// proved.
+	ErrAlreadyEnrolled = errors.New("this account already has a second factor")
+	// ErrChallenge reports a challenge that cannot be completed: no such
+	// token, expired, or out of attempts. The three are one error because a
+	// caller must answer them the same way.
+	ErrChallenge = errors.New("no open second-factor challenge matches")
+	// ErrCode reports a code that did not verify. It says nothing about
+	// whether it was a one-time code or a recovery code that failed.
+	ErrCode = errors.New("that code is not valid")
+	// ErrChallengeToken reports a value that is not a well-formed token.
+	ErrChallengeToken = errors.New("value is not a well-formed challenge token")
+)
+
+// ChallengeToken is the bearer value that carries a half-finished sign-in.
+//
+// It is unprintable through every formatting and serialization path, with one
+// explicit accessor, for the same reason a session token is: it stands in for a
+// verified password, and a copy of it in a log is a password in a log.
+type ChallengeToken struct {
+	value string
+}
+
+// NewChallengeToken mints a token from the system's random source.
+func NewChallengeToken() (ChallengeToken, error) {
+	secret := make([]byte, ChallengeSecretBytes)
+	if _, err := rand.Read(secret); err != nil {
+		return ChallengeToken{}, fmt.Errorf("generating a challenge token: %w", err)
+	}
+	return ChallengeToken{value: ChallengeTokenPrefix + "_" + base64.RawURLEncoding.EncodeToString(secret)}, nil
+}
+
+// ParseChallengeToken validates a token presented by a client. A well-formed
+// token is not an open challenge; the caller still has to find its digest.
+func ParseChallengeToken(raw string) (ChallengeToken, error) {
+	if len(raw) > MaxChallengeTokenBytes {
+		return ChallengeToken{}, ErrChallengeToken
+	}
+	prefix, secret, found := strings.Cut(raw, "_")
+	if !found || prefix != ChallengeTokenPrefix {
+		return ChallengeToken{}, ErrChallengeToken
+	}
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(secret)
+	if err != nil || len(decoded) != ChallengeSecretBytes {
+		return ChallengeToken{}, ErrChallengeToken
+	}
+	return ChallengeToken{value: raw}, nil
+}
+
+// Value returns the token to hand the client. It is the only accessor that
+// reveals it.
+func (t ChallengeToken) Value() string { return t.value }
+
+// Digest is what the server stores.
+func (t ChallengeToken) Digest() []byte {
+	sum := sha256.Sum256([]byte(t.value))
+	return sum[:]
+}
+
+// IsZero reports whether t holds no token.
+func (t ChallengeToken) IsZero() bool { return t.value == "" }
+
+// The redaction surface, matching every other credential in this application.
+func (t ChallengeToken) String() string               { return "[REDACTED]" }
+func (t ChallengeToken) GoString() string             { return "[REDACTED]" }
+func (t ChallengeToken) MarshalJSON() ([]byte, error) { return json.Marshal("[REDACTED]") }
+func (t ChallengeToken) MarshalText() ([]byte, error) { return []byte("[REDACTED]"), nil }
+func (t ChallengeToken) LogValue() slog.Value         { return slog.StringValue("[REDACTED]") }
+
+// Enrollment is what a person needs to add an authenticator: the secret in the
+// two forms an application shows it, and nothing else.
+//
+// It is returned once, from the enrollment call, and never read back. The
+// stored secret is not retrievable through this feature: somebody who has lost
+// their authenticator enrolls a new secret, they do not ask for the old one.
+type Enrollment struct {
+	// Secret is the shared secret, redacted in every formatting path.
+	Secret totp.Secret
+	// ProvisioningURI is what a QR code encodes.
+	ProvisioningURI string
+}
+
+// Auditor records what happened. It is declared here, by the consumer, rather
+// than imported from the feature that provides it.
+type Auditor interface {
+	Record(ctx context.Context, event audit.Event) (audit.Record, error)
+}
+
+// Factors is the second-factor use case.
+type Factors struct {
+	transactor *database.Transactor
+	auditor    Auditor
+	issuer     string
+	skew       int
+	now        func() time.Time
+}
+
+// Option configures Factors.
+type Option func(*Factors)
+
+// WithClock replaces the clock the use case reads. It exists for tests.
+func WithClock(now func() time.Time) Option {
+	return func(f *Factors) {
+		if now != nil {
+			f.now = now
+		}
+	}
+}
+
+// WithSkewSteps replaces the accepted clock drift. Anything outside the
+// primitive's bounds is ignored rather than silently clamped, because a caller
+// asking for a five-minute window has misunderstood the setting.
+func WithSkewSteps(steps int) Option {
+	return func(f *Factors) {
+		if steps >= 0 && steps <= totp.MaxSkewSteps {
+			f.skew = steps
+		}
+	}
+}
+
+// New constructs the second-factor use case.
+//
+// issuer is the name an authenticator application shows beside the account. It
+// is required: an authenticator listing several accounts as "Account" is one
+// somebody deletes the wrong entry from.
+func New(transactor *database.Transactor, auditor Auditor, issuer string, options ...Option) (*Factors, error) {
+	if transactor == nil {
+		return nil, errors.New("mfa: a transactor is required")
+	}
+	if auditor == nil {
+		return nil, errors.New("mfa: an audit recorder is required")
+	}
+	if strings.TrimSpace(issuer) == "" {
+		return nil, errors.New("mfa: an issuer name is required")
+	}
+	factors := &Factors{
+		transactor: transactor,
+		auditor:    auditor,
+		issuer:     strings.TrimSpace(issuer),
+		skew:       totp.DefaultSkewSteps,
+		now:        time.Now,
+	}
+	for _, option := range options {
+		option(factors)
+	}
+	return factors, nil
+}
+
+// Enrol issues a new unconfirmed secret for an account.
+//
+// The secret is not a second factor yet. Nothing depends on it until Confirm
+// succeeds, which is what stops somebody being locked out by an enrollment they
+// started, mis-scanned, and abandoned.
+//
+// An account that already has a confirmed factor is refused. Replacing one is a
+// disable followed by an enrollment, and the disable is the part that has to be
+// proved.
+func (f *Factors) Enrol(ctx context.Context, userID, account string) (Enrollment, error) {
+	id, err := parseUUID(userID)
+	if err != nil {
+		return Enrollment{}, err
+	}
+	if strings.TrimSpace(account) == "" {
+		return Enrollment{}, errors.New("mfa: an account name is required for the provisioning URI")
+	}
+	secret, err := totp.NewSecret()
+	if err != nil {
+		return Enrollment{}, err
+	}
+	now := f.now().UTC()
+
+	err = f.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := store.New(tx).EnrolSecret(ctx, store.EnrolSecretParams{
+			UserID:    id,
+			Secret:    secret.Bytes(),
+			CreatedAt: timestamp(now),
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The upsert's WHERE refused: the existing row is confirmed.
+			return ErrAlreadyEnrolled
+		}
+		if err != nil {
+			return fmt.Errorf("storing the enrollment secret: %w", err)
+		}
+		if row.ConfirmedAt.Valid {
+			return ErrAlreadyEnrolled
+		}
+		return nil
+	})
+	if err != nil {
+		return Enrollment{}, err
+	}
+
+	uri, err := secret.ProvisioningURI(f.issuer, account)
+	if err != nil {
+		return Enrollment{}, err
+	}
+	return Enrollment{Secret: secret, ProvisioningURI: uri}, nil
+}
+
+// Confirm turns an enrolled secret into a second factor and issues the recovery
+// codes, which are returned once and never again.
+//
+// The confirming code's step is recorded, so the code somebody just typed
+// cannot also be the code that completes their next sign-in.
+func (f *Factors) Confirm(ctx context.Context, userID, code string) ([]totp.RecoveryCode, error) {
+	id, err := parseUUID(userID)
+	if err != nil {
+		return nil, err
+	}
+	codes, err := totp.NewRecoveryCodes()
+	if err != nil {
+		return nil, err
+	}
+	now := f.now().UTC()
+
+	err = f.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := store.New(tx)
+		row, err := queries.FindSecret(ctx, store.FindSecretParams{UserID: id})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotEnrolled
+		}
+		if err != nil {
+			return fmt.Errorf("reading the enrollment secret: %w", err)
+		}
+		if row.ConfirmedAt.Valid {
+			return ErrAlreadyEnrolled
+		}
+		secret, err := totp.SecretFromBytes(row.Secret)
+		if err != nil {
+			return fmt.Errorf("reading the stored secret: %w", err)
+		}
+		step, ok := secret.Verify(code, now, f.skew)
+		if !ok {
+			return ErrCode
+		}
+		confirmed, err := queries.ConfirmSecret(ctx, store.ConfirmSecretParams{
+			UserID:      id,
+			ConfirmedAt: timestamp(now),
+			LastStep:    pgtype.Int8{Int64: step, Valid: true},
+		})
+		if err != nil {
+			return fmt.Errorf("confirming the second factor: %w", err)
+		}
+		if confirmed == 0 {
+			return ErrAlreadyEnrolled
+		}
+		return f.replaceRecoveryCodes(ctx, queries, id, codes, now)
+	})
+	if err != nil {
+		return nil, err
+	}
+	f.record(ctx, ActionEnrolled, audit.Succeeded, userID, nil)
+	f.record(ctx, ActionRecoveryCodesIssued, audit.Succeeded, userID, map[string]string{
+		"count": fmt.Sprint(len(codes)),
+	})
+	return codes, nil
+}
+
+// RegenerateRecoveryCodes replaces an account's whole set.
+//
+// The set is replaced, never topped up: a code from a list somebody thought had
+// leaked must stop working the moment they ask for a new list.
+func (f *Factors) RegenerateRecoveryCodes(ctx context.Context, userID string) ([]totp.RecoveryCode, error) {
+	id, err := parseUUID(userID)
+	if err != nil {
+		return nil, err
+	}
+	codes, err := totp.NewRecoveryCodes()
+	if err != nil {
+		return nil, err
+	}
+	now := f.now().UTC()
+
+	err = f.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := store.New(tx)
+		row, err := queries.FindSecret(ctx, store.FindSecretParams{UserID: id})
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && !row.ConfirmedAt.Valid) {
+			return ErrNotEnrolled
+		}
+		if err != nil {
+			return fmt.Errorf("reading the second factor: %w", err)
+		}
+		return f.replaceRecoveryCodes(ctx, queries, id, codes, now)
+	})
+	if err != nil {
+		return nil, err
+	}
+	f.record(ctx, ActionRecoveryCodesIssued, audit.Succeeded, userID, map[string]string{
+		"count": fmt.Sprint(len(codes)),
+	})
+	return codes, nil
+}
+
+func (f *Factors) replaceRecoveryCodes(ctx context.Context, queries *store.Queries, id pgtype.UUID, codes []totp.RecoveryCode, now time.Time) error {
+	if _, err := queries.DeleteRecoveryCodes(ctx, store.DeleteRecoveryCodesParams{UserID: id}); err != nil {
+		return fmt.Errorf("clearing the previous recovery codes: %w", err)
+	}
+	for _, code := range codes {
+		err := queries.CreateRecoveryCode(ctx, store.CreateRecoveryCodeParams{
+			UserID:     id,
+			CodeDigest: code.Digest(),
+			CreatedAt:  timestamp(now),
+		})
+		if err != nil {
+			return fmt.Errorf("storing a recovery code: %w", err)
+		}
+	}
+	return nil
+}
+
+// Disable removes an account's second factor and its recovery codes.
+//
+// It requires a recent proof of identity. Removing a second factor widens what
+// a stolen session can do, which is exactly the class of action the
+// reauthentication matrix exists for; adding one narrows it, and asks for
+// nothing.
+func (f *Factors) Disable(ctx context.Context, userID string) error {
+	if err := reauth.Require(ctx, reauth.ActionSecondFactorDisable); err != nil {
+		return err
+	}
+	id, err := parseUUID(userID)
+	if err != nil {
+		return err
+	}
+
+	err = f.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := store.New(tx)
+		removed, err := queries.DeleteSecret(ctx, store.DeleteSecretParams{UserID: id})
+		if err != nil {
+			return fmt.Errorf("removing the second factor: %w", err)
+		}
+		if removed == 0 {
+			return ErrNotEnrolled
+		}
+		if _, err := queries.DeleteRecoveryCodes(ctx, store.DeleteRecoveryCodesParams{UserID: id}); err != nil {
+			return fmt.Errorf("removing the recovery codes: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	f.record(ctx, ActionDisabled, audit.Succeeded, userID, nil)
+	return nil
+}
+
+// UnusedRecoveryCodes reports how many codes are left, which is what tells
+// somebody they are running out before they run out.
+func (f *Factors) UnusedRecoveryCodes(ctx context.Context, userID string) (int64, error) {
+	id, err := parseUUID(userID)
+	if err != nil {
+		return 0, err
+	}
+	var remaining int64
+	err = f.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		remaining, err = store.New(tx).CountUnusedRecoveryCodes(ctx, store.CountUnusedRecoveryCodesParams{UserID: id})
+		if err != nil {
+			return fmt.Errorf("counting recovery codes: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return remaining, nil
+}
+
+// Enrolled reports whether an account has a confirmed second factor. It is the
+// question the login path asks, and it must be cheap and honest: an error is
+// not "no".
+func (f *Factors) Enrolled(ctx context.Context, userID string) (bool, error) {
+	id, err := parseUUID(userID)
+	if err != nil {
+		return false, err
+	}
+	var enrolled bool
+	err = f.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := store.New(tx).FindSecret(ctx, store.FindSecretParams{UserID: id})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("reading the second factor: %w", err)
+		}
+		enrolled = row.ConfirmedAt.Valid
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return enrolled, nil
+}
+
+// Begin opens a second step for an account whose password has just been
+// accepted, and returns the token that carries it.
+func (f *Factors) Begin(ctx context.Context, userID string) (auth.Challenge, error) {
+	id, err := parseUUID(userID)
+	if err != nil {
+		return auth.Challenge{}, err
+	}
+	token, err := NewChallengeToken()
+	if err != nil {
+		return auth.Challenge{}, err
+	}
+	now := f.now().UTC()
+	expiresAt := now.Add(ChallengeLifetime)
+
+	err = f.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := store.New(tx).CreateChallenge(ctx, store.CreateChallengeParams{
+			UserID:      id,
+			TokenDigest: token.Digest(),
+			CreatedAt:   timestamp(now),
+			ExpiresAt:   timestamp(expiresAt),
+		})
+		if err != nil {
+			return fmt.Errorf("opening the second-factor challenge: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return auth.Challenge{}, err
+	}
+	return auth.Challenge{Token: token.Value(), ExpiresAt: expiresAt}, nil
+}
+
+// Complete verifies a code against an open challenge and reports the account it
+// belongs to.
+//
+// A one-time code and a recovery code are both accepted here, and which one was
+// used is reported rather than hidden: a recovery code being spent is the
+// signal that somebody has lost their authenticator, or that somebody else has
+// their printed list.
+//
+// A wrong code costs the challenge one of its attempts. The budget is on the
+// challenge rather than on the account, so a stranger cannot lock somebody out
+// by failing the second step against them.
+func (f *Factors) Complete(ctx context.Context, rawToken, code string) (auth.Completion, error) {
+	token, err := ParseChallengeToken(rawToken)
+	if err != nil {
+		return auth.Completion{}, ErrChallenge
+	}
+	now := f.now().UTC()
+
+	var (
+		completion auth.Completion
+		attempted  pgtype.UUID
+	)
+	err = f.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := store.New(tx)
+		challenge, err := queries.FindChallenge(ctx, store.FindChallengeParams{TokenDigest: token.Digest()})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrChallenge
+		}
+		if err != nil {
+			return fmt.Errorf("reading the second-factor challenge: %w", err)
+		}
+		switch {
+		case !now.Before(challenge.ExpiresAt.Time):
+			return ErrChallenge
+		case challenge.Attempts >= MaxChallengeAttempts:
+			return ErrChallenge
+		case challenge.UserStatus != "active":
+			// The account was disabled between the two steps. The password
+			// was right; the sign-in still does not finish.
+			return ErrChallenge
+		}
+
+		method, err := f.verify(ctx, queries, challenge.UserID, code, now)
+		if err != nil {
+			// The attempt is counted outside this transaction, because this
+			// one is about to roll back and take the count with it. A budget
+			// that only recorded the guesses that happened to commit would
+			// not be a budget.
+			attempted = challenge.ID
+			return err
+		}
+
+		// A challenge is single-use in both directions.
+		if _, err := queries.DeleteChallenge(ctx, store.DeleteChallengeParams{ID: challenge.ID}); err != nil {
+			return fmt.Errorf("closing the completed challenge: %w", err)
+		}
+		completion = auth.Completion{UserID: uuidString(challenge.UserID), Method: method}
+		return nil
+	})
+	if errors.Is(err, ErrCode) && attempted.Valid {
+		if countErr := f.countAttempt(ctx, attempted); countErr != nil {
+			return auth.Completion{}, countErr
+		}
+	}
+	if err != nil {
+		return auth.Completion{}, err
+	}
+	if completion.Method == auth.MethodRecoveryCode {
+		f.record(ctx, ActionRecoveryCodeUsed, audit.Succeeded, completion.UserID, nil)
+	}
+	return completion, nil
+}
+
+// countAttempt records one wrong code against a challenge, in its own
+// transaction, and closes the challenge when the budget is gone.
+//
+// Closing it rather than leaving it to refuse is the point: an exhausted
+// challenge that still existed would be a token an attacker could keep testing
+// codes against, learning each time that it was still there.
+func (f *Factors) countAttempt(ctx context.Context, challengeID pgtype.UUID) error {
+	return f.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := store.New(tx)
+		attempts, err := queries.CountChallengeAttempt(ctx, store.CountChallengeAttemptParams{ID: challengeID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Somebody else closed it between the two transactions.
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("counting a second-factor attempt: %w", err)
+		}
+		if attempts >= MaxChallengeAttempts {
+			if _, err := queries.DeleteChallenge(ctx, store.DeleteChallengeParams{ID: challengeID}); err != nil {
+				return fmt.Errorf("closing an exhausted challenge: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+// verify checks a submitted value as a one-time code and then as a recovery
+// code, and reports which it was.
+//
+// The order matters only for cost: a six-digit value cannot be a recovery code
+// and a recovery code cannot be six digits, so no value is ever checked against
+// both in a way that could produce two answers.
+func (f *Factors) verify(ctx context.Context, queries *store.Queries, userID pgtype.UUID, code string, now time.Time) (string, error) {
+	row, err := queries.FindSecret(ctx, store.FindSecretParams{UserID: userID})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !row.ConfirmedAt.Valid) {
+		return "", ErrCode
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading the second factor: %w", err)
+	}
+
+	if _, parseErr := totp.NormalizeCode(code); parseErr == nil {
+		secret, err := totp.SecretFromBytes(row.Secret)
+		if err != nil {
+			return "", fmt.Errorf("reading the stored secret: %w", err)
+		}
+		step, ok := secret.Verify(code, now, f.skew)
+		if !ok {
+			return "", ErrCode
+		}
+		// The step has to move forward. A code is arithmetically valid for
+		// its whole period, so without this the same six digits work twice —
+		// which is the difference between a one-time code and a short-lived
+		// password.
+		advanced, err := queries.AdvanceStep(ctx, store.AdvanceStepParams{UserID: userID, LastStep: pgtype.Int8{Int64: step, Valid: true}})
+		if err != nil {
+			return "", fmt.Errorf("recording the accepted step: %w", err)
+		}
+		if advanced == 0 {
+			return "", ErrCode
+		}
+		return auth.MethodTOTP, nil
+	}
+
+	recovery, parseErr := totp.ParseRecoveryCode(code)
+	if parseErr != nil {
+		return "", ErrCode
+	}
+	spent, err := queries.ConsumeRecoveryCode(ctx, store.ConsumeRecoveryCodeParams{
+		UserID:     userID,
+		CodeDigest: recovery.Digest(),
+		UsedAt:     timestamp(now),
+	})
+	if err != nil {
+		return "", fmt.Errorf("spending a recovery code: %w", err)
+	}
+	if spent == 0 {
+		return "", ErrCode
+	}
+	return auth.MethodRecoveryCode, nil
+}
+
+// SweepChallenges removes at most limit expired challenges and reports how many
+// it removed. Call it in a loop until it returns zero.
+func (f *Factors) SweepChallenges(ctx context.Context, limit int) (int64, error) {
+	if limit < 1 || limit > MaxChallengeSweep {
+		return 0, fmt.Errorf("challenge sweep limit %d is outside 1..%d", limit, MaxChallengeSweep)
+	}
+	now := f.now().UTC()
+
+	var removed int64
+	err := f.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		removed, err = store.New(tx).DeleteExpiredChallenges(ctx, store.DeleteExpiredChallengesParams{
+			ExpiresAt: timestamp(now),
+			Limit:     int32(limit),
+		})
+		if err != nil {
+			return fmt.Errorf("sweeping expired challenges: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+// record writes one audit record, logging rather than failing when it cannot.
+func (f *Factors) record(ctx context.Context, action, outcome, actorID string, detail map[string]string) {
+	event := audit.Event{
+		Action:    action,
+		Outcome:   outcome,
+		ActorKind: audit.ActorAnonymous,
+		Detail:    detail,
+	}
+	if actorID != "" {
+		event.ActorKind = audit.ActorUser
+		event.ActorID = actorID
+	}
+	if _, err := f.auditor.Record(ctx, event); err != nil {
+		logging.FromContext(ctx).Error("recording a second-factor audit event",
+			slog.String("action", action),
+			slog.String("error_type", fmt.Sprintf("%T", err)))
+	}
+}
+
+func timestamp(at time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: at, Valid: true}
+}
+
+func parseUUID(value string) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	if err := id.Scan(value); err != nil || !id.Valid {
+		return pgtype.UUID{}, fmt.Errorf("%q is not a valid identifier", value)
+	}
+	return id, nil
+}
+
+func uuidString(id pgtype.UUID) string {
+	if !id.Valid {
+		return ""
+	}
+	value, err := id.Value()
+	if err != nil {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
+}

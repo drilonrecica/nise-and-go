@@ -1,0 +1,45 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package app
+
+import (
+{{- if .HasTOTP }}
+	"fmt"
+{{ end }}
+	"{{.ModulePath}}/internal/features/auth"
+{{- if .HasTOTP }}
+	"{{.ModulePath}}/internal/features/mfa"
+{{- end }}
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// SecondFactor returns the second step this application's sign-in requires.
+//
+// This is the module wiring: explicit constructor calls in ordinary Go, written
+// once when the project was generated with the selection recorded in nise.json.
+// The signature does not change with the selection, so the call sites in app.go
+// and enroll.go do not branch — what changes is what this function returns.
+//
+{{- if .HasTOTP }}
+// This application was generated with the TOTP module, so a sign-in asks for a
+// one-time code from any account that has enrolled one.
+{{- else }}
+// This application was generated without the TOTP module, so it returns
+// auth.NoSecondFactor: an explicit declaration that there is no second step,
+// rather than a nil the login use case would have to tolerate. Adding the
+// module to an existing project is a change to this file, which is the point —
+// wiring somebody can read and review, not a registry that resolves itself.
+{{- end }}
+{{- if .HasTOTP }}
+func SecondFactor(transactor *database.Transactor, auditor auth.Auditor, issuer string) (auth.SecondFactor, error) {
+	factors, err := mfa.New(transactor, auditor, issuer)
+	if err != nil {
+		return nil, fmt.Errorf("building the second-factor use case: %w", err)
+	}
+	return factors, nil
+}
+{{- else }}
+func SecondFactor(*database.Transactor, auth.Auditor, string) (auth.SecondFactor, error) {
+	return auth.NoSecondFactor{}, nil
+}
+{{- end }}

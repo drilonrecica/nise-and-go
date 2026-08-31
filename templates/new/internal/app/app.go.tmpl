@@ -144,7 +144,18 @@ func Run(ctx context.Context, modeOverride string) error {
 	if err != nil {
 		return fmt.Errorf("building the authentication throttle: %w", err)
 	}
-	credentials, err := auth.NewCredentials(accounts, sessions, passwordPolicy, loginThrottle, auditRecorder)
+	// The second factor comes from the generated module wiring: the optional
+	// TOTP module when it was selected, and an explicit "this application has
+	// none" when it was not.
+	// The issuer is the name an authenticator application shows beside the
+	// account. It is the generated project's name, and this file is
+	// application-owned: change it here if the product is called something
+	// else.
+	secondFactor, err := SecondFactor(transactor, auditRecorder, "{{.AppName}}")
+	if err != nil {
+		return err
+	}
+	credentials, err := auth.NewCredentials(accounts, sessions, passwordPolicy, loginThrottle, auditRecorder, secondFactor)
 	if err != nil {
 		return fmt.Errorf("building the login use case: %w", err)
 	}

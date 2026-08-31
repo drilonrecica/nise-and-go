@@ -54,6 +54,8 @@ Optional multitenancy uses `org_id` plus PostgreSQL row-level security as defens
 
 Every application includes sessions and authentication, authorization, an audit log, PostgreSQL-backed jobs, and mail. Optional capabilities are compile-time modules recorded in the project recipe and wired with explicit generated code: organizations (multitenancy with RLS), TOTP, in-app notifications with optional SSE, and file uploads/storage. There is no dynamic module loading.
 
+A module is a Go package under `modules/` plus template files that render only when it is selected; an unselected module contributes no file, no import, and no dead code. [TOTP](second-factor.md) is the first one built. [ADR 0022](adr/0022-compile-time-modules.md) records the mechanism.
+
 ## Runtime boundary
 
 Nise is primarily build-time. Applications import only a small number of stable runtime packages for genuinely shared concerns. Business code must not depend pervasively on a Nise service locator, base class, or plugin interface.
