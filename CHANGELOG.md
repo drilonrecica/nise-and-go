@@ -40,6 +40,11 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   deadline fixed at issue, a bounded idle-window touch, revocation with a
   recorded reason, and a bounded expiry sweep. Adds the `users` and `sessions`
   migration and the first feature-colocated sqlc store.
+- Add `session.CookiePolicy`. Development uses the same `__Host-`, `Secure`,
+  `HttpOnly`, `SameSite=Lax` cookie as production, because `http://localhost` is
+  a secure context; the single escape hatch for a non-localhost development
+  origin drops the prefix and `Secure` together and cannot be used in
+  production (ADR 0018).
 
 ### Fixed
 

@@ -109,11 +109,40 @@ declare ownership by path. A comment in a query file is not inert — sqlc copie
 it into the generated Go doc comment — so a "Nise will not overwrite it" header
 there would appear inside a tool-owned file and contradict its own marker.
 
+## The cookie
+
+| Attribute | Value |
+|---|---|
+| Name | `__Host-session` |
+| `Secure` | yes |
+| `HttpOnly` | yes |
+| `SameSite` | `Lax` |
+| `Path` | `/` |
+| `Domain` | never set |
+
+The `__Host-` prefix is browser-enforced: a browser refuses such a cookie unless
+`Secure` and `Path=/` are set and `Domain` is not, which is what stops a sibling
+subdomain — or a network attacker forging a response from one — from writing a
+session cookie this application would then read.
+
+**Development uses the same cookie.** `http://localhost` and `http://127.0.0.1`
+are secure contexts in every current browser, so a `Secure` cookie works there
+over plain HTTP and a developer exercises the production code path. There is no
+environment-conditional policy to get wrong.
+
+The one escape hatch is for a development origin that is *not* localhost — a
+phone on the LAN pointed at a workstation. `SESSION_COOKIE_INSECURE=true` drops
+`Secure` and the `__Host-` prefix together, because a browser discards a
+`__Host-` cookie that is not `Secure` and the pair cannot be split. It warns at
+startup and is refused in production. See
+[ADR 0018](adr/0018-development-cookie-policy.md) for why `SameSite` is `Lax`
+rather than `Strict`.
+
 ## Not yet here
 
-Cookies, CSRF, login, and enrollment are the tasks that follow. This page
-describes the session store and its lifecycle; nothing in it is an
-authentication boundary on its own.
+CSRF, login, and enrollment are the tasks that follow. This page describes the
+session store, its lifecycle, and its cookie policy; nothing in it is an
+authentication boundary on its own yet.
 
 ## Related
 

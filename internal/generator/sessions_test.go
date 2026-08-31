@@ -136,3 +136,34 @@ func TestGeneratedProjectDefinesOpaqueSessions(t *testing.T) {
 		}
 	}
 }
+
+// TestGeneratedProjectDocumentsTheCookieDecision keeps the cookie policy's one
+// hard rule visible where a reader of the generated project will meet it: the
+// prefix and Secure move together, and development is not a weaker branch.
+func TestGeneratedProjectDocumentsTheCookieDecision(t *testing.T) {
+	t.Parallel()
+
+	files, err := generator.Plan(defaultOptions())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	content := make(map[string]string, len(files))
+	for _, file := range files {
+		content[file.Path] = string(file.Content)
+	}
+	for path, fragments := range map[string][]string{
+		"README.md": {
+			"__Host-",
+			"SESSION_COOKIE_INSECURE",
+		},
+		".env.example": {
+			"SESSION_COOKIE_INSECURE=false",
+		},
+	} {
+		for _, fragment := range fragments {
+			if !strings.Contains(content[path], fragment) {
+				t.Errorf("%s lacks %q", path, fragment)
+			}
+		}
+	}
+}
