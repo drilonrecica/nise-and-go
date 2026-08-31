@@ -115,9 +115,16 @@ clean install; the remaining planned packages are named without one.
 | Vitest (`4.1.11`) | Runs the initial Node-only typed-client unit contract on Node 22. Browser component coverage remains a separate M6 addition. |
 | Playwright | A deliberately small end-to-end suite for critical user journeys — end-to-end tests are the slowest and most brittle layer, so they cover journeys, not coverage. |
 
-The generated `package.json` has **no runtime dependencies**. Every package it
-pins is a build or test tool; nothing above ships in the bundle except the
-application's own code and the framework it compiles against.
+The generated `package.json` separates the two, and the `dependencies` block —
+what actually ships in the bundle — is deliberately short. A Nise test pins it
+as a closed list, because "what is in the bundle" is the number that gets away
+from a project one convenience at a time.
+
+| Bundled package | Why it ships |
+|---|---|
+| `valibot` (`1.1.0`) | Form validation in the browser, so somebody typing an address without an "@" is told before they wait for a round trip. It is a courtesy and never a boundary: the server's strict decoding is authoritative, and `src/lib/forms.svelte.ts` says so. Chosen over Zod for size, since this one does ship to every visitor. |
+
+Everything else the file pins is a build or test tool.
 
 ### Rejected for the generated frontend
 

@@ -131,3 +131,50 @@ func TestGeneratedAuthenticationScreens(t *testing.T) {
 		t.Error("accepting an invitation does not send the person to sign in")
 	}
 }
+
+// TestGeneratedFormConventions pins the boundary the form helper exists to
+// hold (Nise task M6-009): the browser validates as a courtesy, the server
+// decides, and the two kinds of error never merge.
+func TestGeneratedFormConventions(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, defaultOptions())
+
+	forms, exists := content["frontend/src/lib/forms.svelte.ts"]
+	if !exists {
+		t.Fatal("generated project lacks frontend/src/lib/forms.svelte.ts")
+	}
+	for _, fragment := range []string{
+		"export function createForm<",
+		"export const rules = {",
+		"export function mustMatch<",
+		// An invalid form is not sent: the server would refuse it too.
+		"if (!parsed.success) {",
+		// A server refusal is never attributed to a field.
+		"failure = error;",
+	} {
+		if !strings.Contains(forms, fragment) {
+			t.Errorf("forms.svelte.ts lacks %q", fragment)
+		}
+	}
+
+	// The browser must not hold a password rule the server does not, or it
+	// refuses passwords the server would accept — and it cannot do the breach
+	// check at all.
+	for _, forbidden := range []string{"[A-Z]", "\\\\d", "special character", "uppercase"} {
+		if strings.Contains(forms, forbidden) {
+			t.Errorf("forms.svelte.ts applies its own password composition rule (%q); the server owns the policy", forbidden)
+		}
+	}
+
+	// Every form in the starter uses the convention rather than hand-rolling
+	// its own state.
+	for _, path := range []string{
+		"frontend/src/routes/(public)/sign-in/+page.svelte",
+		"frontend/src/routes/(public)/invitations/accept/+page.svelte",
+	} {
+		if !strings.Contains(content[path], "createForm({") {
+			t.Errorf("%s does not use the shared form convention", path)
+		}
+	}
+}

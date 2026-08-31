@@ -1,5 +1,7 @@
 <!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
 <script lang="ts">
+	import * as v from 'valibot';
+
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 
@@ -7,38 +9,30 @@
 	import Field from '$lib/components/ui/Field.svelte';
 	import Input from '$lib/components/ui/Input.svelte';
 	import ProblemAlert from '$lib/components/ui/ProblemAlert.svelte';
+	import { createForm, rules } from '$lib/forms.svelte';
 	import { safeNext, session } from '$lib/session.svelte';
 
-	let email = $state(page.url.searchParams.get('email') ?? '');
-	let password = $state('');
-	let pending = $state(false);
-	let failure = $state<unknown>(null);
+	const schema = v.object({ email: rules.email, password: rules.currentPassword });
 
-	async function submit(event: SubmitEvent) {
-		event.preventDefault();
-		pending = true;
-		failure = null;
-		try {
+	const form = createForm({
+		schema,
+		initial: { email: page.url.searchParams.get('email') ?? '', password: '' },
+		async onsubmit({ email, password }) {
 			const challenge = await session.signIn(email, password);
-			// The password is dropped either way. It is in memory for exactly
-			// as long as the request that used it, and a form that keeps it
-			// for a retry keeps it for a screenshot too.
-			password = '';
+			// The password is dropped whatever happened next. It is in memory
+			// for as long as the request that used it and no longer; a form
+			// that keeps it for a retry keeps it for a screenshot too.
+			form.values.password = '';
+			const next = safeNext(page.url.searchParams.get('next'));
 			if (challenge) {
 				await goto(
-					`/sign-in/second-factor?token=${encodeURIComponent(challenge.token)}` +
-						`&next=${encodeURIComponent(safeNext(page.url.searchParams.get('next')))}`
+					`/sign-in/second-factor?token=${encodeURIComponent(challenge.token)}&next=${encodeURIComponent(next)}`
 				);
 				return;
 			}
-			await goto(safeNext(page.url.searchParams.get('next')));
-		} catch (error) {
-			failure = error;
-			password = '';
-		} finally {
-			pending = false;
+			await goto(next);
 		}
-	}
+	});
 </script>
 
 <svelte:head>
@@ -49,45 +43,50 @@
 	<h1 class="text-lg font-semibold tracking-tight text-text">Sign in</h1>
 	<p class="mt-1 text-sm text-text-muted">Use the address this account was created for.</p>
 
-	{#if failure}
+	{#if form.failure}
 		<div class="mt-4">
-			<ProblemAlert error={failure} />
+			<ProblemAlert error={form.failure} />
 		</div>
 	{/if}
 
-	<form class="mt-5 space-y-4" onsubmit={submit}>
-		<Field id="email" label="Email" required>
+	<form class="mt-5 space-y-4" onsubmit={form.submit}>
+		<Field id="email" label="Email" error={form.errors.email} required>
 			{#snippet children({ describedBy, invalid })}
 				<Input
 					id="email"
 					type="email"
 					name="email"
 					autocomplete="username"
-					required
-					bind:value={email}
+					bind:value={form.values.email}
+					onblur={() => form.touch('email')}
 					{describedBy}
 					{invalid}
 				/>
 			{/snippet}
 		</Field>
 
-		<Field id="password" label="Password" required>
+		<Field id="password" label="Password" error={form.errors.password} required>
 			{#snippet children({ describedBy, invalid })}
 				<Input
 					id="password"
 					type="password"
 					name="password"
 					autocomplete="current-password"
-					required
-					bind:value={password}
+					bind:value={form.values.password}
+					onblur={() => form.touch('password')}
 					{describedBy}
 					{invalid}
 				/>
 			{/snippet}
 		</Field>
 
-		<Button type="submit" variant="primary" size="lg" loading={pending} loadingLabel="Signing in" class="w-full">
-			Sign in
-		</Button>
+		<Button
+			type="submit"
+			variant="primary"
+			size="lg"
+			loading={form.pending}
+			loadingLabel="Signing in"
+			class="w-full">Sign in</Button
+		>
 	</form>
 </div>

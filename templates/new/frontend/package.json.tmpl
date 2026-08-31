@@ -19,6 +19,11 @@
     "api:generate": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts",
     "api:check": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts --check"
   },
+  "dependencies": {
+{{- range $i, $d := .FrontendRuntimeDeps }}{{if $i}},{{end}}
+    "{{$d.Name}}": "{{$d.Version}}"
+{{- end }}
+  },
   "devDependencies": {
 {{- range $i, $d := .FrontendDeps }}{{if $i}},{{end}}
     "{{$d.Name}}": "{{$d.Version}}"

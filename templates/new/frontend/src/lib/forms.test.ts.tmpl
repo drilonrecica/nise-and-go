@@ -1,0 +1,145 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { describe, expect, it, vi } from 'vitest';
+import * as v from 'valibot';
+
+import { createForm, mustMatch, rules } from './forms.svelte';
+
+const signIn = v.object({ email: rules.email, password: rules.currentPassword });
+
+const choosePassword = v.pipe(
+	v.object({ password: rules.newPassword, confirmation: v.string() }),
+	mustMatch('password', 'confirmation', 'The two passwords do not match.')
+);
+
+describe('createForm', () => {
+	it('shows no error before a field is touched or the form submitted', () => {
+		const form = createForm({
+			schema: signIn,
+			initial: { email: '', password: '' },
+			onsubmit: async () => {}
+		});
+		// An error that appears before anybody could have finished typing is
+		// noise, and a form that shouts during typing teaches people to ignore
+		// it.
+		expect(form.errors).toEqual({});
+		expect(form.valid).toBe(false);
+	});
+
+	it("shows a touched field's error and leaves the others alone", () => {
+		const form = createForm({
+			schema: signIn,
+			initial: { email: 'not-an-address', password: '' },
+			onsubmit: async () => {}
+		});
+		form.touch('email');
+		expect(form.errors.email).toBe('That does not look like an email address.');
+		expect(form.errors.password).toBeUndefined();
+	});
+
+	it('does not send an invalid form', async () => {
+		const onsubmit = vi.fn();
+		const form = createForm({
+			schema: signIn,
+			initial: { email: '', password: '' },
+			onsubmit
+		});
+
+		await form.submit();
+		expect(onsubmit).not.toHaveBeenCalled();
+		// Submitting reveals every error, not only the touched ones.
+		expect(form.errors.email).toBeDefined();
+		expect(form.errors.password).toBeDefined();
+	});
+
+	it('submits the parsed value, not the raw one', async () => {
+		const onsubmit = vi.fn();
+		const form = createForm({
+			schema: signIn,
+			initial: { email: '  ada@example.test  ', password: 'a password' },
+			onsubmit
+		});
+
+		await form.submit();
+		expect(onsubmit).toHaveBeenCalledWith({ email: 'ada@example.test', password: 'a password' });
+	});
+
+	it('keeps a submission failure separate from field errors', async () => {
+		const failure = new Error('the server refused');
+		const form = createForm({
+			schema: signIn,
+			initial: { email: 'ada@example.test', password: 'a password' },
+			onsubmit: async () => {
+				throw failure;
+			}
+		});
+
+		await form.submit();
+		expect(form.failure).toBe(failure);
+		// Guessing which field a server refusal belongs to is how a password
+		// policy failure ends up pinned to an email input.
+		expect(form.errors).toEqual({});
+		expect(form.pending).toBe(false);
+	});
+
+	it('clears a previous failure when resubmitting', async () => {
+		let fail = true;
+		const form = createForm({
+			schema: signIn,
+			initial: { email: 'ada@example.test', password: 'a password' },
+			onsubmit: async () => {
+				if (fail) throw new Error('first attempt');
+			}
+		});
+
+		await form.submit();
+		expect(form.failure).not.toBeNull();
+		fail = false;
+		await form.submit();
+		expect(form.failure).toBeNull();
+	});
+
+	it('reports a confirmation mismatch against the confirmation field', () => {
+		const form = createForm({
+			schema: choosePassword,
+			initial: { password: 'a long enough password', confirmation: 'something else' },
+			onsubmit: async () => {}
+		});
+		form.touch('confirmation');
+		// Confirmation is the one rule the server cannot check, because it
+		// never sees the second field.
+		expect(form.errors.confirmation).toBe('The two passwords do not match.');
+	});
+
+	it('resets to the initial values', async () => {
+		const form = createForm({
+			schema: signIn,
+			initial: { email: '', password: '' },
+			onsubmit: async () => {}
+		});
+
+		await form.submit();
+		expect(form.errors.email).toBeDefined();
+
+		form.reset();
+		expect(form.errors).toEqual({});
+		expect(form.values).toEqual({ email: '', password: '' });
+	});
+});
+
+describe('rules', () => {
+	it("does not apply a password policy stricter than the server's", () => {
+		// A browser rule stricter than the server's refuses passwords the
+		// server would accept, and the browser cannot do the breach check at
+		// all.
+		expect(v.safeParse(rules.newPassword, 'correct horse battery').success).toBe(true);
+		expect(v.safeParse(rules.newPassword, 'short').success).toBe(false);
+	});
+
+	it('does not validate an existing password beyond its bounds', () => {
+		// A rule tightened today must not lock out an account whose password
+		// was fine when it was set.
+		expect(v.safeParse(rules.currentPassword, 'abc').success).toBe(true);
+		expect(v.safeParse(rules.currentPassword, '').success).toBe(false);
+	});
+});

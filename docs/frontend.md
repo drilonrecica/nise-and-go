@@ -104,6 +104,21 @@ Branch on `code`, not on the status. The server has one catalog of problems and 
 
 Field-level validation errors are not in the contract: the `Problem` schema is `additionalProperties: false` and carries no per-field member. Client-side field validation is Valibot's job, and the server remains authoritative.
 
+### Form conventions
+
+Every form goes through `createForm` in `src/lib/forms.svelte.ts`, over a Valibot schema. The rule the file exists to make cheap is that **the server is authoritative and the browser is a courtesy**: Valibot runs so somebody typing an address without an "@" is told before they wait for a round trip. It is not a security boundary, it is not a substitute for the server's strict decoding, and a schema that disagrees with the server's is a bug in the schema.
+
+A form therefore has two kinds of error and keeps them apart:
+
+- A **field error** came from the schema and names a field. It appears when that field is touched or when a submission is attempted — never while somebody is typing their first character, because an error that appears before anybody could have finished is noise, and a form that shouts during typing teaches people to ignore it.
+- A **submission error** came from the server and goes to `ProblemAlert` unchanged. Guessing which input a server refusal belongs to is how a password-policy failure ends up pinned to an email field.
+
+An invalid form is not sent at all: the server would refuse it too, and a round trip to be told what the schema already knew is a round trip somebody waits for.
+
+`rules` holds the shared pieces — `email`, `currentPassword`, `newPassword` — so two forms cannot disagree about what an address is and the messages are written once. Each mirrors a bound the server enforces. `newPassword` checks only the length, deliberately: the server owns the real policy including the breach check, and a stricter browser rule would refuse passwords the server would accept. `currentPassword` applies no policy at all, because a rule tightened today must not lock out an account whose password was fine when it was set.
+
+`mustMatch` covers the one rule the server genuinely cannot check, since it never sees the confirmation field.
+
 ### The component set
 
 `src/lib/components/ui/` holds the curated set, as ordinary application-owned Svelte 5 components: `Alert`, `Badge`, `Button`, `Checkbox`, `ConfirmDialog`, `Dialog`, `Field`, `Icon`, `Input`, `Menu`, `Pagination`, `Select`, `Skeleton`, `Spinner`, `Table`, `Textarea`, `Toaster`, `Tooltip`, and the `toast` module. There is no `bits-ui` and no `shadcn-svelte`: the generated `package.json` has zero runtime dependencies. [ADR 0025](adr/0025-owned-ui-primitives.md) has the reasoning — in short, [ADR 0013](adr/0013-security-headers-and-csp.md)'s policy blocks the `style` attribute that every Floating UI integration writes to position a floating element, and weakening the policy to fit a dependency was not an option.

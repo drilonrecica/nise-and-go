@@ -75,8 +75,9 @@ conventions still apply to this code.
 - The Content Security Policy stays as [ADR 0013](0013-security-headers-and-csp.md)
   defines it. No waiver, and no per-upgrade audit of a third party's rendering
   internals.
-- The generated `package.json` keeps zero runtime dependencies. Everything it
-  pins is a build or test tool.
+- The generated `package.json` ships no component library. What it does ship in
+  the bundle is a short, individually justified list in
+  [dependencies.md](../dependencies.md); the component set adds nothing to it.
 - The application owns every line of its component set, which is what
   [ADR 0003](0003-application-ownership.md) intends and what makes deleting or
   replacing a component an ordinary edit.
