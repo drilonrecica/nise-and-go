@@ -1,0 +1,184 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Refuse Svelte 4 syntax in this application's Svelte sources.
+//
+// Svelte 5 still accepts most of the old syntax, and a component written in
+// it still works — which is the problem. A codebase that is runes-only
+// everywhere except three files is a codebase where a reader has to check
+// which mode a component is in before reading it, and where `$state` and a
+// store subscription end up describing the same value. `svelte-check` will
+// not report any of this: none of it is a type error, and legacy mode is a
+// supported mode.
+//
+// So this is a lint, and it is written as one owned file rather than as an
+// ESLint installation: the whole rule set is nine patterns, and the project
+// they protect otherwise needs no linter plugin, no config format, and no
+// dependency tree to run `pnpm check`.
+//
+// It is application-owned. Delete a rule, add one, or delete the file — but
+// prefer editing the rules over leaving a violation unreported, because the
+// value here is that the answer to "which mode is this component in" is the
+// same for every file.
+//
+// Usage: node scripts/check-runes.mjs [dir]   (default: src)
+
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
+import process from 'node:process';
+
+/** Rules applied to the contents of <script> blocks and to .svelte.ts modules. */
+const ambientProps = {
+	pattern: /\$\$(props|restProps|slots)\b/g,
+	message: 'legacy `$$props`/`$$restProps`/`$$slots`',
+	instead: 'take the rest of $props() explicitly, and use snippets for slots'
+};
+
+const scriptRules = [
+	{
+		// A line whose first non-space characters are `$:`. Anchored to the
+		// line so a `$:` inside a string or a longer expression is not a
+		// false positive.
+		pattern: /^[ \t]*\$:/gm,
+		message: 'legacy reactive statement `$:`',
+		instead: 'use $derived for a value and $effect for a side effect'
+	},
+	{
+		pattern: /\bexport\s+let\b/g,
+		message: 'legacy component prop `export let`',
+		instead: 'destructure from $props()'
+	},
+	ambientProps,
+	{
+		pattern: /\bcreateEventDispatcher\b/g,
+		message: 'legacy `createEventDispatcher`',
+		instead: 'take a callback prop, such as onselect'
+	},
+	{
+		pattern: /\b(beforeUpdate|afterUpdate)\b/g,
+		message: 'legacy `beforeUpdate`/`afterUpdate`',
+		instead: 'use $effect, or $effect.pre for work that must run before the DOM updates'
+	},
+	{
+		pattern: /from\s*['"]svelte\/store['"]/g,
+		message: "an import from 'svelte/store'",
+		instead: 'hold shared reactive state in a .svelte.ts module with $state'
+	}
+];
+
+/** Rules applied to markup: everything outside <script> and <style>. */
+const markupRules = [
+	{
+		pattern: /\son:[a-zA-Z]+(\||[=\s/>])/g,
+		message: 'legacy event directive `on:`',
+		instead: 'use the event attribute, such as onclick'
+	},
+	{
+		pattern: /<slot[\s/>]/g,
+		message: 'legacy `<slot>`',
+		instead: 'use a snippet prop and {@render …}'
+	},
+	{
+		pattern: /\slet:[a-zA-Z]/g,
+		message: 'legacy slot property `let:`',
+		instead: 'pass values as snippet parameters'
+	},
+	// A template expression is markup, not script, so the ambient-props rule
+	// has to be applied on both sides to see `{$$props.x}`.
+	ambientProps
+];
+
+const root = process.argv[2] ?? 'src';
+
+/** Every .svelte, .svelte.ts, and .svelte.js file under dir, in stable order. */
+function sources(dir) {
+	const found = [];
+	for (const entry of readdirSync(dir).sort()) {
+		const path = join(dir, entry);
+		if (statSync(path).isDirectory()) {
+			found.push(...sources(path));
+		} else if (/\.svelte(\.[tj]s)?$/.test(entry)) {
+			found.push(path);
+		}
+	}
+	return found;
+}
+
+/**
+ * Split a source file into the code a script rule may look at and the markup
+ * a markup rule may look at, replacing everything else with spaces so that
+ * character offsets — and therefore reported line numbers — stay exact.
+ */
+function partition(path, source) {
+	if (path.endsWith('.ts') || path.endsWith('.js')) {
+		return { script: source, markup: blank(source) };
+	}
+	let script = blank(source);
+	let markup = source;
+	const block = /<script[^>]*>([\s\S]*?)<\/script\s*>/gi;
+	for (const match of source.matchAll(block)) {
+		const start = match.index + match[0].indexOf(match[1]);
+		script = splice(script, start, match[1]);
+		markup = splice(markup, start, blank(match[1]));
+	}
+	const style = /<style[^>]*>([\s\S]*?)<\/style\s*>/gi;
+	for (const match of source.matchAll(style)) {
+		const start = match.index + match[0].indexOf(match[1]);
+		markup = splice(markup, start, blank(match[1]));
+	}
+	const comment = /<!--[\s\S]*?-->/g;
+	for (const match of source.matchAll(comment)) {
+		markup = splice(markup, match.index, blank(match[0]));
+	}
+	return { script, markup };
+}
+
+/** Replace text with spaces, keeping newlines so line numbers do not shift. */
+function blank(text) {
+	return text.replace(/[^\n]/g, ' ');
+}
+
+function splice(target, start, replacement) {
+	return target.slice(0, start) + replacement + target.slice(start + replacement.length);
+}
+
+function lineOf(source, index) {
+	let line = 1;
+	for (let i = 0; i < index; i++) {
+		if (source[i] === '\n') line++;
+	}
+	return line;
+}
+
+const violations = [];
+for (const path of sources(root)) {
+	const source = readFileSync(path, 'utf8');
+	const { script, markup } = partition(path, source);
+	for (const [text, rules] of [
+		[script, scriptRules],
+		[markup, markupRules]
+	]) {
+		for (const rule of rules) {
+			for (const match of text.matchAll(rule.pattern)) {
+				violations.push({
+					path: relative(process.cwd(), path).split(sep).join('/'),
+					line: lineOf(source, match.index),
+					message: rule.message,
+					instead: rule.instead
+				});
+			}
+		}
+	}
+}
+
+if (violations.length > 0) {
+	violations.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line);
+	for (const v of violations) {
+		process.stderr.write(`${v.path}:${v.line}: ${v.message} — ${v.instead}\n`);
+	}
+	process.stderr.write(
+		`\n${violations.length} Svelte 4 construct(s) found. This application is runes-only; see frontend/README.md.\n`
+	);
+	process.exit(1);
+}
+
+process.stdout.write('runes-only: no Svelte 4 syntax found\n');

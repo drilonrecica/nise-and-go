@@ -25,6 +25,27 @@ In a generated project `make dist` is the shipping build — `pnpm build` follow
 - Paraglide for internationalization.
 - Vitest Browser Mode and selected Playwright flows.
 
+## Svelte 5 conventions, and the check that holds them
+
+Generated Svelte is runes-only, and so is the application that grows out of it. The conventions are one table, and each row's left column is refused by `pnpm check`:
+
+| Svelte 4 | Use instead |
+|---|---|
+| `$: value = …` | `$derived` for a value, `$effect` for a side effect |
+| `export let prop` | destructure from `$props()` |
+| `$$props`, `$$restProps`, `$$slots` | take the rest of `$props()` explicitly; snippets replace slots |
+| `createEventDispatcher` | a callback prop, such as `onselect` |
+| `beforeUpdate` / `afterUpdate` | `$effect`, or `$effect.pre` for work that must precede the DOM update |
+| `import { writable } from 'svelte/store'` | a `.svelte.ts` module holding `$state` |
+| `on:click={…}` | `onclick={…}` |
+| `<slot />`, `let:item` | a snippet prop and `{@render …}` |
+
+Svelte 5 still accepts every construct in the left column, which is precisely why the check exists: none of them is a compile error or a `svelte-check` finding, so nothing else reports them. A codebase that is runes-only except for three files is one where a reader has to work out which mode a component is in before reading it, and where `$state` and a store subscription end up describing the same value.
+
+The checker is `frontend/scripts/check-runes.mjs`, an application-owned Node script with no dependencies, run by `pnpm check` (and therefore by `make web-check`, `make all`, and `nise test`). It reads `<script>` blocks and markup separately, so a Tailwind `md:` class, a `$:` inside a string, and an `on:` inside a comment are not findings. It is application-owned like everything else under `frontend/`: an application may edit a rule, add one, or delete the file — but editing the rules is better than leaving a violation unreported, because the value is that the answer to "which mode is this component in" is the same for every file.
+
+Nise's own test suite applies the same rules to every file `nise new` writes, so the starter can never be the source of a mixed-mode codebase.
+
 ## Application shell
 
 The starter shell includes:
