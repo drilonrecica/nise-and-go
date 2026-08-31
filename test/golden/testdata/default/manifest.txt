@@ -5,7 +5,7 @@
 # <path> dir <mode>
 # <path> file <mode> <sha256>
 .dockerignore file 0644 e67c07ed17a9271672b7bac7dd99034f3f55e864a847558d67481a4f31e8a392
-.env.example file 0644 2f72940f7fc816ce38ac568628565b88fb6178d480fd1062b51e4c2124d17371
+.env.example file 0644 1eb730bfeddeeb1491a19c9760b51008ef112e47886cb4c09b8476bf179485a0
 .gitignore file 0644 ccc454e599a681107318bf8e887057052022fe2f44dc80a4267d879ae7fc8e21
 .nise dir 0755
 .nise/architecture.json file 0644 2c1b7fa51a2f42102a4cc0ee94e4f3ab46fafa949c4bcfb6cd4c8ddbff1b6eaa
@@ -31,6 +31,7 @@ db/migrations/00003_identity.sql file 0644 39d8546255a97b9be72d02de07c1aa96c5b09
 db/migrations/00004_audit.sql file 0644 67b135dca9130f0002c534e1196494550387123167ffa7779656b1775d047c38
 db/migrations/00005_authorization.sql file 0644 e275e6f23ed2711d2872a39e97a7f898c16d09cfd199ae77f921b8f7717deb4c
 db/migrations/00006_invitations.sql file 0644 616cc5f1e6ec927077427dbea2d28f24bcdeea286426f6798cb2bde1b72c8943
+db/migrations/00007_throttle.sql file 0644 82a18607df7b277eefb328a80972a3b5988c169903787e6122ac963fdbf730bb
 deploy dir 0755
 deploy/Dockerfile file 0644 396d7a7bcbeb0685aedaf5abf1ae93d00f16a8a8d9e7fb9ac410cc620ef55b13
 deploy/README.md file 0644 8040eed460f74fbece44b0f5bf1080bf1d821f99d6a7119947028ddb396c2f37
@@ -61,10 +62,10 @@ frontend/vitest.config.ts file 0644 490ddf8c71d0f94c3a09775e0919bf8cf2a16ef3a244
 go.mod file 0644 5c40be901f9f80eb2fa6a5b40125a8a4cb14bc9480e3ce0fcc22ebd7940e4dde
 internal dir 0755
 internal/app dir 0755
-internal/app/app.go file 0644 4035e4cb701dd35e8d720e66eeca86d74c8e41dc137cc6bcafe33bb1ce603499
+internal/app/app.go file 0644 cd74477d658360e034ddf0c23841e2c5bbc142b0408e0c3064483a0e413cece1
 internal/app/database.go file 0644 0dda4beca6185845806aafa2f0211db9b8c8c832cbf9ead38290ad78bfe98318
 internal/app/database_runtime.go file 0644 cebda86bbdf1a0094abe173b61e8785fc752dea884089bbddcaa8108598ff4d5
-internal/app/enroll.go file 0644 1c2294844fda444edc85a55e18aea7e4be96a81e506199c13c7b2c0003a58bda
+internal/app/enroll.go file 0644 846944400f14352f6c3488baf0422efcf0ace9dc8da3081e6dcff64055639a73
 internal/app/modes.go file 0644 0ce6c95c483fe4cf922ae6c44cd80ad6c5c5583d403b469161520633fef9875d
 internal/app/modules.gen.go file 0644 bb65aa5645fa1783f2cd7cc910ee2497e0aa118f004f0b9d49996e6e6036d06f
 internal/app/password.go file 0644 16a4418847794ac9752b4d27f9241a891e1bacbbe1a4f0d2fab9060bbad3541d
@@ -86,8 +87,8 @@ internal/features/auth/accounts.go file 0644 f842703fd25e87b288a795a0047d051cf73
 internal/features/auth/auth_test.go file 0644 21e6da76cbfdaf01960a7c8029aaa665a3f93253b41a9075c22995981b6b88c4
 internal/features/auth/invitations.go file 0644 36bd3f0aea3cf8d8748369cb84502587fd5af5bba644f0671e3ea52197e1c875
 internal/features/auth/invitations_test.go file 0644 f23298b664f4e2225212e75cf4d4fd01fc96a36a33eaa1416ff8d766ce3973e1
-internal/features/auth/login.go file 0644 7d57c2c9a8a0c38e51617ee9ceccb508f3be89780e7e78514e52d8622f193362
-internal/features/auth/login_test.go file 0644 2ca56ba1f27a07cd461fa287d34c71e54cb731b7403a3f857569f2d55daebb58
+internal/features/auth/login.go file 0644 49f210699da71dc85df22272b38efa7b46213c9f0f6a05c0c9eee681a0827f0f
+internal/features/auth/login_test.go file 0644 07001932fa992320cb3ef973ebb4d7421027648e9cfc6fe9f430ca38a727a7dd
 internal/features/auth/queries dir 0755
 internal/features/auth/queries/invitations.sql file 0644 52eb2527b8265768bd1b9b72658715e4057875b3b64b081fd6692590b2897be5
 internal/features/auth/queries/sessions.sql file 0644 68004b0a6ce1a44694a2883056a14c85efa98c58ab773261ab6ce00f45ee54b4
@@ -104,6 +105,7 @@ internal/features/auth/store/models.go file 0644 f47389f2346afe93efa54856167197f
 internal/features/auth/store/querier.go file 0644 cdf2b41176b63c96ec47b994aadb4e96764fbfaa08682b8603be9cc2b1c7573f
 internal/features/auth/store/sessions.sql.go file 0644 5c0793d99563f253f73bf8aa55ad9379149be9cd0d8509db9b7a6499ec5ce77e
 internal/features/auth/store/users.sql.go file 0644 ffe16294636e340cb3039f6e4e3c711cb3ebeeb4608c9d3191a8204566c71dc4
+internal/features/auth/throttle_test.go file 0644 26b6fb040013bca8e4b28a4161f0a2213e51733e00faf9bac1cc3e226e14c416
 internal/platform dir 0755
 internal/platform/authorization dir 0755
 internal/platform/authorization/authorizer.go file 0644 ef65d2b58634cc0c618b6569cdd574ad164ee191566301b55c67dc59f3431789
@@ -111,8 +113,8 @@ internal/platform/authorization/authorizer_test.go file 0644 4e7012c1a0a35c9333c
 internal/platform/authorization/catalog.go file 0644 52a3fd2c7942d5d37bd8663a34527252d019dee14bd7eb281dd61d95a095567c
 internal/platform/authorization/catalog_test.go file 0644 56224c25b9c0205c4ebed9a7d33e2e8b033f6369f87f9afe6144d728a64ea5bd
 internal/platform/config dir 0755
-internal/platform/config/config.go file 0644 e757c7568bc55390aea381424f9f543756fdeea17b4aa9a05a3c5e26ae8c1cd3
-internal/platform/config/config_test.go file 0644 97e47f78346099b376a2dc3be2c82d26aa1bd12430cee48106a8b553ce4c67f6
+internal/platform/config/config.go file 0644 d20bab24f778e91afa4ac7e28d8884c3c7fe812c0c73b0335619f0bdc7a848a8
+internal/platform/config/config_test.go file 0644 ed0864e8c2711c0eb99cad63b457b211461efd7268c71cda8b517ed725e3c1e8
 internal/platform/database dir 0755
 internal/platform/database/README.md file 0644 379bfe9051325823ea59d37f173c811ab03c0267f5c3f217f46fb0b477f01675
 internal/platform/database/compatibility.go file 0644 696f985b188edb40c9045583126f2abccdc26ce66d3c17c74fe8044d3f46d56e
@@ -164,6 +166,9 @@ internal/platform/idempotency/idempotency_test.go file 0644 82000189086ba82c3cec
 internal/platform/passwords dir 0755
 internal/platform/passwords/passwords.go file 0644 6915a30f76ca7c99073ba823ec038953663994f7e44dc608b7ac691e9fa49022
 internal/platform/passwords/passwords_test.go file 0644 7590d783037a97f95d68a34f12d990d14e4a032e56e440f8ad846ee4d3ed13fd
+internal/platform/throttle dir 0755
+internal/platform/throttle/throttle.go file 0644 c3997a4ba50d7184e0c8e94e423828dd5333a7766b89ec9aa2f3ebfca167c7c6
+internal/platform/throttle/throttle_test.go file 0644 c7074d403c1408faa421e4d5670ba67ab3d485fb417550b8df1039a149d8534e
 internal/platform/webui dir 0755
 internal/platform/webui/embedded dir 0755
 internal/platform/webui/embedded/placeholder.html file 0644 e39daa990ad2cd225e7d4491092d4d56600b509705c9d63c4c082a111cbcf772

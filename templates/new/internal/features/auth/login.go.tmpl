@@ -7,12 +7,24 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 
+	"github.com/drilonrecica/nise-and-go/runtime/forwarded"
 	"github.com/drilonrecica/nise-and-go/runtime/logging"
 	"github.com/drilonrecica/nise-and-go/runtime/password"
 
+	"{{.ModulePath}}/internal/features/audit"
 	"{{.ModulePath}}/internal/platform/passwords"
+	"{{.ModulePath}}/internal/platform/throttle"
 )
+
+// ErrThrottled reports an attempt refused before any password was checked.
+//
+// It is separate from ErrInvalidCredentials because it is not a statement about
+// the credentials at all, and because a caller should answer it differently: a
+// 429 with a retry hint rather than a 401. It says nothing about whether the
+// address exists — the counter is keyed by a digest of whatever was submitted.
+var ErrThrottled = errors.New("too many attempts; try again later")
 
 // ErrInvalidCredentials is the only failure a login returns.
 //
@@ -39,6 +51,24 @@ const (
 	// OutcomeUnverifiable means the stored hash could not be checked at all,
 	// which is a storage problem rather than a wrong password.
 	OutcomeUnverifiable Outcome = "unverifiable"
+	// OutcomeThrottled means the attempt was refused before any password was
+	// checked.
+	OutcomeThrottled Outcome = "throttled"
+)
+
+// Audit actions this feature records.
+const (
+	// ActionSessionCreated records a successful sign-in.
+	ActionSessionCreated = "session.created"
+	// ActionSessionDenied records a refused one. It is a separate action
+	// rather than a failed outcome of the first, because a query for "when
+	// did this person sign in" must not have to filter out the attempts that
+	// were not them.
+	ActionSessionDenied = "session.denied"
+	// ActionPasswordChanged records a password change.
+	ActionPasswordChanged = "password.changed"
+	// ActionPasswordSet records a reset or enrollment password.
+	ActionPasswordSet = "password.set"
 )
 
 // Login is the result of an attempt.
@@ -58,12 +88,31 @@ type Login struct {
 	Rehashed bool
 }
 
+// Throttler limits how often an attempt may be made. It is declared here, by
+// the consumer, rather than imported from the package that provides it.
+type Throttler interface {
+	Allow(ctx context.Context, address string, client netip.Addr) (throttle.Decision, error)
+	Reset(ctx context.Context, address string) error
+}
+
+// Auditor records what happened. It is declared here for the same reason.
+type Auditor interface {
+	Record(ctx context.Context, event audit.Event) (audit.Record, error)
+}
+
 // Credentials is the use case that turns an address and a password into a
 // session.
+//
+// The throttle and the audit recorder are required, not optional. An
+// authentication path that can be constructed without either is one that will
+// be, and the two are exactly the controls whose absence is invisible until
+// somebody needs them.
 type Credentials struct {
 	accounts *Accounts
 	sessions *Sessions
 	policy   *password.Policy
+	throttle Throttler
+	auditor  Auditor
 }
 
 // Policy returns the password policy this use case hashes with, for the
@@ -71,14 +120,17 @@ type Credentials struct {
 func (c *Credentials) Policy() *password.Policy { return c.policy }
 
 // NewCredentials constructs the login use case.
-func NewCredentials(accounts *Accounts, sessions *Sessions, policy *password.Policy) (*Credentials, error) {
+func NewCredentials(accounts *Accounts, sessions *Sessions, policy *password.Policy, limiter Throttler, auditor Auditor) (*Credentials, error) {
 	if accounts == nil || sessions == nil {
 		return nil, errors.New("auth: account and session use cases are required")
 	}
 	if policy == nil {
 		return nil, errors.New("auth: a password policy is required")
 	}
-	return &Credentials{accounts: accounts, sessions: sessions, policy: policy}, nil
+	if limiter == nil || auditor == nil {
+		return nil, errors.New("auth: a throttle and an audit recorder are required")
+	}
+	return &Credentials{accounts: accounts, sessions: sessions, policy: policy, throttle: limiter, auditor: auditor}, nil
 }
 
 // Authenticate verifies an address and password and issues a session.
@@ -93,6 +145,36 @@ func NewCredentials(accounts *Accounts, sessions *Sessions, policy *password.Pol
 // holds the plaintext, so it is the only moment the record can be upgraded
 // without asking anybody to change their password.
 func (c *Credentials) Authenticate(ctx context.Context, email, secret string) (Login, error) {
+	// The throttle runs before anything expensive. Argon2 makes each guess
+	// cost the server as much as the attacker, so a login endpoint that
+	// hashed first and counted afterwards would be a way to exhaust the
+	// machine as well as a way in.
+	decision, err := c.throttle.Allow(ctx, email, forwarded.ClientIP(ctx))
+	if err != nil {
+		return Login{}, fmt.Errorf("checking the authentication throttle: %w", err)
+	}
+	if !decision.Allowed {
+		c.record(ctx, ActionSessionDenied, audit.Failed, "", map[string]string{
+			"reason": string(OutcomeThrottled),
+			"scope":  decision.Scope,
+		})
+		return Login{Outcome: OutcomeThrottled}, ErrThrottled
+	}
+
+	login, err := c.authenticate(ctx, email, secret)
+	c.recordLogin(ctx, login, email)
+	if err == nil {
+		// Only a success clears the address counter, and only that counter:
+		// the client bucket keeps its history.
+		if resetErr := c.throttle.Reset(ctx, email); resetErr != nil {
+			logging.FromContext(ctx).Error("clearing the authentication throttle",
+				slog.String("error_type", fmt.Sprintf("%T", resetErr)))
+		}
+	}
+	return login, err
+}
+
+func (c *Credentials) authenticate(ctx context.Context, email, secret string) (Login, error) {
 	credential, err := c.accounts.FindCredentialByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, ErrAccountNotFound) || errors.Is(err, ErrEmail) {
@@ -141,6 +223,59 @@ func (c *Credentials) Authenticate(ctx context.Context, email, secret string) (L
 	}
 	result.Session = issued
 	return result, nil
+}
+
+// recordLogin writes one audit record for an attempt.
+//
+// The address is deliberately not in the detail: a failed attempt for an
+// address with no account would otherwise put an arbitrary submitted string in
+// the log, and a successful one already names the account it belongs to.
+func (c *Credentials) recordLogin(ctx context.Context, login Login, email string) {
+	if login.Outcome == OutcomeSucceeded {
+		c.record(ctx, ActionSessionCreated, audit.Succeeded, login.Account.ID, map[string]string{
+			"rehashed": boolText(login.Rehashed),
+		})
+		return
+	}
+	if login.Outcome == "" {
+		// Nothing was decided — an infrastructure failure the caller is
+		// already returning. There is no attempt to record.
+		return
+	}
+	c.record(ctx, ActionSessionDenied, audit.Failed, login.Account.ID, map[string]string{
+		"reason": string(login.Outcome),
+	})
+}
+
+// record writes one audit record, logging rather than failing when it cannot.
+//
+// A login that succeeded must not be turned into a failure because the audit
+// write did not land; a login that failed must not be retried by a caller
+// because of it either. The failure is loud in the log, which is the honest
+// place for it.
+func (c *Credentials) record(ctx context.Context, action, outcome, actorID string, detail map[string]string) {
+	event := audit.Event{
+		Action:    action,
+		Outcome:   outcome,
+		ActorKind: audit.ActorAnonymous,
+		Detail:    detail,
+	}
+	if actorID != "" {
+		event.ActorKind = audit.ActorUser
+		event.ActorID = actorID
+	}
+	if _, err := c.auditor.Record(ctx, event); err != nil {
+		logging.FromContext(ctx).Error("recording an authentication audit event",
+			slog.String("action", action),
+			slog.String("error_type", fmt.Sprintf("%T", err)))
+	}
+}
+
+func boolText(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
 
 // rehash rewrites a stored hash under the current parameters.
@@ -192,12 +327,14 @@ func (c *Credentials) ChangePassword(ctx context.Context, userID, current, next 
 		if _, err := c.sessions.RevokeAllForUser(ctx, userID, "password changed"); err != nil {
 			return Issued{}, fmt.Errorf("ending sessions after a password change: %w", err)
 		}
+		c.record(ctx, ActionPasswordChanged, audit.Succeeded, userID, nil)
 		return Issued{}, nil
 	}
 
 	if _, err := c.sessions.RevokeOtherSessions(ctx, userID, keepSessionID, "password changed"); err != nil {
 		return Issued{}, fmt.Errorf("ending other sessions after a password change: %w", err)
 	}
+	c.record(ctx, ActionPasswordChanged, audit.Succeeded, userID, nil)
 	// The surviving session gets a new token. The old one may have been what
 	// prompted the change, and a password change that left the possibly-stolen
 	// credential working would be a gesture rather than a response.
@@ -232,5 +369,6 @@ func (c *Credentials) SetPassword(ctx context.Context, userID, secret string, co
 	if _, err := c.sessions.RevokeAllForUser(ctx, userID, "password set"); err != nil {
 		return fmt.Errorf("ending sessions after setting a password: %w", err)
 	}
+	c.record(ctx, ActionPasswordSet, audit.Succeeded, userID, nil)
 	return nil
 }

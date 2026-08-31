@@ -10,11 +10,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"{{.ModulePath}}/internal/features/audit"
 	"{{.ModulePath}}/internal/features/auth"
 	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/config"
 	"{{.ModulePath}}/internal/platform/database"
 	"{{.ModulePath}}/internal/platform/passwords"
+	"{{.ModulePath}}/internal/platform/throttle"
 )
 
 // BootstrapResult is the stable output of the first-administrator command.
@@ -96,7 +98,15 @@ func newInvitations(pool *pgxpool.Pool, cfg config.Config) (*auth.Invitations, e
 	if err != nil {
 		return nil, fmt.Errorf("building the password policy: %w", err)
 	}
-	credentials, err := auth.NewCredentials(accounts, sessions, policy)
+	auditRecorder, err := audit.NewRecorder(transactor)
+	if err != nil {
+		return nil, fmt.Errorf("building the audit recorder: %w", err)
+	}
+	loginThrottle, err := throttle.NewLimiter(transactor, cfg.LoginThrottle)
+	if err != nil {
+		return nil, fmt.Errorf("building the authentication throttle: %w", err)
+	}
+	credentials, err := auth.NewCredentials(accounts, sessions, policy, loginThrottle, auditRecorder)
 	if err != nil {
 		return nil, fmt.Errorf("building the login use case: %w", err)
 	}

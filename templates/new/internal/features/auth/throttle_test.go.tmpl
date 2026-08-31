@@ -1,0 +1,226 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"errors"
+	"testing"
+	"time"
+
+	"{{.ModulePath}}/internal/features/audit"
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/passwords"
+	"{{.ModulePath}}/internal/platform/throttle"
+)
+
+// tightThrottle allows a handful of attempts, so a test can reach the limit
+// without a hundred Argon2 evaluations.
+func tightThrottle(t *testing.T, address, client int) throttle.Policy {
+	t.Helper()
+
+	addressLimit, err := throttle.NewLimit(address, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("NewLimit: %v", err)
+	}
+	clientLimit, err := throttle.NewLimit(client, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("NewLimit: %v", err)
+	}
+	policy, err := throttle.NewPolicy(addressLimit, clientLimit)
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+	return policy
+}
+
+func TestRepeatedFailuresAreThrottled(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentialsWithThrottle(t, h, policy, tightThrottle(t, 3, 100))
+	enrol(t, h, policy, "person@example.test", goodPassword)
+
+	for i := range 3 {
+		if _, err := credentials.Authenticate(h.ctx, "person@example.test", "the wrong password"); !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("attempt %d: error = %v, want ErrInvalidCredentials", i+1, err)
+		}
+	}
+
+	// Past the limit the answer changes, and it is a different error: the
+	// refusal is not a statement about the credentials at all, and a caller
+	// should answer it with a retry hint rather than a rejection.
+	login, err := credentials.Authenticate(h.ctx, "person@example.test", "the wrong password")
+	if !errors.Is(err, ErrThrottled) {
+		t.Fatalf("error = %v, want ErrThrottled", err)
+	}
+	if login.Outcome != OutcomeThrottled {
+		t.Errorf("outcome = %q, want %q", login.Outcome, OutcomeThrottled)
+	}
+
+	// Even the correct password is refused while the window is open. A
+	// throttle that stepped aside for a correct guess would not be one.
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword); !errors.Is(err, ErrThrottled) {
+		t.Fatalf("the correct password was accepted while throttled: %v", err)
+	}
+
+	h.advance(16 * time.Minute)
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword); err != nil {
+		t.Fatalf("the window never opened: %v", err)
+	}
+}
+
+func TestASuccessfulLoginClearsTheAddressCounter(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentialsWithThrottle(t, h, policy, tightThrottle(t, 3, 100))
+	enrol(t, h, policy, "person@example.test", goodPassword)
+
+	// Two failures, then a success: the counter resets, so the next mistype
+	// does not lock somebody out for a mistake they already recovered from.
+	for range 2 {
+		if _, err := credentials.Authenticate(h.ctx, "person@example.test", "the wrong password"); !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("expected a failure")
+		}
+	}
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	for i := range 3 {
+		if _, err := credentials.Authenticate(h.ctx, "person@example.test", "the wrong password"); !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("attempt %d after the reset: error = %v", i+1, err)
+		}
+	}
+}
+
+func TestThrottlingSaysNothingAboutWhetherTheAddressExists(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentialsWithThrottle(t, h, policy, tightThrottle(t, 2, 100))
+
+	// The counter is keyed by a digest of whatever was submitted, so an
+	// address with no account throttles exactly like one with an account.
+	for range 2 {
+		if _, err := credentials.Authenticate(h.ctx, "nobody@example.test", goodPassword); !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("expected the generic failure")
+		}
+	}
+	if _, err := credentials.Authenticate(h.ctx, "nobody@example.test", goodPassword); !errors.Is(err, ErrThrottled) {
+		t.Fatalf("an unknown address was not throttled: %v", err)
+	}
+}
+
+func TestAuthenticationIsAudited(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentialsWithThrottle(t, h, policy, tightThrottle(t, 5, 100))
+	account := enrol(t, h, policy, "person@example.test", goodPassword)
+
+	recorder, err := audit.NewRecorder(h.transactor(t), audit.WithClock(h.clock))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	reader := authorized(t, account.ID, authorization.AuditRead)
+
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", "the wrong password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected a failure")
+	}
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	records, err := recorder.List(reader, audit.Filter{}, audit.Position{}, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("recorded %d events, want a denial and a creation", len(records))
+	}
+
+	// A denial is a separate action, not a failed outcome of the same one, so
+	// a query for "when did this person sign in" does not have to filter out
+	// the attempts that were not them.
+	success, denial := records[0], records[1]
+	if success.Action != ActionSessionCreated || success.Outcome != audit.Succeeded {
+		t.Errorf("success record = %#v", success)
+	}
+	if success.ActorID != account.ID {
+		t.Errorf("the successful record names %q", success.ActorID)
+	}
+	if denial.Action != ActionSessionDenied || denial.Outcome != audit.Failed {
+		t.Errorf("denial record = %#v", denial)
+	}
+	if denial.Detail["reason"] != string(OutcomeWrongPassword) {
+		t.Errorf("the denial does not say why: %v", denial.Detail)
+	}
+
+	// The submitted address is not in the detail: a failed attempt for an
+	// address with no account would otherwise put an arbitrary string in the
+	// log.
+	for _, record := range records {
+		for key, value := range record.Detail {
+			if value == "person@example.test" {
+				t.Errorf("the audit detail carries the submitted address under %q", key)
+			}
+		}
+	}
+}
+
+func TestAThrottledAttemptIsAudited(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentialsWithThrottle(t, h, policy, tightThrottle(t, 1, 100))
+	account := enrol(t, h, policy, "person@example.test", goodPassword)
+
+	recorder, err := audit.NewRecorder(h.transactor(t), audit.WithClock(h.clock))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	reader := authorized(t, account.ID, authorization.AuditRead)
+
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected a failure")
+	}
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", "wrong"); !errors.Is(err, ErrThrottled) {
+		t.Fatalf("expected a throttled refusal")
+	}
+
+	records, err := recorder.List(reader, audit.Filter{Action: ActionSessionDenied}, audit.Position{}, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("recorded %d denials, want the wrong password and the throttled attempt", len(records))
+	}
+	if records[0].Detail["reason"] != string(OutcomeThrottled) {
+		t.Fatalf("the newest denial = %v, want the throttled one", records[0].Detail)
+	}
+	if records[0].Detail["scope"] != throttle.ScopeLoginAddress {
+		t.Errorf("the throttled denial does not name the bucket: %v", records[0].Detail)
+	}
+}
+
+func TestPasswordChangesAreAudited(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	credentials := testCredentialsWithThrottle(t, h, policy, tightThrottle(t, 10, 100))
+	account := enrol(t, h, policy, "person@example.test", goodPassword)
+	compromised, err := passwords.Compromised()
+	if err != nil {
+		t.Fatalf("Compromised: %v", err)
+	}
+
+	if _, err := credentials.ChangePassword(h.ctx, account.ID, goodPassword, "a different long passphrase", compromised, ""); err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+
+	recorder, err := audit.NewRecorder(h.transactor(t), audit.WithClock(h.clock))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	records, err := recorder.List(authorized(t, account.ID, authorization.AuditRead), audit.Filter{Action: ActionPasswordChanged}, audit.Position{}, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(records) != 1 || records[0].ActorID != account.ID {
+		t.Fatalf("password change records = %#v", records)
+	}
+}

@@ -1,0 +1,448 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package throttle
+
+import (
+	"context"
+	"errors"
+	"net/netip"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+)
+
+const throttleTestTimeout = 30 * time.Second
+
+var fixedNow = time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+
+type harness struct {
+	ctx     context.Context
+	pool    *pgxpool.Pool
+	limiter *Limiter
+	advance func(time.Duration)
+}
+
+func newHarness(t *testing.T, policy Policy) *harness {
+	t.Helper()
+
+	testDatabase := dbtest.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), throttleTestTimeout)
+	t.Cleanup(cancel)
+
+	settings, err := database.NewSettings(6, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	databaseURL := testDatabase.URL().Reveal()
+	databasePassword := testDatabase.Password().Reveal()
+	pool, err := database.Open(ctx, databaseURL, databasePassword, settings, database.OpenOptions{})
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	migrator, err := database.OpenMigrator(ctx, databaseURL, databasePassword, 5*time.Second, migrationdb.Migrations())
+	if err != nil {
+		t.Fatalf("OpenMigrator: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := migrator.Close(); err != nil {
+			t.Errorf("close migrator: %v", err)
+		}
+	})
+	if _, err := migrator.Up(ctx); err != nil {
+		t.Fatalf("migrate test database: %v", err)
+	}
+
+	transactor, err := database.NewTransactor(pool)
+	if err != nil {
+		t.Fatalf("NewTransactor: %v", err)
+	}
+
+	var (
+		mu      sync.Mutex
+		current = fixedNow
+	)
+	h := &harness{ctx: ctx, pool: pool}
+	h.advance = func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		current = current.Add(d)
+	}
+	limiter, err := NewLimiter(transactor, policy, WithClock(func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}))
+	if err != nil {
+		t.Fatalf("NewLimiter: %v", err)
+	}
+	h.limiter = limiter
+	return h
+}
+
+func testPolicy(t *testing.T, addressAttempts, clientAttempts int) Policy {
+	t.Helper()
+
+	address, err := NewLimit(addressAttempts, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("NewLimit: %v", err)
+	}
+	client, err := NewLimit(clientAttempts, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("NewLimit: %v", err)
+	}
+	policy, err := NewPolicy(address, client)
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+	return policy
+}
+
+func TestNewLimitBounds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		attempts int
+		window   time.Duration
+	}{
+		{name: "no attempts", attempts: 0, window: time.Minute},
+		{name: "negative attempts", attempts: -1, window: time.Minute},
+		{name: "attempts above the ceiling", attempts: MaxAttempts + 1, window: time.Minute},
+		{name: "window below the floor", attempts: 5, window: MinWindow - time.Millisecond},
+		{name: "window above the ceiling", attempts: 5, window: MaxWindow + time.Hour},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := NewLimit(tc.attempts, tc.window); !errors.Is(err, ErrLimit) {
+				t.Fatalf("error = %v, want ErrLimit", err)
+			}
+		})
+	}
+
+	limit, err := NewLimit(10, time.Minute)
+	if err != nil {
+		t.Fatalf("NewLimit: %v", err)
+	}
+	if limit.Attempts() != 10 || limit.Window() != time.Minute || limit.IsZero() {
+		t.Fatalf("limit = %#v", limit)
+	}
+	if _, err := NewPolicy(Limit{}, limit); !errors.Is(err, ErrLimit) {
+		t.Errorf("NewPolicy accepted an unconstructed limit: %v", err)
+	}
+	if _, err := NewLimiter(nil, DefaultPolicy()); err == nil {
+		t.Error("NewLimiter accepted a nil transactor")
+	}
+}
+
+func TestDefaultPolicyIsLooserForClientsThanAddresses(t *testing.T) {
+	t.Parallel()
+
+	// Several people behind one office address are one client, and a limit
+	// tight enough for a single account would lock out a building.
+	policy := DefaultPolicy()
+	if policy.Client().Attempts() <= policy.Address().Attempts() {
+		t.Fatalf("client limit %d is not looser than the address limit %d",
+			policy.Client().Attempts(), policy.Address().Attempts())
+	}
+}
+
+func TestAllowRefusesPastTheAddressLimit(t *testing.T) {
+	h := newHarness(t, testPolicy(t, 3, 100))
+	client := netip.MustParseAddr("203.0.113.9")
+
+	for i := range 3 {
+		decision, err := h.limiter.Allow(h.ctx, "person@example.test", client)
+		if err != nil {
+			t.Fatalf("Allow %d: %v", i, err)
+		}
+		if !decision.Allowed {
+			t.Fatalf("attempt %d was refused", i+1)
+		}
+	}
+
+	decision, err := h.limiter.Allow(h.ctx, "person@example.test", client)
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatal("the attempt past the limit was allowed")
+	}
+	if decision.Scope != ScopeLoginAddress {
+		t.Errorf("Scope = %q, want the address bucket", decision.Scope)
+	}
+	if decision.RetryAfter <= 0 || decision.RetryAfter > 15*time.Minute {
+		t.Errorf("RetryAfter = %s", decision.RetryAfter)
+	}
+
+	// A refused attempt still costs a slot: a limiter that only counted what
+	// it allowed would let an attacker sit at the boundary forever.
+	var attempts int
+	if err := h.pool.QueryRow(h.ctx, `SELECT max(attempts) FROM throttle_counters WHERE scope = $1`, ScopeLoginAddress).Scan(&attempts); err != nil {
+		t.Fatalf("read the counter: %v", err)
+	}
+	if attempts != 4 {
+		t.Errorf("counter = %d, want the refused attempt counted", attempts)
+	}
+
+	// Another address is unaffected.
+	other, err := h.limiter.Allow(h.ctx, "someone@example.test", client)
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if !other.Allowed {
+		t.Error("one address's limit refused another")
+	}
+}
+
+func TestAllowRefusesPastTheClientLimit(t *testing.T) {
+	h := newHarness(t, testPolicy(t, 100, 3))
+	client := netip.MustParseAddr("203.0.113.9")
+
+	// Each attempt uses a different address, so only the client bucket can
+	// refuse. This is the run-across-many-accounts case.
+	addresses := []string{"a@example.test", "b@example.test", "c@example.test"}
+	for _, address := range addresses {
+		decision, err := h.limiter.Allow(h.ctx, address, client)
+		if err != nil {
+			t.Fatalf("Allow: %v", err)
+		}
+		if !decision.Allowed {
+			t.Fatalf("%s was refused", address)
+		}
+	}
+	decision, err := h.limiter.Allow(h.ctx, "d@example.test", client)
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if decision.Allowed || decision.Scope != ScopeLoginClient {
+		t.Fatalf("decision = %#v, want a client refusal", decision)
+	}
+
+	// A different client is unaffected.
+	elsewhere, err := h.limiter.Allow(h.ctx, "d@example.test", netip.MustParseAddr("198.51.100.5"))
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if !elsewhere.Allowed {
+		t.Error("one client's limit refused another")
+	}
+}
+
+func TestExhaustingOneBucketStillCountsTheOther(t *testing.T) {
+	h := newHarness(t, testPolicy(t, 2, 3))
+	client := netip.MustParseAddr("203.0.113.9")
+
+	// Four attempts at one address: the address bucket refuses from the
+	// third, and the client bucket must still be counting, or an attacker
+	// could avoid it by exhausting the address limit first.
+	for range 4 {
+		if _, err := h.limiter.Allow(h.ctx, "person@example.test", client); err != nil {
+			t.Fatalf("Allow: %v", err)
+		}
+	}
+	decision, err := h.limiter.Allow(h.ctx, "someone-else@example.test", client)
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatal("the client bucket stopped counting once the address bucket refused")
+	}
+	if decision.Scope != ScopeLoginClient {
+		t.Errorf("Scope = %q, want the client bucket", decision.Scope)
+	}
+}
+
+func TestTheWindowEventuallyOpens(t *testing.T) {
+	h := newHarness(t, testPolicy(t, 2, 100))
+	client := netip.MustParseAddr("203.0.113.9")
+
+	for range 3 {
+		if _, err := h.limiter.Allow(h.ctx, "person@example.test", client); err != nil {
+			t.Fatalf("Allow: %v", err)
+		}
+	}
+	refused, err := h.limiter.Allow(h.ctx, "person@example.test", client)
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if refused.Allowed {
+		t.Fatal("expected a refusal")
+	}
+
+	h.advance(16 * time.Minute)
+	allowed, err := h.limiter.Allow(h.ctx, "person@example.test", client)
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if !allowed.Allowed {
+		t.Fatal("the window never opened")
+	}
+}
+
+func TestResetClearsTheAddressButNotTheClient(t *testing.T) {
+	h := newHarness(t, testPolicy(t, 2, 4))
+	client := netip.MustParseAddr("203.0.113.9")
+
+	for range 2 {
+		if _, err := h.limiter.Allow(h.ctx, "person@example.test", client); err != nil {
+			t.Fatalf("Allow: %v", err)
+		}
+	}
+	if err := h.limiter.Reset(h.ctx, "PERSON@Example.Test "); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	// The address is clear again, folded the same way the counter was.
+	decision, err := h.limiter.Allow(h.ctx, "person@example.test", client)
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatal("the address counter was not cleared")
+	}
+
+	// The client counter survives: one success from a machine working
+	// through a list must not buy it another sixty guesses.
+	var clientAttempts int
+	if err := h.pool.QueryRow(h.ctx, `SELECT max(attempts) FROM throttle_counters WHERE scope = $1`, ScopeLoginClient).Scan(&clientAttempts); err != nil {
+		t.Fatalf("read the client counter: %v", err)
+	}
+	if clientAttempts != 3 {
+		t.Errorf("client counter = %d, want it untouched by the reset", clientAttempts)
+	}
+	if err := h.limiter.Reset(h.ctx, "  "); !errors.Is(err, ErrSubject) {
+		t.Errorf("Reset with no subject: error = %v", err)
+	}
+}
+
+func TestACallerWithNoClientAddressIsStillCountedByAddress(t *testing.T) {
+	h := newHarness(t, testPolicy(t, 2, 2))
+
+	// A command-line login has no request context and therefore no client
+	// address. Refusing outright would make an operator's own tooling
+	// unusable; counting it under a shared placeholder would let one such
+	// caller lock out every other.
+	for range 2 {
+		if _, err := h.limiter.Allow(h.ctx, "person@example.test", netip.Addr{}); err != nil {
+			t.Fatalf("Allow: %v", err)
+		}
+	}
+	decision, err := h.limiter.Allow(h.ctx, "person@example.test", netip.Addr{})
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if decision.Allowed || decision.Scope != ScopeLoginAddress {
+		t.Fatalf("decision = %#v, want an address refusal", decision)
+	}
+
+	var clientRows int
+	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM throttle_counters WHERE scope = $1`, ScopeLoginClient).Scan(&clientRows); err != nil {
+		t.Fatalf("count client counters: %v", err)
+	}
+	if clientRows != 0 {
+		t.Errorf("%d client counters exist for a caller with no address", clientRows)
+	}
+
+	if _, err := h.limiter.Allow(h.ctx, "  ", netip.Addr{}); !errors.Is(err, ErrSubject) {
+		t.Errorf("Allow with no subject: error = %v", err)
+	}
+}
+
+func TestCountersDoNotStoreTheAddress(t *testing.T) {
+	h := newHarness(t, testPolicy(t, 5, 5))
+	const address = "person@example.test"
+
+	if _, err := h.limiter.Allow(h.ctx, address, netip.MustParseAddr("203.0.113.9")); err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+
+	// A throttle table holding addresses would be a list of everybody anybody
+	// has tried to sign in as, which is a directory an attacker would read.
+	rows, err := h.pool.Query(h.ctx, `SELECT subject FROM throttle_counters`)
+	if err != nil {
+		t.Fatalf("read subjects: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var subject []byte
+		if err := rows.Scan(&subject); err != nil {
+			t.Fatalf("scan subject: %v", err)
+		}
+		if len(subject) != 32 {
+			t.Errorf("subject is %d bytes, want a digest", len(subject))
+		}
+		if string(subject) == address {
+			t.Error("the address is stored in the clear")
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read subjects: %v", err)
+	}
+}
+
+func TestConcurrentAttemptsAreAllCounted(t *testing.T) {
+	h := newHarness(t, testPolicy(t, 100, 100))
+	client := netip.MustParseAddr("203.0.113.9")
+
+	const attempts = 10
+	var wg sync.WaitGroup
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := h.limiter.Allow(h.ctx, "person@example.test", client); err != nil {
+				t.Errorf("Allow: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// A lost update here would be a free guess for an attacker running
+	// requests in parallel, which is how they would run them.
+	var counted int
+	if err := h.pool.QueryRow(h.ctx, `SELECT max(attempts) FROM throttle_counters WHERE scope = $1`, ScopeLoginAddress).Scan(&counted); err != nil {
+		t.Fatalf("read the counter: %v", err)
+	}
+	if counted != attempts {
+		t.Fatalf("counted %d of %d concurrent attempts", counted, attempts)
+	}
+}
+
+func TestSweepRemovesOnlyPassedWindows(t *testing.T) {
+	h := newHarness(t, testPolicy(t, 5, 5))
+	client := netip.MustParseAddr("203.0.113.9")
+
+	if _, err := h.limiter.Allow(h.ctx, "old@example.test", client); err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	h.advance(time.Hour)
+	if _, err := h.limiter.Allow(h.ctx, "new@example.test", client); err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+
+	removed, err := h.limiter.Sweep(h.ctx, 100)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if removed == 0 {
+		t.Fatal("the sweep removed nothing")
+	}
+	var remaining int
+	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM throttle_counters`).Scan(&remaining); err != nil {
+		t.Fatalf("count counters: %v", err)
+	}
+	if remaining == 0 {
+		t.Fatal("the sweep removed a window that can still refuse")
+	}
+	if _, err := h.limiter.Sweep(h.ctx, 0); !errors.Is(err, ErrSweepLimit) {
+		t.Errorf("Sweep(0): error = %v", err)
+	}
+}
