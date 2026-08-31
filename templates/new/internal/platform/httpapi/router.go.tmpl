@@ -85,19 +85,24 @@ type MiddlewareSlots struct {
 //     Policy, outermost so that every response carries them, including one
 //     produced by a panic or by chi's own 404.
 //
-//  2. logging.Middleware — assigns the request and correlation IDs and
+//  2. forwarded.Policy.Middleware — resolves the client address, scheme, and
+//     host once, so a log line, a recovered panic, and every handler agree
+//     about who is asking.
+//
+//  3. logging.Middleware — assigns the request and correlation IDs and
 //     stores a request-scoped logger in the context.
 //
-//  3. recoverer — turns a panic into a request-scoped logged 500 instead of
+//  4. recoverer — turns a panic into a request-scoped logged 500 instead of
 //     a dropped connection.
 //
-//  4. observability.HTTPMetrics.Middleware — counts and times the request,
+//  5. observability.HTTPMetrics.Middleware — counts and times the request,
 //     labeled by chi's resolved route template rather than the raw path.
 //
-//  5. the matching application middleware slot.
+//  6. the matching application middleware slot.
 //
-//  6. route dispatch.
+//  7. route dispatch.
 //
+// The edge view is outside logging because logging is one of its consumers.
 // Recovery is inside logging so it can use the request-scoped logger. Metrics
 // is inside recovery so a panic is observed before it deliberately re-panics.
 // Application middleware is inside the entire core. The document and API
@@ -229,6 +234,10 @@ func newCoreHandler(d Deps, policy *secure.Policy, application []Middleware, rou
 	handler = logging.Middleware(d.Logger, logging.MiddlewareOptions{
 		TrustInbound: d.Config.TrustProxyHeaders,
 	})(handler)
+	// The edge view is resolved outside logging so a log line, a recovered
+	// panic, and every handler agree about who is asking. Resolving it in
+	// two places would eventually mean two answers.
+	handler = d.Config.TrustedProxies.Middleware(handler)
 	return secure.Middleware(policy)(handler)
 }
 

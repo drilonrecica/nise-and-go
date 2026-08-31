@@ -20,6 +20,8 @@
 //   - runtime/pagination    authenticated versioned cursor tokens, key
 //     rotation, cursor request parsing, and the separate offset reporting
 //     contract
+//   - runtime/forwarded     trusted-proxy policy, and the real client address,
+//     scheme, and host behind it
 //   - runtime/password      Argon2id hashing, versioned parameter sets,
 //     rehash detection, and parameter benchmarking
 //   - runtime/session       opaque session tokens, their stored digests, the

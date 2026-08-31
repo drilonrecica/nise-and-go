@@ -51,6 +51,12 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   but never the credential. Adds the `SESSION_IDLE_TIMEOUT`,
   `SESSION_ABSOLUTE_TIMEOUT`, `SESSION_TOUCH_INTERVAL`, `SESSION_COOKIE_NAME`,
   and `SESSION_COOKIE_INSECURE` settings.
+- Add the public `runtime/forwarded` package and the `TRUSTED_PROXY_COUNT` and
+  `TRUSTED_PROXY_NETWORKS` settings. A declared hop count is read from the right
+  of `X-Forwarded-For`, so a client-forged prefix is never read; an optional
+  peer-network allowlist gates who may be a proxy; both default to trusting
+  nothing, and `TRUST_PROXY_HEADERS` without a declared proxy now fails startup
+  (ADR 0019).
 
 ### Fixed
 

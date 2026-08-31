@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-08-31
 - **Amends:** [ADR 0011](0011-runtime-public-api.md)
+- **Amended by:** [ADR 0019](0019-trusted-proxy-configuration.md), which admits `runtime/forwarded` under the same criterion
 
 ## Context
 

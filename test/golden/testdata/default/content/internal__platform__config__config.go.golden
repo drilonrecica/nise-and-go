@@ -17,6 +17,7 @@ import (
 	"time"
 
 	rtconfig "github.com/drilonrecica/nise-and-go/runtime/config"
+	"github.com/drilonrecica/nise-and-go/runtime/forwarded"
 	"github.com/drilonrecica/nise-and-go/runtime/lifecycle"
 	"github.com/drilonrecica/nise-and-go/runtime/pagination"
 	"github.com/drilonrecica/nise-and-go/runtime/secure"
@@ -46,8 +47,14 @@ type Config struct {
 	LogFormat string
 	// TrustProxyHeaders allows inbound X-Request-Id and X-Correlation-Id
 	// headers to be adopted instead of freshly generated. Enable it only
-	// behind an ingress that sanitizes those headers.
+	// behind an ingress that sanitizes those headers, and only together with
+	// TrustedProxies: trusting a proxy's identifiers while declaring that
+	// there is no proxy is refused.
 	TrustProxyHeaders bool
+	// TrustedProxies decides what a request's real client address, scheme,
+	// and host are. Its zero value reads no forwarded header at all, which
+	// is correct for a service exposed directly.
+	TrustedProxies forwarded.Policy
 	// AllowPublicBind is the explicit opt-in that lets production bind a
 	// public address.
 	AllowPublicBind bool
@@ -126,6 +133,8 @@ func Load() (Config, []string, error) {
 	sessionAbsolute := l.Duration("SESSION_ABSOLUTE_TIMEOUT", rtconfig.Default("720h"))
 	sessionTouch := l.Duration("SESSION_TOUCH_INTERVAL", rtconfig.Default("5m"))
 	sessionCookieName := l.String("SESSION_COOKIE_NAME", rtconfig.Default(""))
+	trustedProxyCount := l.Int("TRUSTED_PROXY_COUNT", rtconfig.Default("0"))
+	trustedProxyNetworks := l.String("TRUSTED_PROXY_NETWORKS", rtconfig.Default(""))
 	// The two cursor key variables are read into locals rather than kept as
 	// Config fields: once the ring is built, holding the raw material would
 	// only add a second place for it to escape from.
@@ -191,6 +200,22 @@ func Load() (Config, []string, error) {
 	}
 	if cfg.CursorTTL <= 0 || cfg.CursorTTL > maxCursorTTL {
 		return Config{}, warnings, fmt.Errorf("CURSOR_TTL: must be greater than zero and at most %s, found %s", maxCursorTTL, cfg.CursorTTL)
+	}
+
+	proxyNetworks, err := forwarded.ParseNetworks(trustedProxyNetworks)
+	if err != nil {
+		return Config{}, warnings, fmt.Errorf("TRUSTED_PROXY_NETWORKS: %w", err)
+	}
+	trustedProxies, err := forwarded.NewPolicy(trustedProxyCount, proxyNetworks)
+	if err != nil {
+		return Config{}, warnings, fmt.Errorf("TRUSTED_PROXY_COUNT/TRUSTED_PROXY_NETWORKS: %w", err)
+	}
+	cfg.TrustedProxies = trustedProxies
+	if cfg.TrustProxyHeaders && !trustedProxies.TrustsForwardedHeaders() {
+		return Config{}, warnings, errors.New("TRUST_PROXY_HEADERS: set while TRUSTED_PROXY_COUNT is 0; declare the proxy chain or stop trusting its identifiers")
+	}
+	if trustedProxies.TrustsForwardedHeaders() && len(proxyNetworks) == 0 {
+		warnings = append(warnings, "TRUSTED_PROXY_NETWORKS is unset: forwarded headers are honored from any peer, so this is only safe when the application's port cannot be reached except through the proxy")
 	}
 
 	sessionLifetime, err := session.NewLifetime(

@@ -198,6 +198,38 @@ restart and every replica would then reject the others' cursors. There is no
 built-in default key. `CURSOR_RETIRED_KEYS` without a signing key is an error:
 a retired key verifies cursors but cannot issue them.
 
+## Generated trusted-proxy settings
+
+Behind a reverse proxy the connection's own peer is the proxy, not the client.
+See [ADR 0019](adr/0019-trusted-proxy-configuration.md) for why the chain is
+declared rather than guessed.
+
+| Variable | Default | Constraint |
+|---|---:|---|
+| `TRUSTED_PROXY_COUNT` | `0` | 0 through 8 |
+| `TRUSTED_PROXY_NETWORKS` | *(none)* | comma-separated CIDR blocks or bare addresses; requires a non-zero count |
+
+`TRUSTED_PROXY_COUNT=0` reads no `X-Forwarded-*` header at all, which is correct
+for a service exposed directly. With a count of N, the client address is the
+entry **N from the right** of `X-Forwarded-For`: each proxy appends the address
+it received from, so counting from the right skips exactly the entries this
+deployment wrote and leaves anything a client forged unread to their left.
+
+`TRUSTED_PROXY_NETWORKS` gates *who* may be a proxy. When it is empty, forwarded
+headers are honored from any peer and startup warns; that is only safe when the
+application's port cannot be reached except through the proxy. A prefix with
+host bits set is refused rather than masked, because `10.1.2.3/8` is almost
+always a typo for `10.0.0.0/8` and silently accepting it would hide the typo.
+
+A chain shorter than the declared count, or a selected entry that does not
+parse, falls back to the connection's own peer and marks the request untrusted:
+that is a misconfiguration, and guessing from the entries that happen to be
+present would be guessing at the worst moment.
+
+`TRUST_PROXY_HEADERS=true` with `TRUSTED_PROXY_COUNT=0` **fails startup**.
+Trusting a proxy's identifiers while declaring there is no proxy is the kind of
+half-configuration that survives review.
+
 ## Generated session settings
 
 See [sessions](sessions.md) for the cookie and lifecycle contracts.
