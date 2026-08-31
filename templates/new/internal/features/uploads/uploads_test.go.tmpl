@@ -1,0 +1,528 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package uploads
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+	"{{.ModulePath}}/internal/platform/storage"
+)
+
+const uploadsTestTimeout = 30 * time.Second
+
+// fixedNow is the instant the deterministic lifetime tests read.
+var fixedNow = time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+// pngHeader is a real PNG signature. The type of a stored object is
+// determined from its leading bytes, so a test that wants an accepted upload
+// has to produce bytes that actually are one — which is the point.
+var pngHeader = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+
+func pngBytes(size int) []byte {
+	content := make([]byte, size)
+	copy(content, pngHeader)
+	return content
+}
+
+type harness struct {
+	ctx     context.Context
+	pool    *pgxpool.Pool
+	store   *storage.Local
+	uploads *Uploads
+	owner   string
+	now     func() time.Time
+	advance func(time.Duration)
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+
+	testDatabase := dbtest.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), uploadsTestTimeout)
+	t.Cleanup(cancel)
+
+	settings, err := database.NewSettings(6, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	databaseURL := testDatabase.URL().Reveal()
+	databasePassword := testDatabase.Password().Reveal()
+	pool, err := database.Open(ctx, databaseURL, databasePassword, settings, database.OpenOptions{})
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	migrator, err := database.OpenMigrator(ctx, databaseURL, databasePassword, 5*time.Second, migrationdb.Migrations())
+	if err != nil {
+		t.Fatalf("OpenMigrator: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := migrator.Close(); err != nil {
+			t.Errorf("close migrator: %v", err)
+		}
+	})
+	if _, err := migrator.Up(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	transactor, err := database.NewTransactor(pool)
+	if err != nil {
+		t.Fatalf("NewTransactor: %v", err)
+	}
+	objects, err := storage.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	t.Cleanup(func() { _ = objects.Close() })
+
+	current := fixedNow
+	clock := func() time.Time { return current }
+	uploads, err := New(transactor, objects, WithClock(clock))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	h := &harness{
+		ctx:     ctx,
+		pool:    pool,
+		store:   objects,
+		uploads: uploads,
+		now:     clock,
+		advance: func(d time.Duration) { current = current.Add(d) },
+	}
+	h.owner = h.createUser(t, "owner@example.com")
+	return h
+}
+
+func (h *harness) createUser(t *testing.T, email string) string {
+	t.Helper()
+
+	var id string
+	err := h.pool.QueryRow(h.ctx,
+		`INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id::text`,
+		email, strings.Repeat("x", 32)).Scan(&id)
+	if err != nil {
+		t.Fatalf("creating a user: %v", err)
+	}
+	return id
+}
+
+// stateOf reads the row directly, so a test can prove what was recorded
+// rather than what a method reported.
+func (h *harness) stateOf(t *testing.T, id string) string {
+	t.Helper()
+
+	var state string
+	if err := h.pool.QueryRow(h.ctx, `SELECT state::text FROM uploads WHERE id = $1`, id).Scan(&state); err != nil {
+		t.Fatalf("reading the upload state: %v", err)
+	}
+	return state
+}
+
+func (h *harness) objectExists(t *testing.T, key string) bool {
+	t.Helper()
+
+	_, err := h.store.Stat(h.ctx, key)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, storage.ErrNotFound) {
+		return false
+	}
+	t.Fatalf("stat %s: %v", key, err)
+	return false
+}
+
+// stageAndUpload runs the happy first two steps and returns the staged row.
+func (h *harness) stageAndUpload(t *testing.T, content []byte, declaredType string, declaredSize int64) Upload {
+	t.Helper()
+
+	staged, err := h.uploads.Stage(h.ctx, StageRequest{
+		OwnerUserID: h.owner,
+		Filename:    "holiday photo.png",
+		ContentType: declaredType,
+		Size:        declaredSize,
+	})
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if err := h.uploads.Write(h.ctx, staged.Upload.ID, h.owner, bytes.NewReader(content)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return staged.Upload
+}
+
+func TestTheHappyPathLeavesQuarantine(t *testing.T) {
+	h := newHarness(t)
+	content := pngBytes(1024)
+	staged := h.stageAndUpload(t, content, "image/png", int64(len(content)))
+
+	if !strings.HasPrefix(staged.StorageKey, QuarantinePrefix+"/") {
+		t.Fatalf("a staged object is not in quarantine: %s", staged.StorageKey)
+	}
+	if h.stateOf(t, staged.ID) != "staged" {
+		t.Fatalf("state after Write = %q, want staged", h.stateOf(t, staged.ID))
+	}
+
+	final, err := h.uploads.Finalize(h.ctx, staged.ID, h.owner)
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if !final.Available() {
+		t.Fatalf("state = %q, want available", final.State)
+	}
+	if !strings.HasPrefix(final.StorageKey, ObjectPrefix+"/") {
+		t.Errorf("a finalized object is still under the quarantine prefix: %s", final.StorageKey)
+	}
+	if h.objectExists(t, staged.StorageKey) {
+		t.Error("the object is still readable at its quarantine key; a leaked URL would still work")
+	}
+	if !h.objectExists(t, final.StorageKey) {
+		t.Error("the object is not at its final key")
+	}
+	if final.Size != int64(len(content)) {
+		t.Errorf("Size = %d, want %d", final.Size, len(content))
+	}
+	if len(final.Checksum) != 32 {
+		t.Errorf("Checksum is %d bytes, want a SHA-256", len(final.Checksum))
+	}
+	if final.ContentType != "image/png" {
+		t.Errorf("ContentType = %q, want the sniffed type", final.ContentType)
+	}
+	// The filename is sanitized and is not the key.
+	if final.Filename != "holiday-photo.png" {
+		t.Errorf("Filename = %q, want it sanitized", final.Filename)
+	}
+}
+
+// TestTheDeclaredTypeIsAClaimNotAFact is the check this whole package exists
+// for. A client that wants to store a script will call it an image.
+func TestTheDeclaredTypeIsAClaimNotAFact(t *testing.T) {
+	h := newHarness(t)
+
+	script := []byte("<html><script>alert(1)</script></html>")
+	staged := h.stageAndUpload(t, script, "image/png", int64(len(script)))
+
+	_, err := h.uploads.Finalize(h.ctx, staged.ID, h.owner)
+	if !errors.Is(err, ErrRejected) {
+		t.Fatalf("Finalize = %v, want ErrRejected", err)
+	}
+	if h.stateOf(t, staged.ID) != "rejected" {
+		t.Errorf("state = %q, want rejected", h.stateOf(t, staged.ID))
+	}
+	if h.objectExists(t, staged.StorageKey) {
+		t.Error("the refused object was left in quarantine")
+	}
+}
+
+// TestAnOversizedUploadIsRefusedAfterTheFact covers the limit that a
+// presigned PUT cannot enforce by itself: the capability authorizes a key,
+// and the client chooses the bytes.
+func TestAnOversizedUploadIsRefusedAfterTheFact(t *testing.T) {
+	h := newHarness(t)
+
+	// Declared small, stored larger.
+	content := pngBytes(4096)
+	staged, err := h.uploads.Stage(h.ctx, StageRequest{
+		OwnerUserID: h.owner, Filename: "a.png", ContentType: "image/png", Size: 64,
+	})
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	// Write through the store directly, bypassing the bounded reader — this
+	// is what a presigned PUT lets a client do.
+	if _, err := h.store.Put(h.ctx, staged.Upload.StorageKey, bytes.NewReader(content), storage.PutOptions{}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	_, err = h.uploads.Finalize(h.ctx, staged.Upload.ID, h.owner)
+	if !errors.Is(err, ErrRejected) {
+		t.Fatalf("Finalize = %v, want ErrRejected", err)
+	}
+	if !strings.Contains(err.Error(), "declared") {
+		t.Errorf("the refusal does not say what was wrong: %v", err)
+	}
+	if h.objectExists(t, staged.Upload.StorageKey) {
+		t.Error("the oversized object was left in quarantine")
+	}
+}
+
+// TestWriteRefusesMoreThanWasDeclared covers the same limit on the path where
+// this application does hold the bytes.
+func TestWriteRefusesMoreThanWasDeclared(t *testing.T) {
+	h := newHarness(t)
+
+	staged, err := h.uploads.Stage(h.ctx, StageRequest{
+		OwnerUserID: h.owner, Filename: "a.png", ContentType: "image/png", Size: 64,
+	})
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if err := h.uploads.Write(h.ctx, staged.Upload.ID, h.owner, bytes.NewReader(pngBytes(4096))); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	// The bounded reader stopped at declared+1, so the stored object is
+	// over the declared size and finalization refuses it.
+	object, err := h.store.Stat(h.ctx, staged.Upload.StorageKey)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if object.Size > 65 {
+		t.Errorf("Write stored %d bytes for a 64-byte declaration; the reader was not bounded", object.Size)
+	}
+	if _, err := h.uploads.Finalize(h.ctx, staged.Upload.ID, h.owner); !errors.Is(err, ErrRejected) {
+		t.Errorf("Finalize = %v, want ErrRejected", err)
+	}
+}
+
+// TestAnUploadCannotBeFinalizedByAnotherUser is the ownership boundary. The
+// key is unguessable, but unguessable is not authorized: an identifier that
+// leaked into a log or a referrer would otherwise be usable by whoever read
+// it.
+func TestAnUploadCannotBeFinalizedByAnotherUser(t *testing.T) {
+	h := newHarness(t)
+	content := pngBytes(512)
+	staged := h.stageAndUpload(t, content, "image/png", int64(len(content)))
+	other := h.createUser(t, "other@example.com")
+
+	if _, err := h.uploads.Finalize(h.ctx, staged.ID, other); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("Finalize by another user = %v, want a refusal", err)
+	}
+	if h.stateOf(t, staged.ID) != "staged" {
+		t.Errorf("state = %q; a refused finalization changed the row", h.stateOf(t, staged.ID))
+	}
+	if _, err := h.uploads.Get(h.ctx, staged.ID, other); !errors.Is(err, ErrNotOwner) {
+		t.Errorf("Get by another user = %v, want a refusal", err)
+	}
+	if err := h.uploads.Write(h.ctx, staged.ID, other, bytes.NewReader(content)); !errors.Is(err, ErrNotOwner) {
+		t.Errorf("Write by another user = %v, want a refusal", err)
+	}
+}
+
+// TestARefusalIsIndistinguishableFromAbsence keeps an identifier from being
+// an oracle for whether an upload exists.
+func TestARefusalIsIndistinguishableFromAbsence(t *testing.T) {
+	h := newHarness(t)
+	content := pngBytes(512)
+	staged := h.stageAndUpload(t, content, "image/png", int64(len(content)))
+	other := h.createUser(t, "other2@example.com")
+
+	_, existsButNotYours := h.uploads.Get(h.ctx, staged.ID, other)
+	_, doesNotExist := h.uploads.Get(h.ctx, "00000000-0000-0000-0000-000000000000", other)
+	if existsButNotYours == nil || doesNotExist == nil {
+		t.Fatal("one of the two lookups succeeded")
+	}
+	if existsButNotYours.Error() != doesNotExist.Error() {
+		t.Errorf("the two refusals differ, so an identifier says whether an upload exists:\n%v\n%v",
+			existsButNotYours, doesNotExist)
+	}
+}
+
+// TestFinalizingTwiceIsRefused covers the second call, which would otherwise
+// re-run the checks against a key the object has already left.
+func TestFinalizingTwiceIsRefused(t *testing.T) {
+	h := newHarness(t)
+	content := pngBytes(512)
+	staged := h.stageAndUpload(t, content, "image/png", int64(len(content)))
+
+	if _, err := h.uploads.Finalize(h.ctx, staged.ID, h.owner); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if _, err := h.uploads.Finalize(h.ctx, staged.ID, h.owner); !errors.Is(err, ErrNotStaged) {
+		t.Fatalf("the second Finalize = %v, want ErrNotStaged", err)
+	}
+}
+
+// TestAnUploadThatNeverArrivedIsRefused covers the row whose object was never
+// written: the capability was issued and never used.
+func TestAnUploadThatNeverArrivedIsRefused(t *testing.T) {
+	h := newHarness(t)
+
+	staged, err := h.uploads.Stage(h.ctx, StageRequest{
+		OwnerUserID: h.owner, Filename: "a.png", ContentType: "image/png", Size: 128,
+	})
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if _, err := h.uploads.Finalize(h.ctx, staged.Upload.ID, h.owner); !errors.Is(err, ErrRejected) {
+		t.Fatalf("Finalize = %v, want ErrRejected", err)
+	}
+	if h.stateOf(t, staged.Upload.ID) != "rejected" {
+		t.Errorf("state = %q, want rejected", h.stateOf(t, staged.Upload.ID))
+	}
+}
+
+// TestAnExpiredStagingWindowIsRefusedAndSwept covers the deadline from both
+// directions: finalizing late is refused, and a row nobody finalized at all
+// is cleaned up along with its object.
+func TestAnExpiredStagingWindowIsRefusedAndSwept(t *testing.T) {
+	h := newHarness(t)
+	content := pngBytes(512)
+	staged := h.stageAndUpload(t, content, "image/png", int64(len(content)))
+
+	h.advance(StagingLifetime + time.Minute)
+
+	if _, err := h.uploads.Finalize(h.ctx, staged.ID, h.owner); !errors.Is(err, ErrRejected) {
+		t.Fatalf("a late Finalize = %v, want ErrRejected", err)
+	}
+
+	// A second staged upload, left alone, is swept.
+	other := h.stageAndUpload(t, content, "image/png", int64(len(content)))
+	h.advance(StagingLifetime + time.Minute)
+
+	swept, err := h.uploads.Sweep(h.ctx, 10)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if swept != 1 {
+		t.Fatalf("Sweep expired %d uploads, want 1", swept)
+	}
+	if h.stateOf(t, other.ID) != "expired" {
+		t.Errorf("state = %q, want expired", h.stateOf(t, other.ID))
+	}
+	if h.objectExists(t, other.StorageKey) {
+		t.Error("the swept object was left in quarantine")
+	}
+}
+
+// TestSweepLeavesAvailableUploadsAlone is the negative half of the sweep: a
+// finalized upload past what would have been its staging deadline must not be
+// deleted.
+func TestSweepLeavesAvailableUploadsAlone(t *testing.T) {
+	h := newHarness(t)
+	content := pngBytes(512)
+	staged := h.stageAndUpload(t, content, "image/png", int64(len(content)))
+
+	final, err := h.uploads.Finalize(h.ctx, staged.ID, h.owner)
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	h.advance(30 * 24 * time.Hour)
+
+	swept, err := h.uploads.Sweep(h.ctx, 10)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if swept != 0 {
+		t.Fatalf("Sweep expired %d finalized uploads, want 0", swept)
+	}
+	if !h.objectExists(t, final.StorageKey) {
+		t.Fatal("the sweep deleted an available object")
+	}
+}
+
+// TestStagingRefusesWhatItCanRefuseEarly covers the checks that cost no
+// quarantine object and no round trip.
+func TestStagingRefusesWhatItCanRefuseEarly(t *testing.T) {
+	h := newHarness(t)
+
+	cases := []struct {
+		name    string
+		request StageRequest
+	}{
+		{"no owner", StageRequest{Filename: "a.png", ContentType: "image/png", Size: 1}},
+		{"zero size", StageRequest{OwnerUserID: h.owner, Filename: "a.png", ContentType: "image/png", Size: 0}},
+		{"negative size", StageRequest{OwnerUserID: h.owner, Filename: "a.png", ContentType: "image/png", Size: -1}},
+		{"over the limit", StageRequest{OwnerUserID: h.owner, Filename: "a.png", ContentType: "image/png", Size: MaxUploadBytes + 1}},
+		{"no type", StageRequest{OwnerUserID: h.owner, Filename: "a.png", Size: 1}},
+		{"unaccepted type", StageRequest{OwnerUserID: h.owner, Filename: "a.html", ContentType: "text/html", Size: 1}},
+		{"executable type", StageRequest{OwnerUserID: h.owner, Filename: "a.sh", ContentType: "application/x-sh", Size: 1}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := h.uploads.Stage(h.ctx, c.request); err == nil {
+				t.Fatal("Stage accepted it")
+			}
+		})
+	}
+
+	var staged int64
+	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM uploads`).Scan(&staged); err != nil {
+		t.Fatalf("counting: %v", err)
+	}
+	if staged != 0 {
+		t.Errorf("a refused staging wrote %d rows", staged)
+	}
+}
+
+// TestTheKeyIsNotDerivedFromAnythingTheClientSent is why a presigned URL is
+// safe to hand out: the key it names cannot be guessed, and cannot be steered
+// by two users choosing the same filename.
+func TestTheKeyIsNotDerivedFromAnythingTheClientSent(t *testing.T) {
+	h := newHarness(t)
+
+	first, err := h.uploads.Stage(h.ctx, StageRequest{
+		OwnerUserID: h.owner, Filename: "same.png", ContentType: "image/png", Size: 128,
+	})
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	second, err := h.uploads.Stage(h.ctx, StageRequest{
+		OwnerUserID: h.owner, Filename: "same.png", ContentType: "image/png", Size: 128,
+	})
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if first.Upload.StorageKey == second.Upload.StorageKey {
+		t.Fatal("two uploads of the same filename collided on one key")
+	}
+	for _, staged := range []StagedUpload{first, second} {
+		if err := storage.ValidateKey(staged.Upload.StorageKey); err != nil {
+			t.Errorf("the derived key is not valid: %v", err)
+		}
+	}
+}
+
+// TestAKeyIsUnaffectedByAHostileFilename is the traversal case, at the
+// boundary where a filename could have become part of a path.
+func TestAKeyIsUnaffectedByAHostileFilename(t *testing.T) {
+	h := newHarness(t)
+
+	staged, err := h.uploads.Stage(h.ctx, StageRequest{
+		OwnerUserID: h.owner,
+		Filename:    "../../../etc/passwd",
+		ContentType: "image/png",
+		Size:        128,
+	})
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	key := staged.Upload.StorageKey
+	if strings.Contains(key, "..") || strings.Contains(key, "etc/passwd") {
+		t.Fatalf("the filename reached the key: %s", key)
+	}
+	if !strings.HasPrefix(key, QuarantinePrefix+"/") {
+		t.Fatalf("the key is not under the quarantine prefix: %s", key)
+	}
+	if staged.Upload.Filename != "passwd" {
+		t.Errorf("Filename = %q, want the sanitized base name", staged.Upload.Filename)
+	}
+}
+
+// TestALocalStoreIssuesNoUploadURL pins the branch: a directory on this
+// machine has no URL, and inventing one would mean this package quietly
+// growing an HTTP server.
+func TestALocalStoreIssuesNoUploadURL(t *testing.T) {
+	h := newHarness(t)
+
+	staged, err := h.uploads.Stage(h.ctx, StageRequest{
+		OwnerUserID: h.owner, Filename: "a.png", ContentType: "image/png", Size: 128,
+	})
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if staged.UploadURL != "" {
+		t.Errorf("a local store issued an upload URL: %q", staged.UploadURL)
+	}
+}

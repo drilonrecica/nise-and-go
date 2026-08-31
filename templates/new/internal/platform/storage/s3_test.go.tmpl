@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeS3 is an object service on a loopback listener. The adapter is tested
@@ -354,5 +355,157 @@ func TestSettingsNeverExposeTheSecret(t *testing.T) {
 	}
 	if strings.Contains(settings.secretKey.String(), "topsecret") {
 		t.Error("the secret key formats as its own value")
+	}
+}
+
+// TestMoveCopiesServerSideThenDeletes pins the two requests Move makes, and
+// the header that makes the first one a copy rather than an empty upload.
+func TestMoveCopiesServerSideThenDeletes(t *testing.T) {
+	t.Parallel()
+
+	store, fake := newFakeStore(t, true)
+	ctx := context.Background()
+	const from, to = "quarantine/abc/a.bin", "objects/abc/a.bin"
+
+	if _, err := store.Put(ctx, from, strings.NewReader("moved"), PutOptions{}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := store.Move(ctx, from, to); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+
+	fake.mu.Lock()
+	requests := append([]*http.Request(nil), fake.requests...)
+	fake.mu.Unlock()
+	if len(requests) != 3 {
+		t.Fatalf("Move made %d requests in total, want a PUT, a copy, and a DELETE", len(requests))
+	}
+	copyRequest := requests[1]
+	if copyRequest.Method != http.MethodPut {
+		t.Errorf("the copy is a %s, want a PUT", copyRequest.Method)
+	}
+	source := copyRequest.Header.Get("X-Amz-Copy-Source")
+	if source != "/test-bucket/"+from {
+		t.Errorf("X-Amz-Copy-Source = %q, want the bucket-qualified source", source)
+	}
+	if !strings.Contains(copyRequest.Header.Get("Authorization"), "x-amz-copy-source") {
+		t.Errorf("the copy source is not in the signature: %q", copyRequest.Header.Get("Authorization"))
+	}
+	if requests[2].Method != http.MethodDelete {
+		t.Errorf("the last request is a %s, want a DELETE of the source", requests[2].Method)
+	}
+}
+
+// TestAFailedCopyInsideA200IsNotSuccess covers a documented and much-cursed
+// part of the S3 protocol: a copy can fail with an error document inside a
+// 200 response. A client that checks only the status code reports success for
+// a copy that did not happen — and then deletes the source.
+func TestAFailedCopyInsideA200IsNotSuccess(t *testing.T) {
+	t.Parallel()
+
+	store, fake := newFakeStore(t, true)
+	fake.fail(http.StatusOK, "<?xml version=\"1.0\"?><Error><Code>InternalError</Code></Error>")
+
+	err := store.Move(context.Background(), "quarantine/a.bin", "objects/a.bin")
+	if err == nil {
+		t.Fatal("Move reported success for a copy that failed inside a 200")
+	}
+	if !strings.Contains(err.Error(), "InternalError") {
+		t.Errorf("the error does not carry the service's own code: %v", err)
+	}
+
+	// And crucially: the source was not deleted.
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	for _, request := range fake.requests {
+		if request.Method == http.MethodDelete {
+			t.Fatal("the source was deleted after a copy that did not happen")
+		}
+	}
+}
+
+// TestA404OnAWriteIsNotAMissingObject covers an error message that sent a
+// reader looking for the wrong thing. On a PUT, a 404 means the bucket is
+// absent, not the object.
+func TestA404OnAWriteIsNotAMissingObject(t *testing.T) {
+	t.Parallel()
+
+	store, fake := newFakeStore(t, true)
+	fake.fail(http.StatusNotFound, "<Error><Code>NoSuchBucket</Code><BucketName>test-bucket</BucketName></Error>")
+
+	_, err := store.Put(context.Background(), "a.bin", strings.NewReader("x"), PutOptions{})
+	if err == nil {
+		t.Fatal("Put succeeded against a 404")
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Error("a missing bucket was reported as a missing object")
+	}
+	if !strings.Contains(err.Error(), "NoSuchBucket") {
+		t.Errorf("the error does not name what was missing: %v", err)
+	}
+
+	// A read is the case where 404 does mean the object.
+	fake.fail(http.StatusNotFound, "<Error><Code>NoSuchKey</Code></Error>")
+	if _, err := store.Get(context.Background(), "a.bin"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get against a 404 = %v, want ErrNotFound", err)
+	}
+}
+
+// TestPresignedUploadURLsAreBoundedAndSigned covers the capability itself.
+func TestPresignedUploadURLsAreBoundedAndSigned(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newFakeStore(t, true)
+	ctx := context.Background()
+
+	url, err := store.PresignPut(ctx, "quarantine/a.bin", 10*time.Minute, PutOptions{
+		ContentType:   "image/png",
+		ContentLength: 1024,
+	})
+	if err != nil {
+		t.Fatalf("PresignPut: %v", err)
+	}
+	for _, want := range []string{"X-Amz-Signature=", "X-Amz-Expires=600", "X-Amz-SignedHeaders="} {
+		if !strings.Contains(url, want) {
+			t.Errorf("the presigned URL lacks %q: %s", want, url)
+		}
+	}
+	// The declared type and length are signed, so a client sending
+	// different ones gets a signature mismatch rather than an upload.
+	if !strings.Contains(url, "content-length") || !strings.Contains(url, "content-type") {
+		t.Errorf("the content type and length are not in the signed headers: %s", url)
+	}
+
+	// A lifetime outside the bounds is refused. A capability that outlives
+	// the session that asked for it keeps working after the account is
+	// disabled.
+	if _, err := store.PresignPut(ctx, "quarantine/a.bin", 24*time.Hour, PutOptions{}); err == nil {
+		t.Error("a day-long upload URL was issued")
+	}
+	if _, err := store.PresignPut(ctx, "quarantine/a.bin", time.Second, PutOptions{}); err == nil {
+		t.Error("a one-second upload URL was issued")
+	}
+	if _, err := store.PresignPut(ctx, "../escaped", time.Minute, PutOptions{}); !errors.Is(err, ErrKey) {
+		t.Error("a URL was presigned for an invalid key")
+	}
+}
+
+// TestOnlyTheS3BackendPresigns pins the type assertion callers make. A
+// directory on this machine has no URL, and inventing one would mean the
+// storage package quietly growing an HTTP server.
+func TestOnlyTheS3BackendPresigns(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newFakeStore(t, true)
+	if _, ok := any(store).(Presigner); !ok {
+		t.Error("the S3 backend does not implement Presigner")
+	}
+	local, err := NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	t.Cleanup(func() { _ = local.Close() })
+	if _, ok := any(local).(Presigner); ok {
+		t.Error("the local backend claims to presign; there is no URL it could sign")
 	}
 }

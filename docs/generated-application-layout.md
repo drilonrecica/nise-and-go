@@ -111,6 +111,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │       └── <feature>_test.go      [app]
     │   audit/                         [app]   the append-only audit log and its query API
     │   auth/                          [app]   accounts, sessions, roles, login, invitations, and their SQL
+    │   uploads/                       [app]   uploads module: the staged upload lifecycle and its sweep job
     │
     └── platform/
         ├── config/                    [app]   typed configuration over runtime/config

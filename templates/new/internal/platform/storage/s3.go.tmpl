@@ -289,6 +289,121 @@ func (s *S3) Delete(ctx context.Context, key string) error {
 	return s.checkStatus(response, key)
 }
 
+// S3 is the backend that can hand out capabilities.
+var _ Presigner = (*S3)(nil)
+
+// PresignPut implements [Presigner].
+//
+// Content type and length, when the caller knows them, are signed rather than
+// merely suggested: they become part of the signature, so a client that sends
+// a different type or a different length gets a signature mismatch from the
+// service instead of an upload. That is a real bound on what a presigned PUT
+// can be used for — it is not a substitute for verifying the stored object
+// afterwards, because a service that ignores a signed header would not tell
+// this application about it, but it removes the easy version of the attack.
+func (s *S3) PresignPut(ctx context.Context, key string, expires time.Duration, opts PutOptions) (string, error) {
+	if err := ValidateKey(key); err != nil {
+		return "", err
+	}
+	if err := ValidatePresignedLifetime(expires); err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	headers := http.Header{}
+	if opts.ContentType != "" {
+		if strings.ContainsAny(opts.ContentType, "\r\n\x00") {
+			return "", errors.New("storage: the content type contains a control character")
+		}
+		headers.Set("Content-Type", opts.ContentType)
+	}
+	if opts.ContentLength > 0 {
+		headers.Set("Content-Length", strconv.FormatInt(opts.ContentLength, 10))
+	}
+	return s.signer.presign(http.MethodPut, s.objectURL(key), expires, headers), nil
+}
+
+// PresignGet implements [Presigner].
+func (s *S3) PresignGet(ctx context.Context, key string, expires time.Duration) (string, error) {
+	if err := ValidateKey(key); err != nil {
+		return "", err
+	}
+	if err := ValidatePresignedLifetime(expires); err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return s.signer.presign(http.MethodGet, s.objectURL(key), expires, nil), nil
+}
+
+// Move implements [Store] with a server-side copy followed by a delete.
+//
+// The copy happens inside the object service: no byte crosses this process,
+// which is what makes moving a large upload out of quarantine free rather
+// than proportional to its size.
+//
+// It is not atomic, and cannot be — S3 has no rename. Between the copy and
+// the delete the object exists at both keys, and a crash in that window
+// leaves it at both. That is the safe direction to fail in: the destination
+// is correct and complete, and the source is a quarantine key whose sweep
+// will remove it. The reverse order would have a window in which the object
+// exists at neither.
+func (s *S3) Move(ctx context.Context, from, to string) error {
+	if err := ValidateKey(from); err != nil {
+		return err
+	}
+	if err := ValidateKey(to); err != nil {
+		return err
+	}
+	if from == to {
+		return nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, s.objectURL(to).String(), nil)
+	if err != nil {
+		return fmt.Errorf("storage: building the COPY for %s: %w", to, err)
+	}
+	// The copy source is a bucket-qualified, URL-encoded key. Encoding it
+	// with the same function that builds the canonical URI is deliberate:
+	// the header is part of the signature, so the two spellings have to
+	// agree exactly.
+	req.Header.Set("X-Amz-Copy-Source", "/"+s.settings.bucket+"/"+uriEncode(from, false))
+	s.signer.sign(req, emptyPayloadHash)
+
+	response, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("storage: COPY %s: %w", from, err)
+	}
+	defer drainAndClose(response)
+	// A 404 on a copy is ambiguous in the same way, but here the two cases
+	// are distinguishable: the service names NoSuchKey for a missing source
+	// and NoSuchBucket for a missing bucket. The source is what a caller of
+	// Move can act on, so it is reported as ErrNotFound and the bucket case
+	// falls through to the full message.
+	if response.StatusCode == http.StatusNotFound {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, MaxS3ErrorBytes))
+		if !strings.Contains(string(body), "NoSuchBucket") {
+			return fmt.Errorf("%w: %s", ErrNotFound, from)
+		}
+		return fmt.Errorf("storage: COPY %s to %s: %s", from, to, strings.TrimSpace(string(body)))
+	}
+	if err := s.checkStatus(response, to); err != nil {
+		return err
+	}
+	// S3 reports a failed copy inside a 200 response body, which is a
+	// documented and much-cursed part of the protocol: a client that checks
+	// only the status code reports success for a copy that did not happen.
+	body, _ := io.ReadAll(io.LimitReader(response.Body, MaxS3ErrorBytes))
+	if strings.Contains(string(body), "<Error") {
+		return fmt.Errorf("storage: COPY %s to %s failed inside a 200 response: %s", from, to, strings.TrimSpace(string(body)))
+	}
+
+	return s.Delete(ctx, from)
+}
+
 // checkStatus turns a non-2xx response into an error.
 func (s *S3) checkStatus(response *http.Response, key string) error {
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
@@ -305,8 +420,16 @@ func (s *S3) checkStatus(response *http.Response, key string) error {
 // arrive as 403 from some implementations. It is never logged with the
 // request's headers, which carry the Authorization line.
 func (s *S3) statusError(response *http.Response, key string) error {
-	if response.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("%w: %s", ErrNotFound, key)
+	// A 404 means "the object is not there" only for a method that was
+	// reading one. For a PUT it means the *bucket* is not there, and
+	// reporting that as ErrNotFound sends the reader looking for a missing
+	// object when the configuration is wrong — which is a wasted afternoon
+	// this probe spent once already.
+	if response.StatusCode == http.StatusNotFound && response.Request != nil {
+		switch response.Request.Method {
+		case http.MethodGet, http.MethodHead, http.MethodDelete:
+			return fmt.Errorf("%w: %s", ErrNotFound, key)
+		}
 	}
 	body, _ := io.ReadAll(io.LimitReader(response.Body, MaxS3ErrorBytes))
 	detail := strings.TrimSpace(string(body))

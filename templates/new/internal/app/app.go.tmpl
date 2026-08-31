@@ -26,6 +26,9 @@ import (
 	migrationdb "{{.ModulePath}}/db"
 	"{{.ModulePath}}/internal/features/audit"
 	"{{.ModulePath}}/internal/features/auth"
+{{- if .HasUploads }}
+	"{{.ModulePath}}/internal/features/uploads"
+{{- end }}
 	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/config"
 	"{{.ModulePath}}/internal/platform/database"
@@ -292,6 +295,10 @@ func Run(ctx context.Context, modeOverride string) error {
 		return fmt.Errorf("building the object store: %w", err)
 	}
 	defer func() { _ = closeStore() }()
+	uploadLifecycle, err := uploads.New(transactor, objectStore)
+	if err != nil {
+		return fmt.Errorf("building the upload lifecycle: %w", err)
+	}
 {{- end }}
 
 	// Nothing sends mail yet, so the renderer and the mailer are held for
@@ -300,12 +307,9 @@ func Run(ctx context.Context, modeOverride string) error {
 	// parse and a mail configuration that does not resolve are startup
 	// failures, not first-message failures.
 	_, _ = mailer, mailRenderer
-{{- if .HasUploads }}
-	_ = objectStore
-{{- end }}
 
 	jobRegistry := jobs.NewRegistry()
-	if err := registerJobs(jobRegistry); err != nil {
+	if err := registerJobs(jobRegistry{{ if .HasUploads }}, uploadLifecycle, logger{{ end }}); err != nil {
 		return fmt.Errorf("registering background jobs: %w", err)
 	}
 	jobClient, err := jobs.New(pool, jobRegistry, cfg.Jobs, logger)

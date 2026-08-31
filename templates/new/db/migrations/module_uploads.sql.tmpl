@@ -1,0 +1,92 @@
+-- Generated once by nise; owned by this application. Nise will not overwrite it.
+--
+-- The uploads module's staging ledger.
+--
+-- Every uploaded byte in this application is described by a row here before it
+-- is reachable by anyone, and the row — not the object store — is the
+-- authority on whether it is. An object whose row says `staged` is not
+-- available no matter what a bucket policy says, and an object with no row is
+-- not available at all.
+--
+-- Two columns exist twice for the same reason. `declared_type` and
+-- `declared_size` are what the client said it would upload; `content_type` and
+-- `size` are what the server found after it did. Keeping both is what makes a
+-- lie visible instead of merely refused, and what lets the rejection reason
+-- say which of the two was wrong.
+
+-- +goose Up
+CREATE TYPE upload_state AS ENUM (
+    -- A capability has been issued for this key. The object may or may not
+    -- have been written yet, and nothing may read it either way.
+    'staged',
+    -- The server verified the stored bytes and the application authorized
+    -- them. This is the only state in which an object is reachable.
+    'available',
+    -- Verification or authorization refused it. The stored object is deleted;
+    -- the row is kept, because "who tried to upload what, and why was it
+    -- refused" is the question an incident asks.
+    'rejected',
+    -- The staging window elapsed with no finalization. Swept periodically.
+    'expired'
+);
+
+CREATE TABLE uploads (
+    id            uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
+    state         upload_state NOT NULL DEFAULT 'staged',
+    -- The principal who staged it. Finalization requires the same one: a
+    -- capability issued to one account must not be completable by another,
+    -- even though the key is unguessable.
+    owner_user_id uuid         NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    -- The key the object currently occupies. It moves once, from the
+    -- quarantine prefix to the final one, at the moment the row becomes
+    -- available — so a URL that leaked while the object was staged does not
+    -- address the object once it is not.
+    storage_key   text         NOT NULL,
+    -- The sanitized display name. Never a key, and never used to build one.
+    filename      text         NOT NULL,
+    declared_type text         NOT NULL,
+    declared_size bigint       NOT NULL,
+    content_type  text,
+    size          bigint,
+    -- SHA-256 of the stored bytes, computed by the server while it read them.
+    -- It is what makes "the object was replaced after we checked it"
+    -- detectable rather than theoretical.
+    checksum      bytea,
+    staged_at     timestamptz  NOT NULL DEFAULT now(),
+    expires_at    timestamptz  NOT NULL,
+    finalized_at  timestamptz,
+    -- Why a rejected upload was rejected. Shown to nobody by default: it is
+    -- for the audit trail and the operator, not for the uploader, who should
+    -- not learn which of several checks they failed.
+    rejected_reason text,
+
+    CONSTRAINT uploads_storage_key_unique UNIQUE (storage_key),
+    CONSTRAINT uploads_storage_key_length CHECK (char_length(storage_key) BETWEEN 1 AND 512),
+    CONSTRAINT uploads_filename_length CHECK (char_length(filename) BETWEEN 1 AND 200),
+    CONSTRAINT uploads_declared_type_length CHECK (char_length(declared_type) BETWEEN 1 AND 255),
+    CONSTRAINT uploads_content_type_length CHECK (content_type IS NULL OR char_length(content_type) BETWEEN 1 AND 255),
+    CONSTRAINT uploads_declared_size_positive CHECK (declared_size > 0),
+    CONSTRAINT uploads_size_nonnegative CHECK (size IS NULL OR size >= 0),
+    CONSTRAINT uploads_checksum_length CHECK (checksum IS NULL OR octet_length(checksum) = 32),
+    CONSTRAINT uploads_expires_after_staged CHECK (expires_at > staged_at),
+    -- A finalized row has a verdict and a timestamp; a staged one has
+    -- neither. The state and the columns describing it cannot disagree,
+    -- because the database will not store a row in which they do.
+    CONSTRAINT uploads_finalized_state CHECK (
+        (state = 'staged'    AND finalized_at IS NULL AND rejected_reason IS NULL) OR
+        (state = 'available' AND finalized_at IS NOT NULL AND rejected_reason IS NULL AND size IS NOT NULL AND checksum IS NOT NULL) OR
+        (state = 'rejected'  AND finalized_at IS NOT NULL AND rejected_reason IS NOT NULL) OR
+        (state = 'expired'   AND finalized_at IS NOT NULL AND rejected_reason IS NULL)
+    )
+);
+
+-- The sweep reads staged rows past their deadline, oldest first.
+CREATE INDEX uploads_staged_expiry_idx ON uploads (expires_at) WHERE state = 'staged';
+
+-- An owner's own uploads, newest first, which is every listing an application
+-- shows.
+CREATE INDEX uploads_owner_idx ON uploads (owner_user_id, staged_at DESC);
+
+-- +goose Down
+DROP TABLE uploads;
+DROP TYPE upload_state;

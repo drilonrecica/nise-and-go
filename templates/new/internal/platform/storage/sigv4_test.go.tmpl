@@ -332,3 +332,31 @@ func TestPresigningADifferentMethodChangesTheSignature(t *testing.T) {
 		t.Fatal("a URL presigned for PUT signs identically for GET")
 	}
 }
+
+// TestContentLengthIsSignedWhenSet is the header that makes a presigned PUT a
+// bound rather than a blank cheque, and it is only in the signed set because
+// Go keeps a real request's length outside Request.Header — so this loop
+// never sees one the transport will add later and disagree with.
+func TestContentLengthIsSignedWhenSet(t *testing.T) {
+	t.Parallel()
+
+	u, _ := url.Parse("https://example.com/bucket/key.bin")
+	req := &http.Request{Method: http.MethodPut, URL: u, Host: "example.com", Header: http.Header{}}
+	req.Header.Set("Content-Length", "1024")
+
+	signed, block := canonicalHeaders(req)
+	if !strings.Contains(signed, "content-length") {
+		t.Errorf("SignedHeaders = %q, and omits content-length", signed)
+	}
+	if !strings.Contains(block, "content-length:1024\n") {
+		t.Errorf("the canonical headers do not carry the length:\n%q", block)
+	}
+
+	// A request that did not set it must not sign it, or the signature would
+	// name a header the request does not carry.
+	bare := &http.Request{Method: http.MethodGet, URL: u, Host: "example.com", Header: http.Header{}}
+	bareSigned, _ := canonicalHeaders(bare)
+	if strings.Contains(bareSigned, "content-length") {
+		t.Errorf("SignedHeaders = %q for a request with no length", bareSigned)
+	}
+}

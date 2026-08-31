@@ -450,3 +450,72 @@ func TestAProjectWithoutUploadsHasNoStorageAtAll(t *testing.T) {
 		}
 	}
 }
+
+// TestTheUploadLifecycleTrustsNothingTheClientSent pins M8-007. Every
+// assertion here is a decision that would be invisible if it were only a
+// comment.
+func TestTheUploadLifecycleTrustsNothingTheClientSent(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, allModulesOptions())
+	lifecycle := content["internal/features/uploads/uploads.go"]
+
+	for _, fragment := range []string{
+		// The key is derived from randomness this package generates, never
+		// from anything the client sent.
+		"storage.JoinKey(QuarantinePrefix, u.keys(), filename)",
+		"keys:       storage.NewObjectID,",
+		// The type is sniffed from the stored bytes.
+		"http.DetectContentType(head)",
+		// Ownership is checked on every path that acts on an upload.
+		"func (u *Uploads) load(ctx context.Context, id string, ownerUserID string) (Upload, error)",
+		// And the two refusals are the same error value, so an identifier
+		// is not an oracle for whether an upload exists.
+		`ErrNotOwner = errors.New("uploads: no such upload")`,
+		`ErrNotFound = errors.New("uploads: no such upload")`,
+	} {
+		if !strings.Contains(lifecycle, fragment) {
+			t.Errorf("internal/features/uploads/uploads.go lacks %q", fragment)
+		}
+	}
+
+	// Finalization must measure before it writes anything, and must move
+	// before it marks the row available.
+	finalize := lifecycle[strings.Index(lifecycle, "func (u *Uploads) Finalize("):]
+	measure := strings.Index(finalize, "u.measure(ctx, upload)")
+	move := strings.Index(finalize, "u.store.Move(")
+	mark := strings.Index(finalize, "MarkUploadAvailable")
+	if measure < 0 || move < 0 || mark < 0 {
+		t.Fatal("Finalize does not measure, move, and mark")
+	}
+	if measure >= move || move >= mark {
+		t.Error("Finalize's order is wrong: it must measure, then move out of quarantine, then mark the row available")
+	}
+
+	// The declared values are recorded beside the measured ones, so a lie
+	// is visible rather than merely refused.
+	migration := content["db/migrations/00011_uploads.sql"]
+	if migration == "" {
+		t.Fatal("the uploads migration is not numbered after TOTP's")
+	}
+	for _, column := range []string{"declared_type", "declared_size", "content_type", "size", "checksum"} {
+		if !strings.Contains(migration, column) {
+			t.Errorf("the uploads table has no %s column", column)
+		}
+	}
+	// The state and the columns describing it cannot disagree, because the
+	// database will not store a row in which they do.
+	if !strings.Contains(migration, "CONSTRAINT uploads_finalized_state CHECK") {
+		t.Error("nothing stops a row from claiming to be available with no size or checksum")
+	}
+
+	// The sweep is a periodic job, so an abandoned upload does not occupy a
+	// quarantine key forever.
+	sweep := content["internal/features/uploads/sweep.go"]
+	if !strings.Contains(sweep, "jobs.Periodic(registry, SweepInterval, SweepArgs{})") {
+		t.Error("the sweep is not scheduled")
+	}
+	if !strings.Contains(content["internal/app/jobs.go"], "uploads.RegisterSweep(registry, uploadSweep, logger)") {
+		t.Error("the application does not register the sweep")
+	}
+}

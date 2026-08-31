@@ -1,0 +1,85 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package uploads
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"time"
+
+	"github.com/riverqueue/river"
+
+	"{{.ModulePath}}/internal/platform/jobs"
+)
+
+// SweepBatch is how many expired uploads one run of the sweep handles.
+//
+// Bounded rather than unbounded because the job holds a database connection
+// and deletes an object per row: a backlog of ten thousand should be worked
+// through over several runs, on the schedule, rather than in one run that
+// occupies a worker for minutes. The next run picks up the remainder.
+const SweepBatch = 200
+
+// SweepInterval is how often the sweep runs.
+//
+// Shorter than [StagingLifetime], so an abandoned upload is cleaned up within
+// roughly one staging window of expiring rather than after two — and long
+// enough that the query, which reads an index built for exactly it, is not
+// something the database notices.
+const SweepInterval = 5 * time.Minute
+
+// SweepArgs is the periodic job that expires abandoned uploads.
+//
+// The kind is a literal, not derived from this Go type's name: renaming the
+// type must not orphan jobs already sitting in the queue.
+type SweepArgs struct{}
+
+// Kind implements river.JobArgs.
+func (SweepArgs) Kind() string { return "uploads_sweep" }
+
+// SweepWorker runs [Uploads.Sweep].
+type SweepWorker struct {
+	river.WorkerDefaults[SweepArgs]
+
+	uploads *Uploads
+	logger  *slog.Logger
+}
+
+// NewSweepWorker builds the worker.
+func NewSweepWorker(uploads *Uploads, logger *slog.Logger) (*SweepWorker, error) {
+	if uploads == nil {
+		return nil, errors.New("uploads: a use case is required")
+	}
+	if logger == nil {
+		return nil, errors.New("uploads: a logger is required")
+	}
+	return &SweepWorker{uploads: uploads, logger: logger}, nil
+}
+
+// Work implements river.Worker.
+//
+// Sweeping is safe to run twice, which every job in this application must be:
+// a second run finds the rows the first one already expired in a state its
+// query does not select, and does nothing.
+func (w *SweepWorker) Work(ctx context.Context, _ *river.Job[SweepArgs]) error {
+	swept, err := w.uploads.Sweep(ctx, SweepBatch)
+	if swept > 0 {
+		w.logger.Info("expired abandoned uploads", slog.Int("count", swept))
+	}
+	return err
+}
+
+// RegisterSweep registers the worker and schedules it.
+//
+// It is one call because the two halves are not independently useful:
+// scheduling without registering is a job inserted forever and never run,
+// and registering without scheduling is a job nothing ever enqueues.
+func RegisterSweep(registry *jobs.Registry, uploads *Uploads, logger *slog.Logger) error {
+	worker, err := NewSweepWorker(uploads, logger)
+	if err != nil {
+		return err
+	}
+	jobs.Register(registry, worker)
+	return jobs.Periodic(registry, SweepInterval, SweepArgs{})
+}
