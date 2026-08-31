@@ -105,6 +105,15 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   it, so repeated rotation cannot become an unbounded session. A password change
   now rotates the session that made it. Adds `RevokeForAccount` for ending
   another account's sessions, which requires `sessions.revoke`.
+- Add authentication throttling and audit events. Two PostgreSQL-backed buckets
+  — per address and per client — are checked before any password hashing, both
+  are always counted, a refused attempt still costs a slot, and subjects are
+  stored as digests so the table is not a list of attempted addresses. Every
+  attempt is audited, with denials as a separate action carrying the reason. The
+  throttle and the audit recorder are required constructor arguments of the
+  login use case rather than optional ones. Adds
+  `LOGIN_ATTEMPTS_PER_ADDRESS`, `LOGIN_ATTEMPTS_PER_CLIENT`, and
+  `LOGIN_THROTTLE_WINDOW`.
 
 ### Fixed
 

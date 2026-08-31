@@ -64,10 +64,19 @@ func TestGeneratedProjectLogsInGenerically(t *testing.T) {
 		t.Error("the account status is checked before the password is verified")
 	}
 
-	// There must be exactly one error a caller can see. A second exported
-	// login error would eventually be returned to distinguish a case.
-	if strings.Count(login, "= errors.New(") != 1 {
-		t.Error("the login path declares more than one caller-visible error")
+	// There must be exactly one error for every *credential* failure, so a
+	// third would eventually be returned to distinguish a case. ErrThrottled
+	// is the one legitimate second error: it is not a statement about the
+	// credentials at all, and a caller answers it with a retry hint rather
+	// than a rejection.
+	declared := strings.Count(login, "= errors.New(")
+	if declared != 2 {
+		t.Errorf("the login path declares %d caller-visible errors, want ErrInvalidCredentials and ErrThrottled", declared)
+	}
+	for _, required := range []string{"var ErrInvalidCredentials = errors.New(", "var ErrThrottled = errors.New("} {
+		if !strings.Contains(login, required) {
+			t.Errorf("the login path lacks %q", required)
+		}
 	}
 
 	// The policy must not add composition rules: they push people towards

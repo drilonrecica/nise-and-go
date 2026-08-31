@@ -1,0 +1,361 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package throttle limits how often an unauthenticated action may be attempted.
+//
+// It exists for one attack: somebody working through a list of addresses and
+// passwords. Argon2 makes each guess expensive for the server as well as the
+// attacker, so an unthrottled login endpoint is simultaneously a way in and a
+// way to exhaust the machine — which is why the check runs before the hash, not
+// after it.
+//
+// Counters live in PostgreSQL. A counter that disappears when a process
+// restarts is a counter an attacker can clear, and adding a cache to make login
+// slower for attackers would make the whole application unavailable whenever
+// that cache is.
+//
+// # Fixed windows, stated plainly
+//
+// The window is fixed, not sliding. An attacker who times a burst across a
+// boundary can make twice the limit in quick succession, and then nothing for
+// the rest of the next window. A sliding window would close that at the cost of
+// storing every attempt; for an authentication limiter the fixed window's
+// failure mode is a brief doubling, which is not the difference between safe
+// and unsafe. It is documented rather than papered over.
+//
+// # Two layers
+//
+// One bucket per address and one per client, because they catch different
+// things. The address bucket stops a run of guesses at one account from
+// anywhere; the client bucket stops a run across many accounts from one place.
+// Either can refuse.
+package throttle
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"net/netip"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// Bounds on a limit. The maximums exist so a mistyped configuration is a
+// startup failure rather than a limiter that never refuses anything.
+const (
+	// MinAttempts is the fewest attempts a window may allow.
+	MinAttempts = 1
+	// MaxAttempts is the most.
+	MaxAttempts = 10_000
+	// MinWindow is the shortest window.
+	MinWindow = time.Second
+	// MaxWindow is the longest. Past a day a counter is a ban, and a ban
+	// should be a deliberate account action rather than an arithmetic
+	// side effect.
+	MaxWindow = 24 * time.Hour
+	// MaxScopeBytes bounds a scope name.
+	MaxScopeBytes = 64
+	// MaxSweep bounds one sweep of expired counters.
+	MaxSweep = 10_000
+)
+
+// Scopes this package's callers use. They are dotted like audit actions, and
+// the two halves of one policy are separate scopes so a refusal says which
+// bucket refused.
+const (
+	// ScopeLoginAddress counts attempts against one address.
+	ScopeLoginAddress = "login.address"
+	// ScopeLoginClient counts attempts from one client.
+	ScopeLoginClient = "login.client"
+)
+
+// Errors this package reports.
+var (
+	// ErrLimit reports a limit outside the permitted bounds.
+	ErrLimit = errors.New("throttle limit is outside the permitted bounds")
+	// ErrScope reports a scope name outside the permitted shape.
+	ErrScope = errors.New("throttle scope must be dotted lowercase segments")
+	// ErrSubject reports an empty subject.
+	ErrSubject = errors.New("throttle subject must not be empty")
+	// ErrSweepLimit reports a non-positive sweep batch.
+	ErrSweepLimit = errors.New("throttle sweep limit must be greater than zero")
+)
+
+// Limit is how many attempts one bucket allows in one window.
+//
+// The zero value is unusable; construct one with NewLimit.
+type Limit struct {
+	attempts int
+	window   time.Duration
+}
+
+// NewLimit validates one bucket's policy.
+func NewLimit(attempts int, window time.Duration) (Limit, error) {
+	switch {
+	case attempts < MinAttempts || attempts > MaxAttempts:
+		return Limit{}, fmt.Errorf("%w: %d attempts is outside %d..%d", ErrLimit, attempts, MinAttempts, MaxAttempts)
+	case window < MinWindow || window > MaxWindow:
+		return Limit{}, fmt.Errorf("%w: window %s is outside %s..%s", ErrLimit, window, MinWindow, MaxWindow)
+	}
+	return Limit{attempts: attempts, window: window}, nil
+}
+
+// Attempts returns how many attempts the window allows.
+func (l Limit) Attempts() int { return l.attempts }
+
+// Window returns the window's length.
+func (l Limit) Window() time.Duration { return l.window }
+
+// IsZero reports whether l is the unconstructed zero value.
+func (l Limit) IsZero() bool { return l.attempts == 0 }
+
+// Policy is the pair of limits an authentication attempt is held to.
+type Policy struct {
+	address Limit
+	client  Limit
+}
+
+// NewPolicy pairs the per-address and per-client limits.
+//
+// The client limit should be the looser of the two: several people behind one
+// office address are one client, and a limit tight enough for one account would
+// lock out a building.
+func NewPolicy(address, client Limit) (Policy, error) {
+	if address.IsZero() || client.IsZero() {
+		return Policy{}, fmt.Errorf("%w: both limits must be constructed", ErrLimit)
+	}
+	return Policy{address: address, client: client}, nil
+}
+
+// DefaultPolicy returns limits that stop credential stuffing without locking
+// out a person who mistypes a password.
+func DefaultPolicy() Policy {
+	return Policy{
+		address: Limit{attempts: 10, window: 15 * time.Minute},
+		client:  Limit{attempts: 60, window: 15 * time.Minute},
+	}
+}
+
+// Address returns the per-address limit.
+func (p Policy) Address() Limit { return p.address }
+
+// Client returns the per-client limit.
+func (p Policy) Client() Limit { return p.client }
+
+// IsZero reports whether p is the unconstructed zero value.
+func (p Policy) IsZero() bool { return p.address.IsZero() }
+
+// Decision is the outcome of one throttle check.
+type Decision struct {
+	// Allowed reports whether the attempt may proceed.
+	Allowed bool
+	// Scope names the bucket that refused, when one did.
+	Scope string
+	// RetryAfter is how long until the refusing window ends. It is a hint
+	// for the caller's response, and it is deliberately the window's
+	// remainder rather than a precise per-attempt value: a limiter that told
+	// an attacker exactly when to try again would be helping.
+	RetryAfter time.Duration
+}
+
+// Limiter counts attempts and refuses the ones past a limit.
+type Limiter struct {
+	transactor *database.Transactor
+	policy     Policy
+	now        func() time.Time
+}
+
+// Option configures a Limiter.
+type Option func(*Limiter)
+
+// WithClock replaces the clock the limiter reads. It exists for tests.
+func WithClock(now func() time.Time) Option {
+	return func(l *Limiter) {
+		if now != nil {
+			l.now = now
+		}
+	}
+}
+
+// NewLimiter constructs the throttle.
+func NewLimiter(transactor *database.Transactor, policy Policy, options ...Option) (*Limiter, error) {
+	if transactor == nil {
+		return nil, errors.New("throttle: a transactor is required")
+	}
+	if policy.IsZero() {
+		return nil, fmt.Errorf("%w: the policy is not constructed", ErrLimit)
+	}
+	limiter := &Limiter{transactor: transactor, policy: policy, now: time.Now}
+	for _, option := range options {
+		option(limiter)
+	}
+	return limiter, nil
+}
+
+// Policy returns the limits in force.
+func (l *Limiter) Policy() Policy { return l.policy }
+
+// Allow records one attempt and reports whether it may proceed.
+//
+// It counts first and decides afterwards, so a refused attempt still costs the
+// attacker a slot: a limiter that only counted the attempts it allowed would
+// let an attacker sit at the boundary forever.
+//
+// It runs in its own transaction, deliberately separate from whatever the
+// caller is doing. A failed login rolls its own work back, and the count of
+// that failure must survive.
+//
+// An invalid client address means the request did not come through the HTTP
+// edge — a command-line login, a job — and only the address bucket applies.
+// Refusing outright would make an operator's own tooling unusable; counting it
+// under a shared placeholder would let one such caller lock out every other.
+func (l *Limiter) Allow(ctx context.Context, address string, client netip.Addr) (Decision, error) {
+	if strings.TrimSpace(address) == "" {
+		return Decision{}, ErrSubject
+	}
+	now := l.now().UTC()
+
+	buckets := []struct {
+		scope   string
+		subject string
+		limit   Limit
+	}{
+		{scope: ScopeLoginAddress, subject: strings.ToLower(strings.TrimSpace(address)), limit: l.policy.address},
+	}
+	if client.IsValid() {
+		buckets = append(buckets, struct {
+			scope   string
+			subject string
+			limit   Limit
+		}{scope: ScopeLoginClient, subject: client.Unmap().String(), limit: l.policy.client})
+	}
+
+	decision := Decision{Allowed: true}
+	err := l.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		for _, bucket := range buckets {
+			start := now.Truncate(bucket.limit.window)
+			attempts, err := increment(ctx, tx, bucket.scope, bucket.subject, start)
+			if err != nil {
+				return err
+			}
+			// Every bucket is counted even after one refuses, so a caller
+			// cannot avoid the client counter by exhausting the address one.
+			if attempts > bucket.limit.attempts && decision.Allowed {
+				decision = Decision{
+					Allowed:    false,
+					Scope:      bucket.scope,
+					RetryAfter: start.Add(bucket.limit.window).Sub(now),
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return Decision{}, err
+	}
+	return decision, nil
+}
+
+// Reset clears an address's counter, which a successful attempt should do.
+//
+// The client counter is deliberately not cleared: one success from a machine
+// working through a list must not buy that machine another sixty guesses.
+func (l *Limiter) Reset(ctx context.Context, address string) error {
+	if strings.TrimSpace(address) == "" {
+		return ErrSubject
+	}
+	subject := digest(strings.ToLower(strings.TrimSpace(address)))
+
+	return l.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM throttle_counters WHERE scope = $1 AND subject = $2`,
+			ScopeLoginAddress, subject,
+		); err != nil {
+			return fmt.Errorf("clearing the throttle counter: %w", err)
+		}
+		return nil
+	})
+}
+
+// Sweep removes counters whose window has passed, in bounded batches.
+func (l *Limiter) Sweep(ctx context.Context, limit int) (int64, error) {
+	if limit < 1 || limit > MaxSweep {
+		return 0, fmt.Errorf("%w: %d is outside 1..%d", ErrSweepLimit, limit, MaxSweep)
+	}
+	// Anything older than the longest window this policy uses can no longer
+	// refuse anything.
+	longest := l.policy.address.window
+	if l.policy.client.window > longest {
+		longest = l.policy.client.window
+	}
+	cutoff := l.now().UTC().Add(-longest)
+
+	var removed int64
+	err := l.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			DELETE FROM throttle_counters
+			WHERE (scope, subject, window_start) IN (
+				SELECT scope, subject, window_start
+				FROM throttle_counters
+				WHERE window_start < $1
+				ORDER BY window_start
+				LIMIT $2
+			)`, cutoff, int64(limit))
+		if err != nil {
+			return fmt.Errorf("sweeping throttle counters: %w", err)
+		}
+		removed = tag.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+// increment records one attempt and returns the window's new count.
+func increment(ctx context.Context, tx pgx.Tx, scope, subject string, start time.Time) (int, error) {
+	if err := validateScope(scope); err != nil {
+		return 0, err
+	}
+	var attempts int
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO throttle_counters (scope, subject, window_start, attempts)
+		VALUES ($1, $2, $3, 1)
+		ON CONFLICT (scope, subject, window_start)
+		DO UPDATE SET attempts = throttle_counters.attempts + 1
+		RETURNING attempts`,
+		scope, digest(subject), start,
+	).Scan(&attempts); err != nil {
+		return 0, fmt.Errorf("recording a throttled attempt: %w", err)
+	}
+	return attempts, nil
+}
+
+// digest hashes a subject. The table stores digests so that a throttle counter
+// is not a list of every address anybody has tried to sign in as.
+func digest(subject string) []byte {
+	sum := sha256.Sum256([]byte(subject))
+	return sum[:]
+}
+
+func validateScope(scope string) error {
+	if scope == "" || len(scope) > MaxScopeBytes || !strings.Contains(scope, ".") {
+		return fmt.Errorf("%w: %q", ErrScope, scope)
+	}
+	for i := range len(scope) {
+		char := scope[i]
+		switch {
+		case char >= 'a' && char <= 'z', char >= '0' && char <= '9', char == '_', char == '.':
+		default:
+			return fmt.Errorf("%w: %q", ErrScope, scope)
+		}
+	}
+	return nil
+}

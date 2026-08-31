@@ -1,0 +1,27 @@
+-- Generated once by nise; owned by this application. Nise will not overwrite it.
+--
+-- Authentication throttling counters. They live in PostgreSQL rather than in a
+-- cache because a counter that disappears when a process restarts is a counter
+-- an attacker can clear, and because adding a second datastore to make login
+-- slower for attackers would make the whole application unavailable when that
+-- datastore is.
+
+-- +goose Up
+CREATE TABLE throttle_counters (
+    scope        text        NOT NULL,
+    -- The subject is a digest, never the value. An address in this table would
+    -- turn a throttle counter into a list of every address anybody has tried
+    -- to sign in as, which is a directory an attacker would like to read.
+    subject      bytea       NOT NULL,
+    window_start timestamptz NOT NULL,
+    attempts     integer     NOT NULL DEFAULT 1,
+    CONSTRAINT throttle_counters_pkey PRIMARY KEY (scope, subject, window_start),
+    CONSTRAINT throttle_counters_scope CHECK (scope ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$' AND char_length(scope) <= 64),
+    CONSTRAINT throttle_counters_subject_length CHECK (octet_length(subject) = 32),
+    CONSTRAINT throttle_counters_attempts CHECK (attempts > 0)
+);
+
+CREATE INDEX throttle_counters_window_start_idx ON throttle_counters (window_start);
+
+-- +goose Down
+DROP TABLE throttle_counters;

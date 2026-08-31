@@ -28,8 +28,8 @@ The optional organization module combines application checks with PostgreSQL RLS
 ## Input and abuse resistance
 
 - Strict request decoding and controlled size limits.
-- Layered throttling for authentication and sensitive endpoints.
-- Generic authentication failures.
+- Layered throttling for authentication and sensitive endpoints. Implemented for authentication; see [throttling](throttling.md). The check runs before password hashing, both buckets are always counted, and refused attempts still cost a slot.
+- Generic authentication failures. Implemented: one error for no account, wrong password, and disabled account, with the distinguishing outcome returned only for the audit record.
 - Quarantine and validation for uploads.
 - Central redaction for credentials, cookies, tokens, and sensitive fields.
 - Separate persistent audit records and operational logs. Implemented; see [audit log](audit.md). The table is append-only, its retention sweep cannot be pointed at anything newer than 30 days, and a detail key the logger would redact is refused outright.

@@ -440,39 +440,107 @@ func TestLoadReadsAllowedOrigins(t *testing.T) {
 	}
 }
 
+func TestLoadBuildsTheLoginThrottle(t *testing.T) {
+	setTestEnvironment(t)
+
+	cfg, warnings, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LoginThrottle.Address().Attempts() != 10 || cfg.LoginThrottle.Client().Attempts() != 60 {
+		t.Fatalf("throttle = %#v", cfg.LoginThrottle)
+	}
+	if cfg.LoginThrottle.Address().Window() != 15*time.Minute {
+		t.Errorf("window = %s", cfg.LoginThrottle.Address().Window())
+	}
+	for _, warning := range warnings {
+		if strings.Contains(warning, "LOGIN_ATTEMPTS_PER_CLIENT") {
+			t.Errorf("the default pair warned: %q", warning)
+		}
+	}
+
+	// Several people behind one address are one client, so a client limit
+	// below the address limit is almost always a mistake.
+	t.Setenv("LOGIN_ATTEMPTS_PER_CLIENT", "2")
+	_, warnings, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	warned := false
+	for _, warning := range warnings {
+		if strings.Contains(warning, "LOGIN_ATTEMPTS_PER_CLIENT") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("warnings = %v, want one naming LOGIN_ATTEMPTS_PER_CLIENT", warnings)
+	}
+}
+
+func TestLoadRejectsUnusableThrottleConfiguration(t *testing.T) {
+	tests := []struct {
+		name  string
+		env   map[string]string
+		wants string
+	}{
+		{name: "no attempts", env: map[string]string{"LOGIN_ATTEMPTS_PER_ADDRESS": "0"}, wants: "LOGIN_ATTEMPTS_PER_ADDRESS"},
+		{name: "negative attempts", env: map[string]string{"LOGIN_ATTEMPTS_PER_CLIENT": "-1"}, wants: "LOGIN_ATTEMPTS_PER_CLIENT"},
+		{name: "window too long", env: map[string]string{"LOGIN_THROTTLE_WINDOW": "48h"}, wants: "LOGIN_THROTTLE_WINDOW"},
+		{name: "window of zero", env: map[string]string{"LOGIN_THROTTLE_WINDOW": "0s"}, wants: "LOGIN_THROTTLE_WINDOW"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setTestEnvironment(t)
+			for name, value := range tc.env {
+				t.Setenv(name, value)
+			}
+			_, _, err := Load()
+			if err == nil {
+				t.Fatalf("Load accepted %v", tc.env)
+			}
+			if !strings.Contains(err.Error(), tc.wants) {
+				t.Errorf("error %q does not name %s", err, tc.wants)
+			}
+		})
+	}
+}
+
 func setTestEnvironment(t *testing.T) {
 	t.Helper()
 	values := map[string]string{
-		"APP_ENV":                  "test",
-		"APP_MODE":                 "all",
-		"BIND_ADDR":                "127.0.0.1",
-		"PORT":                     "8080",
-		"DEBUG":                    "false",
-		"LOG_LEVEL":                "info",
-		"LOG_FORMAT":               "text",
-		"TRUST_PROXY_HEADERS":      "false",
-		"ALLOW_PUBLIC_BIND":        "false",
-		"OPERATOR_TOKEN":           "",
-		"DATABASE_URL":             "postgres://app:secret@127.0.0.1:5432/app?sslmode=disable",
-		"DATABASE_PASSWORD":        "",
-		"DB_MAX_CONNS":             "10",
-		"DB_MIN_CONNS":             "0",
-		"DB_MAX_CONN_LIFETIME":     "30m",
-		"DB_MAX_CONN_IDLE_TIME":    "5m",
-		"DB_HEALTH_CHECK_PERIOD":   "30s",
-		"DB_CONNECT_TIMEOUT":       "5s",
-		"DB_SLOW_QUERY_THRESHOLD":  "250ms",
-		"CURSOR_SIGNING_KEY":       testCursorKey("y2026a"),
-		"CURSOR_RETIRED_KEYS":      "",
-		"CURSOR_TTL":               "1h",
-		"SESSION_IDLE_TIMEOUT":     "12h",
-		"SESSION_ABSOLUTE_TIMEOUT": "720h",
-		"SESSION_TOUCH_INTERVAL":   "5m",
-		"SESSION_COOKIE_NAME":      "",
-		"SESSION_COOKIE_INSECURE":  "false",
-		"TRUSTED_PROXY_COUNT":      "0",
-		"TRUSTED_PROXY_NETWORKS":   "",
-		"ALLOWED_ORIGINS":          "",
+		"APP_ENV":                    "test",
+		"APP_MODE":                   "all",
+		"BIND_ADDR":                  "127.0.0.1",
+		"PORT":                       "8080",
+		"DEBUG":                      "false",
+		"LOG_LEVEL":                  "info",
+		"LOG_FORMAT":                 "text",
+		"TRUST_PROXY_HEADERS":        "false",
+		"ALLOW_PUBLIC_BIND":          "false",
+		"OPERATOR_TOKEN":             "",
+		"DATABASE_URL":               "postgres://app:secret@127.0.0.1:5432/app?sslmode=disable",
+		"DATABASE_PASSWORD":          "",
+		"DB_MAX_CONNS":               "10",
+		"DB_MIN_CONNS":               "0",
+		"DB_MAX_CONN_LIFETIME":       "30m",
+		"DB_MAX_CONN_IDLE_TIME":      "5m",
+		"DB_HEALTH_CHECK_PERIOD":     "30s",
+		"DB_CONNECT_TIMEOUT":         "5s",
+		"DB_SLOW_QUERY_THRESHOLD":    "250ms",
+		"CURSOR_SIGNING_KEY":         testCursorKey("y2026a"),
+		"CURSOR_RETIRED_KEYS":        "",
+		"CURSOR_TTL":                 "1h",
+		"SESSION_IDLE_TIMEOUT":       "12h",
+		"SESSION_ABSOLUTE_TIMEOUT":   "720h",
+		"SESSION_TOUCH_INTERVAL":     "5m",
+		"SESSION_COOKIE_NAME":        "",
+		"SESSION_COOKIE_INSECURE":    "false",
+		"TRUSTED_PROXY_COUNT":        "0",
+		"TRUSTED_PROXY_NETWORKS":     "",
+		"ALLOWED_ORIGINS":            "",
+		"LOGIN_ATTEMPTS_PER_ADDRESS": "10",
+		"LOGIN_ATTEMPTS_PER_CLIENT":  "60",
+		"LOGIN_THROTTLE_WINDOW":      "15m",
 	}
 	for name, value := range values {
 		t.Setenv(name, value)

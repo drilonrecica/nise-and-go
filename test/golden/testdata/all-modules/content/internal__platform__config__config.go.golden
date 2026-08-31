@@ -24,6 +24,7 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/session"
 
 	"github.com/example/myapp/internal/platform/database"
+	"github.com/example/myapp/internal/platform/throttle"
 )
 
 // Config is this application's fully resolved configuration.
@@ -92,6 +93,9 @@ type Config struct {
 	// per request, which is the right policy for a single-origin
 	// application.
 	AllowedOrigins []string
+	// LoginThrottle bounds how often an authentication attempt may be made,
+	// per address and per client.
+	LoginThrottle throttle.Policy
 	// SessionCookieInsecure reports that the session cookie has given up the
 	// __Host- prefix and the Secure attribute. It exists for a development
 	// origin that is not localhost; production refuses it.
@@ -141,6 +145,9 @@ func Load() (Config, []string, error) {
 	trustedProxyCount := l.Int("TRUSTED_PROXY_COUNT", rtconfig.Default("0"))
 	trustedProxyNetworks := l.String("TRUSTED_PROXY_NETWORKS", rtconfig.Default(""))
 	allowedOrigins := l.String("ALLOWED_ORIGINS", rtconfig.Default(""))
+	loginAttemptsPerAddress := l.Int("LOGIN_ATTEMPTS_PER_ADDRESS", rtconfig.Default("10"))
+	loginAttemptsPerClient := l.Int("LOGIN_ATTEMPTS_PER_CLIENT", rtconfig.Default("60"))
+	loginThrottleWindow := l.Duration("LOGIN_THROTTLE_WINDOW", rtconfig.Default("15m"))
 	// The two cursor key variables are read into locals rather than kept as
 	// Config fields: once the ring is built, holding the raw material would
 	// only add a second place for it to escape from.
@@ -225,6 +232,23 @@ func Load() (Config, []string, error) {
 	}
 
 	cfg.AllowedOrigins = splitList(allowedOrigins)
+
+	addressLimit, err := throttle.NewLimit(loginAttemptsPerAddress, time.Duration(loginThrottleWindow))
+	if err != nil {
+		return Config{}, warnings, fmt.Errorf("LOGIN_ATTEMPTS_PER_ADDRESS/LOGIN_THROTTLE_WINDOW: %w", err)
+	}
+	clientLimit, err := throttle.NewLimit(loginAttemptsPerClient, time.Duration(loginThrottleWindow))
+	if err != nil {
+		return Config{}, warnings, fmt.Errorf("LOGIN_ATTEMPTS_PER_CLIENT/LOGIN_THROTTLE_WINDOW: %w", err)
+	}
+	loginThrottle, err := throttle.NewPolicy(addressLimit, clientLimit)
+	if err != nil {
+		return Config{}, warnings, fmt.Errorf("LOGIN_ATTEMPTS_PER_ADDRESS/LOGIN_ATTEMPTS_PER_CLIENT: %w", err)
+	}
+	cfg.LoginThrottle = loginThrottle
+	if clientLimit.Attempts() < addressLimit.Attempts() {
+		warnings = append(warnings, "LOGIN_ATTEMPTS_PER_CLIENT is below LOGIN_ATTEMPTS_PER_ADDRESS: several people behind one address are one client, so the client limit is normally the looser of the two")
+	}
 
 	sessionLifetime, err := session.NewLifetime(
 		time.Duration(sessionIdle),

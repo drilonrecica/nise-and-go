@@ -230,6 +230,20 @@ present would be guessing at the worst moment.
 Trusting a proxy's identifiers while declaring there is no proxy is the kind of
 half-configuration that survives review.
 
+## Generated authentication throttle settings
+
+See [authentication throttling](throttling.md).
+
+| Variable | Default | Constraint |
+|---|---:|---|
+| `LOGIN_ATTEMPTS_PER_ADDRESS` | `10` | 1 through 10,000 |
+| `LOGIN_ATTEMPTS_PER_CLIENT` | `60` | 1 through 10,000 |
+| `LOGIN_THROTTLE_WINDOW` | `15m` | 1s through 24h |
+
+A client limit below the address limit warns at startup: several people behind
+one office address are one client, and a limit tight enough for a single account
+would lock out a building.
+
 ## Generated session settings
 
 See [sessions](sessions.md) for the cookie and lifecycle contracts.

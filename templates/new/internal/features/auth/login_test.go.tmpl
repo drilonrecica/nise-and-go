@@ -11,7 +11,9 @@ import (
 
 	"github.com/drilonrecica/nise-and-go/runtime/password"
 
+	"{{.ModulePath}}/internal/features/audit"
 	"{{.ModulePath}}/internal/platform/passwords"
+	"{{.ModulePath}}/internal/platform/throttle"
 )
 
 const goodPassword = "correct horse battery staple"
@@ -39,10 +41,28 @@ func testPasswordPolicy(t *testing.T, current int, superseded ...int) *password.
 	return policy
 }
 
+// testCredentials builds the login use case with a real throttle and a real
+// audit recorder. Both are required rather than optional: an authentication
+// path that can be constructed without them is one that will be, and they are
+// exactly the controls whose absence is invisible until somebody needs them.
 func testCredentials(t *testing.T, h *harness, policy *password.Policy) *Credentials {
 	t.Helper()
 
-	credentials, err := NewCredentials(h.accounts, h.sessions, policy)
+	return testCredentialsWithThrottle(t, h, policy, throttle.DefaultPolicy())
+}
+
+func testCredentialsWithThrottle(t *testing.T, h *harness, policy *password.Policy, limits throttle.Policy) *Credentials {
+	t.Helper()
+
+	limiter, err := throttle.NewLimiter(h.transactor(t), limits, throttle.WithClock(h.clock))
+	if err != nil {
+		t.Fatalf("NewLimiter: %v", err)
+	}
+	recorder, err := audit.NewRecorder(h.transactor(t), audit.WithClock(h.clock))
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	credentials, err := NewCredentials(h.accounts, h.sessions, policy, limiter, recorder)
 	if err != nil {
 		t.Fatalf("NewCredentials: %v", err)
 	}
@@ -364,11 +384,15 @@ func TestCredentialsRequireTheirDependencies(t *testing.T) {
 	t.Parallel()
 
 	policy := testPasswordPolicy(t, 1)
-	if _, err := NewCredentials(nil, nil, policy); err == nil {
+	if _, err := NewCredentials(nil, nil, policy, nil, nil); err == nil {
 		t.Error("NewCredentials accepted nil use cases")
 	}
-	if _, err := NewCredentials(&Accounts{}, &Sessions{}, nil); err == nil {
+	if _, err := NewCredentials(&Accounts{}, &Sessions{}, nil, nil, nil); err == nil {
 		t.Error("NewCredentials accepted a nil password policy")
+	}
+	// The throttle and the audit recorder are not optional.
+	if _, err := NewCredentials(&Accounts{}, &Sessions{}, policy, nil, nil); err == nil {
+		t.Error("NewCredentials accepted a login path with no throttle or audit recorder")
 	}
 	_ = context.Background()
 }
