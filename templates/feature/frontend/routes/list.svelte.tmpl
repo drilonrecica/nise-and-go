@@ -1,0 +1,89 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import Button from '$lib/components/ui/Button.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
+	import ProblemAlert from '$lib/components/ui/ProblemAlert.svelte';
+	import Skeleton from '$lib/components/ui/Skeleton.svelte';
+	import Table from '$lib/components/ui/Table.svelte';
+	import { list{{.TitlePlural}}, type {{.Type}} } from '$lib/features/{{.Singular}}/api';
+
+	let items = $state<{{.Type}}[] | null>(null);
+	let failure = $state<unknown>(null);
+
+	async function load() {
+		failure = null;
+		try {
+			items = (await list{{.TitlePlural}}({})).items;
+		} catch (error) {
+			failure = error;
+		}
+	}
+
+	$effect(() => void load());
+
+	function when(value: string): string {
+		return new Date(value).toLocaleString();
+	}
+</script>
+
+<svelte:head>
+	<title>{{.TitlePlural}} · {{.AppName}}</title>
+</svelte:head>
+
+<div class="mx-auto max-w-5xl px-4 py-8 sm:px-6">
+	<div class="flex flex-wrap items-center justify-between gap-3">
+		<h1 class="text-2xl font-semibold tracking-tight text-text">{{.TitlePlural}}</h1>
+		<Button variant="primary" href="/{{.Plural}}/new">New {{.Singular}}</Button>
+	</div>
+
+	{#if failure}
+		<div class="mt-6">
+			<ProblemAlert error={failure} onretry={load} />
+		</div>
+	{:else if items === null}
+		<div class="mt-6 space-y-2" aria-busy="true">
+			<Skeleton class="h-10 w-full" />
+			<Skeleton class="h-10 w-full" />
+			<Skeleton class="h-10 w-full" />
+		</div>
+	{:else if items.length === 0}
+		<div class="mt-6">
+			<EmptyState
+				title="No {{.Plural}} yet"
+				description="Create the first one, or adjust the filter if you were expecting some."
+			>
+				{#snippet action()}
+					<Button variant="primary" href="/{{.Plural}}/new">New {{.Singular}}</Button>
+				{/snippet}
+			</EmptyState>
+		</div>
+	{:else}
+		<div class="mt-6">
+			<Table caption="{{.TitlePlural}}">
+				<thead class="border-b border-line bg-surface-muted text-left">
+					<tr>
+						<th scope="col" class="px-4 py-2 font-medium text-text-muted">Name</th>
+						<th scope="col" class="px-4 py-2 font-medium text-text-muted">Created</th>
+						<th scope="col" class="px-4 py-2"><span class="sr-only">Actions</span></th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each items as item (item.id)}
+						<tr class="border-b border-line last:border-0">
+							<td class="px-4 py-2">
+								<a
+									class="rounded-xs font-medium text-primary underline underline-offset-4 hover:text-primary-hover"
+									href="/{{.Plural}}/{item.id}">{item.name}</a
+								>
+							</td>
+							<td class="px-4 py-2 text-text-muted">{when(item.created_at)}</td>
+							<td class="px-4 py-2 text-right">
+								<Button size="sm" variant="ghost" href="/{{.Plural}}/{item.id}/edit">Edit</Button>
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</Table>
+		</div>
+	{/if}
+</div>

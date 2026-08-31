@@ -27,6 +27,9 @@ type Options struct {
 	// ModulePath is the generated project's Go module path, read from its
 	// go.mod. The generated imports need it and nothing else does.
 	ModulePath string
+	// AppName is the application's name, read from the project's directory.
+	// The generated pages put it in their titles.
+	AppName string
 	// NextMigration is the version a resource's migration is written as. It
 	// is the number after the highest already in db/migrations, read from the
 	// project: the runtime's compatibility check refuses a history with a
@@ -93,6 +96,9 @@ type templateData struct {
 	// Migration is the zero-padded version a resource's migration is written
 	// as.
 	Migration string
+	// AppName is the application's name, for the page titles the generated
+	// Svelte writes.
+	AppName string
 }
 
 // featureTemplates is every template a `generate feature` run renders, mapped
@@ -124,6 +130,12 @@ var resourceTemplates = []templateFile{
 	{Template: "db/migrations/resource.sql.tmpl", Output: "db/migrations/{{.Migration}}_{{.Plural}}.sql"},
 	{Template: "api/resource.yaml.tmpl", Output: "api/{{.Singular}}.yaml"},
 	{Template: "internal/platform/httpapi/resource.go.tmpl", Output: "internal/platform/httpapi/{{.Singular}}.go"},
+	{Template: "frontend/lib/features/api.ts.tmpl", Output: "frontend/src/lib/features/{{.Singular}}/api.ts"},
+	{Template: "frontend/routes/form.svelte.tmpl", Output: "frontend/src/lib/features/{{.Singular}}/{{.Component}}Form.svelte"},
+	{Template: "frontend/routes/list.svelte.tmpl", Output: "frontend/src/routes/(app)/{{.Plural}}/+page.svelte"},
+	{Template: "frontend/routes/new.svelte.tmpl", Output: "frontend/src/routes/(app)/{{.Plural}}/new/+page.svelte"},
+	{Template: "frontend/routes/detail.svelte.tmpl", Output: "frontend/src/routes/(app)/{{.Plural}}/[id]/+page.svelte"},
+	{Template: "frontend/routes/edit.svelte.tmpl", Output: "frontend/src/routes/(app)/{{.Plural}}/[id]/edit/+page.svelte"},
 }
 
 // templateFile maps one embedded template to its output path.
@@ -164,6 +176,7 @@ func NewPlan(opts Options) (Plan, error) {
 		PermissionReadValue:   names.Plural + ".read",
 		PermissionManageValue: names.Plural + ".manage",
 		Migration:             fmt.Sprintf("%05d", opts.NextMigration),
+		AppName:               opts.AppName,
 	}
 
 	files := make([]generator.File, 0, len(sources))

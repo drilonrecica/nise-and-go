@@ -450,3 +450,58 @@ func TestResourceHandlerDelegatesAndDecidesNothing(t *testing.T) {
 		t.Error("the handler checks a permission itself; that belongs in the use case, where every caller reaches it")
 	}
 }
+
+// TestResourceFrontendIsACompleteFlow pins the four pages and the one form
+// component they share: create and edit differ in what they start with and
+// where they go afterwards, and a second copy of the form would be a second
+// place to add a field.
+func TestResourceFrontendIsACompleteFlow(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, resourceOptions())
+
+	for _, path := range []string{
+		"frontend/src/lib/features/order/api.ts",
+		"frontend/src/lib/features/order/OrderForm.svelte",
+		"frontend/src/routes/(app)/orders/+page.svelte",
+		"frontend/src/routes/(app)/orders/new/+page.svelte",
+		"frontend/src/routes/(app)/orders/[id]/+page.svelte",
+		"frontend/src/routes/(app)/orders/[id]/edit/+page.svelte",
+	} {
+		if _, exists := content[path]; !exists {
+			t.Errorf("the resource plan lacks %s", path)
+		}
+	}
+
+	// Every call goes through the application's one client, which supplies the
+	// versioned base, the anti-forgery header, and cancellation.
+	api := content["frontend/src/lib/features/order/api.ts"]
+	if !strings.Contains(api, "import { api } from '$lib/api/client';") {
+		t.Error("the feature's api.ts does not use the application's client")
+	}
+	for _, page := range []string{
+		"frontend/src/routes/(app)/orders/+page.svelte",
+		"frontend/src/routes/(app)/orders/new/+page.svelte",
+		"frontend/src/routes/(app)/orders/[id]/+page.svelte",
+		"frontend/src/routes/(app)/orders/[id]/edit/+page.svelte",
+	} {
+		if strings.Contains(content[page], "fetch(") {
+			t.Errorf("%s calls fetch directly", page)
+		}
+	}
+
+	// The list renders all four states, not only the one with rows.
+	list := content["frontend/src/routes/(app)/orders/+page.svelte"]
+	for _, fragment := range []string{"<Skeleton", "<EmptyState", "<ProblemAlert", "<Table"} {
+		if !strings.Contains(list, fragment) {
+			t.Errorf("the list page lacks %s", fragment)
+		}
+	}
+
+	// The browser schema mirrors the server's bound rather than exceeding it: a
+	// stricter rule here refuses input the server would accept.
+	form := content["frontend/src/lib/features/order/OrderForm.svelte"]
+	if !strings.Contains(form, "v.maxLength(200,") {
+		t.Error("the form's schema does not mirror the server's 200-character bound")
+	}
+}

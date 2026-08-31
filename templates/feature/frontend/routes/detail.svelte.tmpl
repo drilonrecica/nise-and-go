@@ -1,0 +1,62 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { page } from '$app/state';
+
+	import Button from '$lib/components/ui/Button.svelte';
+	import ProblemAlert from '$lib/components/ui/ProblemAlert.svelte';
+	import Skeleton from '$lib/components/ui/Skeleton.svelte';
+	import { get{{.Type}}, type {{.Type}} } from '$lib/features/{{.Singular}}/api';
+
+	const id = $derived(page.params.id ?? '');
+
+	let record = $state<{{.Type}} | null>(null);
+	let failure = $state<unknown>(null);
+
+	async function load() {
+		failure = null;
+		try {
+			record = await get{{.Type}}(id);
+		} catch (error) {
+			failure = error;
+		}
+	}
+
+	$effect(() => void load());
+
+	function when(value: string): string {
+		return new Date(value).toLocaleString();
+	}
+</script>
+
+<svelte:head>
+	<title>{record?.name ?? '{{.Title}}'} · {{.AppName}}</title>
+</svelte:head>
+
+<div class="mx-auto max-w-5xl px-4 py-8 sm:px-6">
+	{#if failure}
+		<ProblemAlert error={failure} onretry={load} />
+	{:else if record === null}
+		<div class="space-y-3" aria-busy="true">
+			<Skeleton class="h-8 w-64" />
+			<Skeleton class="h-4 w-40" />
+		</div>
+	{:else}
+		<div class="flex flex-wrap items-start justify-between gap-3">
+			<h1 class="text-2xl font-semibold tracking-tight text-text">{record.name}</h1>
+			<div class="flex items-center gap-2">
+				<Button href="/{{.Plural}}/{id}/edit">Edit</Button>
+			</div>
+		</div>
+
+		<dl class="mt-6 divide-y divide-line rounded-lg border border-line bg-surface text-sm">
+			<div class="flex justify-between gap-4 px-5 py-3">
+				<dt class="text-text-muted">Created</dt>
+				<dd class="text-text">{when(record.created_at)}</dd>
+			</div>
+			<div class="flex justify-between gap-4 px-5 py-3">
+				<dt class="text-text-muted">Last changed</dt>
+				<dd class="text-text">{when(record.updated_at)}</dd>
+			</div>
+		</dl>
+	{/if}
+</div>
