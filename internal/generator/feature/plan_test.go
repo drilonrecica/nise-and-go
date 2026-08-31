@@ -638,28 +638,41 @@ func TestResourceShipsAllFourKindsOfTest(t *testing.T) {
 
 // walkTree returns every path under root with its content hash, so a test can
 // assert that a run changed nothing outside its own plan.
+//
+// The walk is confined by os.Root, so a symlink planted inside the tree cannot
+// make this read something outside it — the same rule the repository's other
+// tree-walking checks follow.
 func walkTree(t *testing.T, root string) map[string]string {
 	t.Helper()
 
+	confined, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatalf("opening %s: %v", root, err)
+	}
+	t.Cleanup(func() {
+		if err := confined.Close(); err != nil {
+			t.Errorf("closing %s: %v", root, err)
+		}
+	})
+
 	tree := map[string]string{}
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	err = fs.WalkDir(confined.FS(), ".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			tree[filepath.ToSlash(relative)+"/"] = "dir"
+		if path == "." {
 			return nil
 		}
-		data, err := os.ReadFile(path) // #nosec G304 -- a path this test created.
+		if entry.IsDir() {
+			tree[path+"/"] = "dir"
+			return nil
+		}
+		data, err := fs.ReadFile(confined.FS(), path)
 		if err != nil {
 			return err
 		}
 		sum := sha256.Sum256(data)
-		tree[filepath.ToSlash(relative)] = hex.EncodeToString(sum[:])
+		tree[path] = hex.EncodeToString(sum[:])
 		return nil
 	})
 	if err != nil {
