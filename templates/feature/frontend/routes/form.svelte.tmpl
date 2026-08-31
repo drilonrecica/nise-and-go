@@ -1,0 +1,79 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { untrack } from 'svelte';
+	import * as v from 'valibot';
+
+	import Button from '$lib/components/ui/Button.svelte';
+	import Field from '$lib/components/ui/Field.svelte';
+	import Input from '$lib/components/ui/Input.svelte';
+	import ProblemAlert from '$lib/components/ui/ProblemAlert.svelte';
+	import { createForm } from '$lib/forms.svelte';
+	import type { {{.Type}}Input } from '$lib/features/{{.Singular}}/api';
+
+	let {
+		initial,
+		submitLabel,
+		cancelHref,
+		onsubmit
+	}: {
+		initial: {{.Type}}Input;
+		submitLabel: string;
+		cancelHref: string;
+		onsubmit: (input: {{.Type}}Input) => Promise<void>;
+	} = $props();
+
+	// The schema mirrors the server's bounds and does not exceed them. A
+	// browser rule stricter than the server's refuses input the server would
+	// accept, which is a bug the person cannot work around.
+	const schema = v.object({
+		name: v.pipe(
+			v.string(),
+			v.trim(),
+			v.nonEmpty('Enter a name.'),
+			v.maxLength(200, 'Use 200 characters or fewer.')
+		)
+	});
+
+	// The initial values are read once, deliberately: a form that reset itself
+	// because its parent re-rendered would discard what somebody was typing.
+	// untrack says that to Svelte rather than leaving a warning that a reader
+	// has to decide about; the submit handler is wrapped so the current one is
+	// always the one called.
+	const form = createForm({
+		schema,
+		initial: untrack(() => initial),
+		onsubmit: (input) => onsubmit(input)
+	});
+</script>
+
+<!--
+	One form for creating and for editing. They differ in what they start with
+	and where they go afterwards, which are the two things passed in; a second
+	copy would be a second place to add a field.
+-->
+{#if form.failure}
+	<div class="mb-4">
+		<ProblemAlert error={form.failure} />
+	</div>
+{/if}
+
+<form class="max-w-lg space-y-4" onsubmit={form.submit}>
+	<Field id="{{.Singular}}-name" label="Name" error={form.errors.name} required>
+		{#snippet children({ describedBy, invalid })}
+			<Input
+				id="{{.Singular}}-name"
+				bind:value={form.values.name}
+				onblur={() => form.touch('name')}
+				{describedBy}
+				{invalid}
+			/>
+		{/snippet}
+	</Field>
+
+	<div class="flex items-center gap-2">
+		<Button type="submit" variant="primary" loading={form.pending} loadingLabel="Saving">
+			{submitLabel}
+		</Button>
+		<Button href={cancelHref}>Cancel</Button>
+	</div>
+</form>

@@ -1,0 +1,53 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// The {{.Title}} feature's calls, in one place.
+//
+// They go through the application's one client, which is what supplies the
+// versioned base path, the anti-forgery header on state changes, same-origin
+// credentials, and cancellation. A component that called fetch directly would
+// be the request that eventually goes out without one of those.
+
+import { api } from '$lib/api/client';
+import type { components } from '$lib/api/schema';
+
+/** One {{.Singular}}, as the API describes it. */
+export type {{.Type}} = components['schemas']['{{.Type}}'];
+
+/** What a caller may set. */
+export type {{.Type}}Input = components['schemas']['{{.Type}}Input'];
+
+/** A page of {{.Plural}} and the cursors to continue with. */
+export type {{.Type}}Page = components['schemas']['{{.Type}}CursorCollection'];
+
+/** Read one page. */
+export function list{{.TitlePlural}}(
+	query: Record<string, string | number | undefined>,
+	signal?: AbortSignal
+): Promise<{{.Type}}Page> {
+	return api.get('/{{.Plural}}', { query, signal } as never);
+}
+
+/** Read one {{.Singular}}. */
+export function get{{.Type}}(id: string, signal?: AbortSignal): Promise<{{.Type}}> {
+	return api.get('/{{.Plural}}/{id}', { params: { id }, signal } as never);
+}
+
+/** Create one. */
+export function create{{.Type}}(input: {{.Type}}Input): Promise<{{.Type}}> {
+	return api.post('/{{.Plural}}', { body: input } as never);
+}
+
+/** Replace one. */
+export function update{{.Type}}(id: string, input: {{.Type}}Input): Promise<{{.Type}}> {
+	return api.put('/{{.Plural}}/{id}', { params: { id }, body: input } as never);
+}
+
+/** Remove one. */
+export function delete{{.Type}}(id: string): Promise<void> {
+	return api.delete('/{{.Plural}}/{id}', { params: { id } } as never);
+}
+
+/** The domain command. */
+export function archive{{.Type}}(id: string): Promise<{{.Type}}> {
+	return api.post('/{{.Plural}}/{id}/archive', { params: { id } } as never);
+}

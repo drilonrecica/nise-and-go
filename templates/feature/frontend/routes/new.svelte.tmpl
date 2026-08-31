@@ -1,0 +1,32 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { goto } from '$app/navigation';
+
+	import { toaster } from '$lib/components/ui/toast.svelte';
+	import { create{{.Type}} } from '$lib/features/{{.Singular}}/api';
+
+	import {{.Component}}Form from '$lib/features/{{.Singular}}/{{.Component}}Form.svelte';
+</script>
+
+<svelte:head>
+	<title>New {{.Singular}} · {{.AppName}}</title>
+</svelte:head>
+
+<div class="mx-auto max-w-5xl px-4 py-8 sm:px-6">
+	<h1 class="text-2xl font-semibold tracking-tight text-text">New {{.Singular}}</h1>
+
+	<div class="mt-6">
+		<{{.Component}}Form
+			initial={{"{"}}{ name: '' }}
+			submitLabel="Create {{.Singular}}"
+			cancelHref="/{{.Plural}}"
+			onsubmit={async (input) => {
+				const created = await create{{.Type}}(input);
+				toaster.success('{{.Title}} created');
+				// To the record rather than back to the list: somebody who just
+				// created a thing is almost always about to look at it.
+				await goto(`/{{.Plural}}/${created.id}`);
+			}}
+		/>
+	</div>
+</div>

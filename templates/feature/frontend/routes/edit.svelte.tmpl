@@ -1,0 +1,60 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+
+	import ProblemAlert from '$lib/components/ui/ProblemAlert.svelte';
+	import Skeleton from '$lib/components/ui/Skeleton.svelte';
+	import { toaster } from '$lib/components/ui/toast.svelte';
+	import { get{{.Type}}, update{{.Type}}, type {{.Type}} } from '$lib/features/{{.Singular}}/api';
+
+	import {{.Component}}Form from '$lib/features/{{.Singular}}/{{.Component}}Form.svelte';
+
+	const id = $derived(page.params.id ?? '');
+
+	let record = $state<{{.Type}} | null>(null);
+	let failure = $state<unknown>(null);
+
+	async function load() {
+		failure = null;
+		try {
+			record = await get{{.Type}}(id);
+		} catch (error) {
+			failure = error;
+		}
+	}
+
+	$effect(() => void load());
+</script>
+
+<svelte:head>
+	<title>Edit {{.Singular}} · {{.AppName}}</title>
+</svelte:head>
+
+<div class="mx-auto max-w-5xl px-4 py-8 sm:px-6">
+	<h1 class="text-2xl font-semibold tracking-tight text-text">Edit {{.Singular}}</h1>
+
+	{#if failure}
+		<div class="mt-6">
+			<ProblemAlert error={failure} onretry={load} />
+		</div>
+	{:else if record === null}
+		<div class="mt-6 max-w-lg space-y-3" aria-busy="true">
+			<Skeleton class="h-4 w-24" />
+			<Skeleton class="h-9 w-full" />
+		</div>
+	{:else}
+		<div class="mt-6">
+			<{{.Component}}Form
+				initial={{"{"}}{ name: record.name }}
+				submitLabel="Save changes"
+				cancelHref={`/{{.Plural}}/${id}`}
+				onsubmit={async (input) => {
+					await update{{.Type}}(id, input);
+					toaster.success('{{.Title}} saved');
+					await goto(`/{{.Plural}}/${id}`);
+				}}
+			/>
+		</div>
+	{/if}
+</div>

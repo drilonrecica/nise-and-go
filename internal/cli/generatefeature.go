@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/drilonrecica/nise-and-go/internal/generator/feature"
@@ -31,7 +32,15 @@ func generateSlice(_ context.Context, root, name string, kind feature.Kind) (fea
 	if err != nil {
 		return feature.Plan{}, err
 	}
-	options := feature.Options{Kind: kind, Name: name, ModulePath: modulePath}
+	options := feature.Options{
+		Kind:       kind,
+		Name:       name,
+		ModulePath: modulePath,
+		// The application's name is its directory's, which is what `nise new`
+		// created it as. It reaches only page titles, so a renamed directory
+		// costs a title rather than a broken import.
+		AppName: filepath.Base(filepath.Clean(root)),
+	}
 	if kind == feature.KindResource {
 		// Read rather than derived from the clock: the migration history has
 		// to be contiguous, and a timestamped filename would reintroduce the
