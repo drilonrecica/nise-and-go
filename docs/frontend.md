@@ -8,6 +8,12 @@ Nise generates a complete authenticated operational application, not an empty Sv
 
 The authenticated application is built with the static adapter as a single-page application with a fallback page and embedded into the Go binary. Protected routes are never prerendered, and universal `load` functions run only in the browser. There is no per-request server-side rendering (see [ADR 0005](adr/0005-static-embedded-frontend.md)).
 
+The root `+layout.ts` sets `ssr = false` and `prerender = false` for the whole tree, so `pnpm build` writes exactly one HTML document — the `fallback: 'index.html'` page — into `internal/platform/webui/embedded/client/`, and the Go server serves it for every path that is not a build asset. Prerendering is off rather than on because with `ssr = false` every route renders to the same empty shell: prerendering would write one identical copy per route and the fallback would then overwrite `index.html`. It also states the security rule structurally, since a protected route is then never written to disk at build time. A genuinely public, content-shaped page that needs no session may opt back in from its own `+page.ts`.
+
+The server reads that document's single inline bootstrap script at startup and puts its hash into the Content Security Policy, so no build-time nonce or `'unsafe-inline'` is needed; a document carrying no inline script fails closed instead of being served under a policy that would blank it.
+
+In a generated project `make dist` is the shipping build — `pnpm build` followed by the Go build that embeds its output. Plain `make build` deliberately does not run the frontend build, so a Go change can be compiled without Node; it embeds whatever build is present, or the committed placeholder page when there is none. `make web-clean` returns to the placeholder.
+
 ## Technology
 
 - SvelteKit and Svelte 5 runes.

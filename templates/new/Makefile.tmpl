@@ -12,16 +12,18 @@ OAPI_SPEC := api/openapi.yaml
 OAPI_CONFIG := api/oapi-codegen.yaml
 OAPI_GENERATED := internal/platform/httpapi/openapigen/openapi.gen.go
 
-.PHONY: help build run test migration-test fmt lint sqlc-generate sqlc-compile sqlc-vet api-generate api-check api-types-generate api-types-check web-install web-check web-test web-build all
+.PHONY: help build dist run test migration-test fmt lint sqlc-generate sqlc-compile sqlc-vet api-generate api-check api-types-generate api-types-check web-install web-check web-test web-build web-clean all
 
 help: ## List the available targets.
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
 
-all: fmt api-check lint sqlc-vet test web-test build ## Format, verify generated API contracts, lint, test, and build.
+all: fmt api-check lint sqlc-vet test web-test dist ## Format, verify generated API contracts, lint, test, and build the shipping binary.
 
-build: ## Build the application binary into bin/.
+build: ## Build the application binary into bin/ against whatever frontend is embedded.
 	go build -o $(BINARY) ./cmd/{{.AppName}}
+
+dist: web-build build ## Build the frontend, then the binary that embeds it. This is the shipping artifact.
 
 run: ## Run the application from source in the default process mode.
 	go run ./cmd/{{.AppName}}
@@ -103,3 +105,6 @@ web-test: web-check ## Run the frontend unit contract tests after type checking.
 
 web-build: ## Build the frontend into internal/platform/webui/embedded/client/.
 	pnpm --dir frontend build
+
+web-clean: ## Remove the frontend build so `build` falls back to the committed placeholder page.
+	rm -rf internal/platform/webui/embedded/client
