@@ -79,6 +79,7 @@ frontend/src/lib/components/ui/Checkbox.svelte file 0644 1022368bfe6b5ec55c91642
 frontend/src/lib/components/ui/ConfirmDialog.svelte file 0644 97c0e52e5a0ae8fc348bc3ac5a2a03f6b5c0ccc1ad064219dbd0066f7bd93814
 frontend/src/lib/components/ui/DataTable.svelte file 0644 6e7480f96c3188071ae4e813164f3622107c792036cf3673d221cb0fabcb6875
 frontend/src/lib/components/ui/Dialog.svelte file 0644 0278321ebe59512fc1bcb0ab39fc791c6bf0e34ced364cb3affcd84b3c598c86
+frontend/src/lib/components/ui/EmptyState.svelte file 0644 d3098ef9d6ea7f92cb1be809c3101a4ca83844f9ae6bce11bcc91a14d96d8b3f
 frontend/src/lib/components/ui/Field.svelte file 0644 a4eae224e7af685cba83b2202ea3ed66fb76ec105f58e4f2b7ca9a683460996a
 frontend/src/lib/components/ui/Icon.svelte file 0644 88175bfa382279c4ebe682d0b755e78c8394468db9901165b0fa47f100d1a74a
 frontend/src/lib/components/ui/Input.svelte file 0644 90fca93ab8fc1007f016be331332430aaec012ad39dd5e85c465261c3601d305
@@ -114,7 +115,7 @@ frontend/src/routes/(app)/+layout.svelte file 0644 e7dc41f8644c9d5a64375f131dce0
 frontend/src/routes/(app)/+layout.ts file 0644 ce692313638eac5238434fc13880d64262169661ea94331c9da33d8f0fb73b71
 frontend/src/routes/(app)/+page.svelte file 0644 be93ddd8d3b96935a5da64a6e9e847712c846e56fe79a50917bf864361c7d844
 frontend/src/routes/(app)/account dir 0755
-frontend/src/routes/(app)/account/+page.svelte file 0644 b00c584d8d7ba3257244987158a0e471df6eb2e073206ac5693714e0f86a7fda
+frontend/src/routes/(app)/account/+page.svelte file 0644 11b10d3b0e2d73601dde159a78a7e2ccc6d36ecd327b8a55b7b153914bbf75df
 frontend/src/routes/(app)/settings dir 0755
 frontend/src/routes/(app)/settings/+page.svelte file 0644 239330df3d0d706cd7c41e1bb9017f0969446753b4f69413dbf344cc12b368a7
 frontend/src/routes/(app)/sign-out dir 0755
@@ -128,6 +129,7 @@ frontend/src/routes/(public)/sign-in dir 0755
 frontend/src/routes/(public)/sign-in/+page.svelte file 0644 be1efc7d9b49718cc7ca87fbedc5083f79b51f5b101ec73d49801ae847996cf9
 frontend/src/routes/(public)/sign-in/second-factor dir 0755
 frontend/src/routes/(public)/sign-in/second-factor/+page.svelte file 0644 8622ee7431b2a9c5befff893d0447d19ba4a8d574396f4b65788c74be74fa3cb
+frontend/src/routes/+error.svelte file 0644 135cdcf7c97dbfa015bdcdeea55c5033736242a96f0e14abf30d5cf21f232d60
 frontend/src/routes/+layout.svelte file 0644 9a5e0f8cef23d4bae8295663ce506722eb1e4d769db8cf6d41cee3f0428cdef2
 frontend/src/routes/+layout.ts file 0644 e87dac774059cbb98b215cbd26e605048b59990262f3e11898f79dd6f79f9c29
 frontend/static dir 0755

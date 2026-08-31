@@ -104,6 +104,24 @@ Branch on `code`, not on the status. The server has one catalog of problems and 
 
 Field-level validation errors are not in the contract: the `Problem` schema is `additionalProperties: false` and carries no per-field member. Client-side field validation is Valibot's job, and the server remains authoritative.
 
+### The five states
+
+Every surface that reads from the API can be in five states, and each has one answer in the starter:
+
+| State | What renders |
+|---|---|
+| Loading | `Skeleton` inside a region marked `aria-busy`. The skeletons are `aria-hidden`; the region says it is busy once, not once per grey rectangle. |
+| Empty | `EmptyState`, with a heading and — where there is one — the single thing to do about it. |
+| Error | `ProblemAlert`, which reads a validated Problem and offers a retry only when retrying could work. |
+| Denied | The `403` case of the error boundary. |
+| Not found | The `404` case of the error boundary. |
+
+Empty is a state rather than an absence. A list that renders nothing when it has no rows is indistinguishable from one that failed, one that is still loading, and one whose filter matched nothing — and a person cannot tell which of those to act on.
+
+`src/routes/+error.svelte` is one boundary for every route: SvelteKit renders it for a load that threw and for a path no route matched, so "what does a broken page look like" has one answer rather than one per section. It separates 401, 403, and 404 because they ask the person to do three different things — sign in, ask somebody for access, or go back — and a single "something went wrong" leaves all three stuck. Nothing from a thrown value is rendered raw.
+
+The account page exercises loading, empty, error, and content, so the convention is demonstrated in the starter rather than only described here.
+
 ### Language
 
 Messages are compiled, not looked up. `messages/en.json` becomes real functions under `src/lib/paraglide/`, so a message that does not exist is a build error rather than a key rendered raw on a page, and a message nothing imports is not in the bundle. That directory is generated output: it is gitignored, and `pnpm build`, `pnpm dev`, `pnpm check`, and `pnpm test:unit` all regenerate it.

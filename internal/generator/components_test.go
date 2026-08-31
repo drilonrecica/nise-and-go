@@ -16,6 +16,7 @@ var curatedComponents = []string{
 	"Button.svelte",
 	"Checkbox.svelte",
 	"DataTable.svelte",
+	"EmptyState.svelte",
 	"ConfirmDialog.svelte",
 	"Dialog.svelte",
 	"Field.svelte",
