@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -321,4 +322,117 @@ func (l *Local) exists(t *testing.T, key string) bool {
 	t.Helper()
 	_, err := l.Stat(context.Background(), key)
 	return err == nil
+}
+
+// TestConcurrentPutsToOneKeyLeaveOneCoherentObject is why Put renames rather
+// than writing in place. Two writers to one key must produce one of the two
+// objects, never a mixture of both — and a reader arriving during either must
+// see a whole object.
+func TestConcurrentPutsToOneKeyLeaveOneCoherentObject(t *testing.T) {
+	t.Parallel()
+
+	store := newLocal(t)
+	ctx := context.Background()
+	const key = "uploads/contended.bin"
+
+	first := strings.Repeat("a", 64<<10)
+	second := strings.Repeat("b", 64<<10)
+
+	var writers sync.WaitGroup
+	for _, content := range []string{first, second} {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			for range 20 {
+				if _, err := store.Put(ctx, key, strings.NewReader(content), PutOptions{}); err != nil {
+					t.Errorf("Put: %v", err)
+					return
+				}
+			}
+		}()
+	}
+
+	// Read throughout, so a half-written object would be observed rather
+	// than merely possible.
+	readers := make(chan struct{})
+	go func() {
+		defer close(readers)
+		for range 100 {
+			reader, err := store.Get(ctx, key)
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				t.Errorf("Get: %v", err)
+				return
+			}
+			got, readErr := io.ReadAll(reader)
+			_ = reader.Close()
+			if readErr != nil {
+				t.Errorf("reading: %v", readErr)
+				return
+			}
+			if string(got) != first && string(got) != second {
+				t.Errorf("a reader saw an object that is neither of the two written values (%d bytes)", len(got))
+				return
+			}
+		}
+	}()
+
+	writers.Wait()
+	<-readers
+
+	// And nothing is left over.
+	entries, err := os.ReadDir(filepath.Join(store.Dir(), "uploads"))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Errorf("contended writes left %d files behind: %v", len(entries), names)
+	}
+}
+
+// TestConcurrentMovesLeaveExactlyOneWinner covers the transition an upload
+// makes out of quarantine, under contention: two finalizations of the same
+// object must not both report success.
+func TestConcurrentMovesLeaveExactlyOneWinner(t *testing.T) {
+	t.Parallel()
+
+	store := newLocal(t)
+	ctx := context.Background()
+	const from = "quarantine/a.bin"
+
+	if _, err := store.Put(ctx, from, strings.NewReader("x"), PutOptions{}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	var (
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		succeeded int
+	)
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			to := "objects/" + string(rune('a'+i)) + ".bin"
+			if err := store.Move(ctx, from, to); err == nil {
+				mu.Lock()
+				succeeded++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if succeeded != 1 {
+		t.Errorf("%d concurrent moves of one object succeeded, want exactly 1", succeeded)
+	}
+	if _, err := store.Stat(ctx, from); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the source survived: %v", err)
+	}
 }

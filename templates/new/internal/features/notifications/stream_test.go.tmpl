@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -290,5 +291,71 @@ func waitForListener(t *testing.T, h *harness, stream *Stream) {
 		case <-deadline:
 			t.Fatal("the notification listener never established its LISTEN")
 		}
+	}
+}
+
+// TestSubscribingAndUnsubscribingConcurrentlyIsSafe is a race-detector test
+// more than an assertion. The fan-out map is written by every connecting and
+// disconnecting client and read by the listener goroutine, which is exactly
+// the shape that produces a rare, unreproducible crash in production.
+func TestSubscribingAndUnsubscribingConcurrentlyIsSafe(t *testing.T) {
+	h := newHarness(t)
+
+	stream, err := NewStream(h.pool, discardLogger())
+	if err != nil {
+		t.Fatalf("NewStream: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// A goroutine signalling continuously, as the listener would.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				stream.signal(h.recipient)
+			}
+		}
+	}()
+
+	// Many connecting and disconnecting clients.
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 200 {
+				signals, unsubscribe := stream.Subscribe(h.recipient)
+				select {
+				case <-signals:
+				default:
+				}
+				unsubscribe()
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	// The signaller runs until the subscribers are finished.
+	time.Sleep(500 * time.Millisecond)
+	close(stop)
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("concurrent subscribe/unsubscribe deadlocked")
+	}
+
+	if got := stream.Subscribers(); got != 0 {
+		t.Errorf("Subscribers() = %d after every client disconnected", got)
 	}
 }

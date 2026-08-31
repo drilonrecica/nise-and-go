@@ -1,0 +1,397 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package jobs
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/riverqueue/river"
+)
+
+// The tests in this file start a real job client against a real database and
+// let it work. Everything else in this package asserts the shape of what is
+// configured; these assert what happens.
+//
+// That distinction has already earned its keep once, in the storage package,
+// and it matters more here: retry counts, attempt accounting, and "two
+// workers do not run the same job twice" are all properties of River and
+// PostgreSQL together. No amount of reading this application's own
+// configuration can confirm any of them.
+
+const workTimeout = 45 * time.Second
+
+// flakyArgs fails a fixed number of times before succeeding.
+type flakyArgs struct {
+	Attempts int `json:"attempts"`
+}
+
+func (flakyArgs) Kind() string { return "test_flaky" }
+
+type flakyWorker struct {
+	river.WorkerDefaults[flakyArgs]
+
+	// seen counts every attempt across every job of this kind.
+	seen *atomic.Int64
+	// succeeded is closed on the first successful run.
+	succeeded chan struct{}
+	once      sync.Once
+}
+
+func (w *flakyWorker) Work(_ context.Context, job *river.Job[flakyArgs]) error {
+	attempt := w.seen.Add(1)
+	if int(attempt) <= job.Args.Attempts {
+		return errors.New("not yet")
+	}
+	w.once.Do(func() { close(w.succeeded) })
+	return nil
+}
+
+// NextRetry overrides the client schedule so this test does not wait the
+// documented seconds between attempts. The schedule itself is pinned
+// exactly in retry_test.go; what is under test here is that a failure is
+// retried at all and that the attempt count advances.
+func (w *flakyWorker) NextRetry(*river.Job[flakyArgs]) time.Time {
+	return time.Now().Add(100 * time.Millisecond)
+}
+
+// doomedArgs always fails terminally.
+type doomedArgs struct{}
+
+func (doomedArgs) Kind() string { return "test_doomed" }
+
+type doomedWorker struct {
+	river.WorkerDefaults[doomedArgs]
+
+	attempts *atomic.Int64
+	done     chan struct{}
+	once     sync.Once
+}
+
+func (w *doomedWorker) Work(context.Context, *river.Job[doomedArgs]) error {
+	w.attempts.Add(1)
+	w.once.Do(func() { close(w.done) })
+	return Terminal(errors.New("this cannot be fixed by trying again"))
+}
+
+// exclusiveArgs records which job identifiers ran, so two clients working the
+// same queue can be checked for overlap.
+type exclusiveArgs struct {
+	N int `json:"n"`
+}
+
+func (exclusiveArgs) Kind() string { return "test_exclusive" }
+
+type exclusiveWorker struct {
+	river.WorkerDefaults[exclusiveArgs]
+
+	mu   *sync.Mutex
+	runs *map[int64]int
+	seen chan struct{}
+}
+
+func (w *exclusiveWorker) Work(_ context.Context, job *river.Job[exclusiveArgs]) error {
+	w.mu.Lock()
+	(*w.runs)[job.ID]++
+	w.mu.Unlock()
+	// Hold the job briefly, so a second client that was going to fetch the
+	// same row has every opportunity to.
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case w.seen <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// startedClient builds a client over the harness's pool, starts it, and
+// stops it on cleanup.
+func startedClient(t *testing.T, h *jobsHarness, registry *Registry, maxWorkers int) *Client {
+	t.Helper()
+
+	settings, err := NewSettings(maxWorkers, time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	client, err := New(h.pool, registry, settings, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Start(h.ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := client.Stop(stopCtx); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+	return client
+}
+
+// TestAFailedJobIsRetriedUntilItSucceeds is the property the retry policy
+// exists to provide, observed rather than configured.
+func TestAFailedJobIsRetriedUntilItSucceeds(t *testing.T) {
+	h := newJobsHarness(t)
+
+	seen := &atomic.Int64{}
+	worker := &flakyWorker{seen: seen, succeeded: make(chan struct{})}
+	registry := NewRegistry()
+	Register(registry, worker)
+	client := startedClient(t, h, registry, 1)
+
+	if err := client.Insert(h.ctx, flakyArgs{Attempts: 2}, nil); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	select {
+	case <-worker.succeeded:
+	case <-time.After(workTimeout):
+		t.Fatalf("the job never succeeded; it ran %d times", seen.Load())
+	}
+	if got := seen.Load(); got != 3 {
+		t.Errorf("the job ran %d times, want 2 failures and 1 success", got)
+	}
+
+	// The row records the attempts, so an operator can see the history
+	// rather than infer it.
+	//
+	// It is polled rather than read once. A worker returning and River
+	// writing the completion are two different moments, and the gap between
+	// them is exactly wide enough to read "running" here — which this test
+	// did, on its first run, and which would otherwise have been an
+	// intermittent failure in CI rather than a fixed one.
+	waitForJobState(t, h, "test_flaky", "completed")
+
+	var attempts int
+	if err := h.pool.QueryRow(h.ctx,
+		`SELECT attempt FROM river_job WHERE kind = $1`, "test_flaky").Scan(&attempts); err != nil {
+		t.Fatalf("reading the job row: %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("attempt = %d, want 3", attempts)
+	}
+}
+
+// waitForJobState blocks until the one job of a kind reaches state, or fails
+// with what it actually reached.
+func waitForJobState(t *testing.T, h *jobsHarness, kind string, want ...string) string {
+	t.Helper()
+
+	deadline := time.Now().Add(30 * time.Second)
+	var state string
+	for time.Now().Before(deadline) {
+		if err := h.pool.QueryRow(h.ctx,
+			`SELECT state::text FROM river_job WHERE kind = $1`, kind).Scan(&state); err != nil {
+			t.Fatalf("reading the job state: %v", err)
+		}
+		for _, acceptable := range want {
+			if state == acceptable {
+				return state
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("the %s job settled at %q, want one of %v", kind, state, want)
+	return state
+}
+
+// TestATerminalFailureIsNotRetried is the other half. Spending three hours
+// and eleven more attempts confirming a failure that cannot be fixed is the
+// waste Terminal exists to avoid.
+func TestATerminalFailureIsNotRetried(t *testing.T) {
+	h := newJobsHarness(t)
+
+	attempts := &atomic.Int64{}
+	worker := &doomedWorker{attempts: attempts, done: make(chan struct{})}
+	registry := NewRegistry()
+	Register(registry, worker)
+	client := startedClient(t, h, registry, 1)
+
+	if err := client.Insert(h.ctx, doomedArgs{}, nil); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	select {
+	case <-worker.done:
+	case <-time.After(workTimeout):
+		t.Fatal("the job never ran")
+	}
+
+	waitForJobState(t, h, "test_doomed", "cancelled", "discarded")
+
+	// Give any retry every chance to happen before concluding there was
+	// none. The job is already finalized by this point, so a second run
+	// would be a defect rather than a race.
+	time.Sleep(2 * time.Second)
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("a terminal failure ran %d times, want 1", got)
+	}
+	// And the row survives, because "who tried what and why it failed" is
+	// the question an incident asks.
+	var lastError string
+	if err := h.pool.QueryRow(h.ctx,
+		`SELECT coalesce((errors[array_upper(errors, 1)] ->> 'error'), '') FROM river_job WHERE kind = $1`,
+		"test_doomed").Scan(&lastError); err != nil {
+		t.Fatalf("reading the recorded error: %v", err)
+	}
+	if lastError == "" {
+		t.Error("the discarded job records no error, so nothing says why it was abandoned")
+	}
+}
+
+// TestTwoClientsNeverRunTheSameJobTwice is the concurrency property every
+// deployment with more than one worker process depends on, and the one no
+// amount of reading this application's configuration can confirm.
+func TestTwoClientsNeverRunTheSameJobTwice(t *testing.T) {
+	h := newJobsHarness(t)
+
+	var (
+		mu   sync.Mutex
+		runs = map[int64]int{}
+	)
+	seen := make(chan struct{}, 64)
+
+	const jobs = 12
+	for range 2 {
+		registry := NewRegistry()
+		Register(registry, &exclusiveWorker{mu: &mu, runs: &runs, seen: seen})
+		startedClient(t, h, registry, 4)
+	}
+
+	inserter := startedClient(t, h, func() *Registry {
+		r := NewRegistry()
+		Register(r, &exclusiveWorker{mu: &mu, runs: &runs, seen: seen})
+		return r
+	}(), 1)
+	for i := range jobs {
+		if err := inserter.Insert(h.ctx, exclusiveArgs{N: i}, nil); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+	}
+
+	deadline := time.After(workTimeout)
+	for {
+		mu.Lock()
+		complete := len(runs) >= jobs
+		mu.Unlock()
+		if complete {
+			break
+		}
+		select {
+		case <-seen:
+		case <-deadline:
+			mu.Lock()
+			got := len(runs)
+			mu.Unlock()
+			t.Fatalf("only %d of %d jobs ran", got, jobs)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for id, count := range runs {
+		if count != 1 {
+			t.Errorf("job %d ran %d times; two clients fetched the same row", id, count)
+		}
+	}
+}
+
+// TestAUniquePeriodicInsertIsRefusedByTheDatabase is the claim periodic.go
+// makes, checked against the constraint rather than against the options.
+//
+// The options are asserted in periodic_test.go; this proves the constraint
+// they rely on is actually there and actually refuses. Without it, a leader
+// change during a rolling deploy duplicates every periodic run.
+func TestAUniquePeriodicInsertIsRefusedByTheDatabase(t *testing.T) {
+	h := newJobsHarness(t)
+
+	registry := NewRegistry()
+	Register(registry, &receiptWorker{})
+	settings, err := NewSettings(1, time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	// Built but never started, so nothing works the jobs away underneath
+	// the count.
+	client, err := New(h.pool, registry, settings, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	opts := &river.InsertOpts{UniqueOpts: river.UniqueOpts{ByPeriod: time.Hour}}
+	for range 5 {
+		if err := client.Insert(h.ctx, receiptArgs{InvoiceID: "periodic"}, opts); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+	}
+
+	if got := h.queued(t, "test_receipt"); got != 1 {
+		t.Fatalf("five inserts inside one unique period produced %d rows, want 1", got)
+	}
+}
+
+// TestStoppingDrainsRatherThanAbandoning covers shutdown: a job already
+// running is given time to finish, and Stop returns only once it has.
+func TestStoppingDrainsRatherThanAbandoning(t *testing.T) {
+	h := newJobsHarness(t)
+
+	started := make(chan struct{})
+	finished := &atomic.Bool{}
+	registry := NewRegistry()
+	Register(registry, &slowWorker{started: started, finished: finished})
+
+	settings, err := NewSettings(1, time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	client, err := New(h.pool, registry, settings, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Start(h.ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := client.Insert(h.ctx, slowArgs{}, nil); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(workTimeout):
+		t.Fatal("the job never started")
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !finished.Load() {
+		t.Error("Stop returned while a job was still running; the drain abandoned it")
+	}
+}
+
+type slowArgs struct{}
+
+func (slowArgs) Kind() string { return "test_slow" }
+
+type slowWorker struct {
+	river.WorkerDefaults[slowArgs]
+
+	started  chan struct{}
+	finished *atomic.Bool
+	once     sync.Once
+}
+
+func (w *slowWorker) Work(context.Context, *river.Job[slowArgs]) error {
+	w.once.Do(func() { close(w.started) })
+	// Long enough that a Stop which did not drain would return first.
+	time.Sleep(time.Second)
+	w.finished.Store(true)
+	return nil
+}

@@ -270,6 +270,39 @@ automatically; `modules/`, `templates/`, `examples/`, and `test/` are named
 explicitly only once a future task confirms each holds Go source and nothing
 else that would repeat the `frontend/node_modules` problem.
 
+## The generated application's own service tests
+
+A generated project ships tests for its background jobs, mail, object
+storage, and notifications. Most of them are hermetic and run under `go test`
+with nothing installed. The ones that matter most are not, and that is the
+point.
+
+**Against a real PostgreSQL** (`TEST_DATABASE_URL`; skips locally, fails under
+`CI=true`):
+
+| Suite | What only a real database can show |
+|---|---|
+| `internal/platform/jobs` | That a failed job is actually retried and the attempt count advances; that a terminal failure is not; that **two clients never run the same job twice**; that a unique period is refused by the index rather than by the options; that `Stop` drains rather than abandons |
+| `internal/features/uploads` | That a rolled-back staging leaves nothing, and that every adversarial finalization is refused |
+| `internal/features/notifications` | That a rolled-back notification reaches nobody, and that a committed one reaches a live subscriber through PostgreSQL's own `NOTIFY` |
+
+**Against a real S3-compatible service** (`TEST_S3_ENDPOINT`; skips
+everywhere, including CI):
+
+`internal/platform/storage`'s `TestS3AgainstARealService` is the only thing
+that can confirm a SigV4 signature is correct. Every *wrong* implementation
+also produces a well-formed signature; only a service disagrees. It skips
+rather than fails when unset — unlike the database suites — because object
+storage is an optional module many deployments configure as `local` and never
+point at a service, while a database is required for the application to work
+at all.
+
+**Under `-race`:** the storage suite writes one key from two goroutines while
+a third reads it, and the notification suite subscribes and unsubscribes from
+sixteen goroutines while a seventeenth signals continuously. Both are shapes
+that produce a rare, unreproducible crash in production and a deterministic
+failure under the race detector.
+
 ## What CI deliberately does not do
 
 - **No release workflow.** Building or publishing the six release binaries
