@@ -1,0 +1,638 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package audit records what happened, separately from what the server logged.
+//
+// Operational logs and audit records answer different questions and have
+// different lifetimes. A log line is for the person debugging this deployment
+// this week; it is unstructured enough to say anything, sampled, rotated, and
+// shipped somewhere that may or may not keep it. An audit record is for the
+// person asking, months later, who disabled that account — so it is a row, in
+// the same database as the thing it describes, with a shape a query can rely
+// on.
+//
+// The table is append-only. Nothing in this package updates a record, and the
+// only deletion is a retention sweep the use case will not let anyone point at
+// anything recent. A record the application can quietly rewrite is not evidence
+// of anything.
+package audit
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/netip"
+	"slices"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/drilonrecica/nise-and-go/runtime/forwarded"
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/features/audit/store"
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// Outcomes. The set is closed so a query can group by it and a reader can tell
+// a refusal from a failure without reading the detail.
+const (
+	// Succeeded means the action was carried out.
+	Succeeded = "succeeded"
+	// Failed means it was attempted and did not complete.
+	Failed = "failed"
+	// Denied means authorization refused it. It is distinct from Failed
+	// because a run of denials is a different signal from a run of errors.
+	Denied = "denied"
+)
+
+// Actor kinds. The set is closed for the same reason.
+const (
+	// ActorUser is an authenticated person, identified by their account.
+	ActorUser = "user"
+	// ActorSystem is the application itself: a job, a migration, a sweep.
+	ActorSystem = "system"
+	// ActorAnonymous is an unauthenticated request. A failed login is the
+	// canonical example, and recording it is the point.
+	ActorAnonymous = "anonymous"
+)
+
+// Bounds, each matching a database constraint. They are checked here as well
+// so a bad value is a clear error rather than a constraint violation an
+// operator has to read backwards.
+const (
+	// MaxActionBytes bounds a dotted action name.
+	MaxActionBytes = 64
+	// MaxSubjectKindBytes bounds a subject kind.
+	MaxSubjectKindBytes = 32
+	// MaxSubjectIDBytes bounds a subject identifier.
+	MaxSubjectIDBytes = 128
+	// MaxDetailKeys bounds how many detail fields one record may carry.
+	MaxDetailKeys = 16
+	// MaxDetailKeyBytes bounds one detail key.
+	MaxDetailKeyBytes = 40
+	// MaxDetailValueBytes bounds one detail value.
+	MaxDetailValueBytes = 256
+	// MaxDetailBytes bounds the encoded detail object.
+	MaxDetailBytes = 4096
+	// MaxPageSize bounds one page of a listing.
+	MaxPageSize = 200
+	// DefaultPageSize is the page size a listing uses when none is given.
+	DefaultPageSize = 50
+	// MinRetention is the shortest age a retention sweep may delete. It is
+	// the single most important bound in this package: a sweep that could be
+	// pointed at yesterday would make the log erasable by whoever can set a
+	// configuration value.
+	MinRetention = 30 * 24 * time.Hour
+	// MaxSweepSize bounds one retention sweep.
+	MaxSweepSize = 5000
+)
+
+// Errors this package reports.
+var (
+	// ErrAction reports an action name outside the permitted shape.
+	ErrAction = errors.New("audit action must be dotted lowercase segments")
+	// ErrOutcome reports an outcome outside the closed set.
+	ErrOutcome = errors.New("audit outcome is not succeeded, failed, or denied")
+	// ErrActor reports an actor kind outside the closed set, or an identity
+	// that does not match the kind.
+	ErrActor = errors.New("audit actor kind and identity do not agree")
+	// ErrSubject reports a subject that is half specified or out of bounds.
+	ErrSubject = errors.New("audit subject is not fully specified within bounds")
+	// ErrDetail reports a detail field outside the permitted bounds, or one
+	// whose key names something that must not be recorded.
+	ErrDetail = errors.New("audit detail is not within the permitted bounds")
+	// ErrRetention reports a retention window shorter than MinRetention.
+	ErrRetention = errors.New("audit retention is shorter than the permitted minimum")
+	// ErrSweepLimit reports a sweep batch outside its bounds.
+	ErrSweepLimit = errors.New("audit sweep limit is outside the permitted bounds")
+)
+
+// Event is one thing worth recording.
+//
+// Request identity and the client address are deliberately absent: the recorder
+// reads them from the context, so they cannot be forgotten at a call site and
+// cannot be filled in with something other than what the request actually
+// carried.
+type Event struct {
+	// Action is a dotted lowercase name, such as "session.created".
+	Action string
+	// Outcome is Succeeded, Failed, or Denied.
+	Outcome string
+	// ActorKind is who acted.
+	ActorKind string
+	// ActorID is the acting account, required for ActorUser and forbidden
+	// otherwise.
+	ActorID string
+	// SubjectKind and SubjectID name what was acted on. Both or neither.
+	SubjectKind string
+	SubjectID   string
+	// Detail carries bounded, non-sensitive context. A key the logger would
+	// redact is refused rather than redacted, because a caller who tried to
+	// put a credential here should find out at the call site.
+	Detail map[string]string
+	// OccurredAt overrides the recorder's clock, for an event a job records
+	// after the fact.
+	OccurredAt time.Time
+}
+
+// Record is one stored event.
+type Record struct {
+	ID            int64
+	OccurredAt    time.Time
+	RecordedAt    time.Time
+	Action        string
+	Outcome       string
+	ActorKind     string
+	ActorID       string
+	SubjectKind   string
+	SubjectID     string
+	ClientIP      string
+	RequestID     string
+	CorrelationID string
+	Detail        map[string]string
+}
+
+// Position is a place in the newest-first listing. Both fields are needed:
+// several events commonly share an instant, and paging on the timestamp alone
+// would skip or repeat them at the boundary.
+type Position struct {
+	OccurredAt time.Time
+	ID         int64
+}
+
+// IsZero reports whether p names no position.
+func (p Position) IsZero() bool { return p.ID == 0 && p.OccurredAt.IsZero() }
+
+// Filter narrows a listing. Every field is optional; the zero value is
+// "everything, newest first".
+type Filter struct {
+	Action      string
+	ActorID     string
+	SubjectKind string
+	SubjectID   string
+	Since       time.Time
+	Until       time.Time
+}
+
+// Recorder appends and reads audit records.
+type Recorder struct {
+	transactor *database.Transactor
+	now        func() time.Time
+}
+
+// RecorderOption configures a Recorder.
+type RecorderOption func(*Recorder)
+
+// WithClock replaces the clock the recorder reads. It exists for tests.
+func WithClock(now func() time.Time) RecorderOption {
+	return func(r *Recorder) {
+		if now != nil {
+			r.now = now
+		}
+	}
+}
+
+// NewRecorder constructs the audit use case.
+func NewRecorder(transactor *database.Transactor, options ...RecorderOption) (*Recorder, error) {
+	if transactor == nil {
+		return nil, errors.New("audit: a transactor is required")
+	}
+	recorder := &Recorder{transactor: transactor, now: time.Now}
+	for _, option := range options {
+		option(recorder)
+	}
+	return recorder, nil
+}
+
+// Record appends one event in its own transaction.
+//
+// Use it for something that has already happened and cannot be undone — a
+// failed login, a refused authorization. For a change that is still in flight,
+// use RecordWithin so the record and the change commit or roll back together.
+func (r *Recorder) Record(ctx context.Context, event Event) (Record, error) {
+	var stored Record
+	err := r.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		stored, err = r.RecordWithin(ctx, tx, event)
+		return err
+	})
+	if err != nil {
+		return Record{}, err
+	}
+	return stored, nil
+}
+
+// RecordWithin appends one event inside a transaction the caller owns.
+//
+// This is the form that matters for a change worth auditing: the record and the
+// change commit together, so there is no window in which one exists without the
+// other, in either direction.
+func (r *Recorder) RecordWithin(ctx context.Context, tx pgx.Tx, event Event) (Record, error) {
+	params, detail, err := r.params(ctx, event)
+	if err != nil {
+		return Record{}, err
+	}
+	row, err := store.New(tx).AppendAuditEvent(ctx, params)
+	if err != nil {
+		return Record{}, fmt.Errorf("appending the audit record: %w", err)
+	}
+	return Record{
+		ID:            row.ID,
+		OccurredAt:    row.OccurredAt.Time.UTC(),
+		RecordedAt:    row.RecordedAt.Time.UTC(),
+		Action:        event.Action,
+		Outcome:       event.Outcome,
+		ActorKind:     event.ActorKind,
+		ActorID:       event.ActorID,
+		SubjectKind:   event.SubjectKind,
+		SubjectID:     event.SubjectID,
+		ClientIP:      addressText(params.ClientIp),
+		RequestID:     params.RequestID.String,
+		CorrelationID: params.CorrelationID.String,
+		Detail:        detail,
+	}, nil
+}
+
+// params validates the event and fills in what the context knows.
+func (r *Recorder) params(ctx context.Context, event Event) (store.AppendAuditEventParams, map[string]string, error) {
+	if err := validateAction(event.Action); err != nil {
+		return store.AppendAuditEventParams{}, nil, err
+	}
+	if event.Outcome != Succeeded && event.Outcome != Failed && event.Outcome != Denied {
+		return store.AppendAuditEventParams{}, nil, fmt.Errorf("%w: %q", ErrOutcome, event.Outcome)
+	}
+	actor, err := actorIdentity(event)
+	if err != nil {
+		return store.AppendAuditEventParams{}, nil, err
+	}
+	if err := validateSubject(event); err != nil {
+		return store.AppendAuditEventParams{}, nil, err
+	}
+	detail, encoded, err := encodeDetail(event.Detail)
+	if err != nil {
+		return store.AppendAuditEventParams{}, nil, err
+	}
+
+	occurredAt := event.OccurredAt
+	if occurredAt.IsZero() {
+		occurredAt = r.now()
+	}
+
+	params := store.AppendAuditEventParams{
+		OccurredAt: pgtype.Timestamptz{Time: occurredAt.UTC(), Valid: true},
+		Action:     event.Action,
+		Outcome:    event.Outcome,
+		ActorKind:  event.ActorKind,
+		ActorID:    actor,
+		Detail:     encoded,
+	}
+	if event.SubjectKind != "" {
+		params.SubjectKind = pgtype.Text{String: event.SubjectKind, Valid: true}
+		params.SubjectID = pgtype.Text{String: event.SubjectID, Valid: true}
+	}
+	// The request's own identity comes from the context, never from the
+	// caller: an audit record whose correlation IDs could be supplied by
+	// hand would correlate to whatever the caller preferred.
+	if address := forwarded.ClientIP(ctx); address.IsValid() {
+		params.ClientIp = &address
+	}
+	if id, ok := logging.RequestID(ctx); ok && logging.ValidID(id) {
+		params.RequestID = pgtype.Text{String: id, Valid: true}
+	}
+	if id, ok := logging.CorrelationID(ctx); ok && logging.ValidID(id) {
+		params.CorrelationID = pgtype.Text{String: id, Valid: true}
+	}
+	return params, detail, nil
+}
+
+// List returns one page of records, newest first.
+//
+// after is the position the previous page ended on; its zero value starts at
+// the newest record.
+func (r *Recorder) List(ctx context.Context, filter Filter, after Position, limit int) ([]Record, error) {
+	params, err := listParams(filter, after, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	var records []Record
+	err = r.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := store.New(tx).ListAuditEvents(ctx, params)
+		if err != nil {
+			return fmt.Errorf("listing audit records: %w", err)
+		}
+		records = make([]Record, 0, len(rows))
+		for _, row := range rows {
+			record, err := recordFrom(row)
+			if err != nil {
+				return err
+			}
+			records = append(records, record)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+// Count returns how many records match a filter, for a reporting page's total.
+func (r *Recorder) Count(ctx context.Context, filter Filter) (int64, error) {
+	params, err := listParams(filter, Position{}, DefaultPageSize)
+	if err != nil {
+		return 0, err
+	}
+
+	var total int64
+	err = r.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		total, err = store.New(tx).CountAuditEvents(ctx, store.CountAuditEventsParams{
+			Action:      params.Action,
+			ActorID:     params.ActorID,
+			SubjectKind: params.SubjectKind,
+			SubjectID:   params.SubjectID,
+			Since:       params.Since,
+			Until:       params.Until,
+		})
+		if err != nil {
+			return fmt.Errorf("counting audit records: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+// Sweep deletes records older than retention, in bounded batches, and reports
+// how many it removed.
+//
+// retention is refused below MinRetention. That bound is the point of this
+// method's existence rather than a plain delete: a sweep that could be pointed
+// at yesterday would make the audit log erasable by whoever can set a
+// configuration value, which is precisely the person an audit log exists to
+// record.
+func (r *Recorder) Sweep(ctx context.Context, retention time.Duration, limit int) (int64, error) {
+	if retention < MinRetention {
+		return 0, fmt.Errorf("%w: %s is shorter than %s", ErrRetention, retention, MinRetention)
+	}
+	if limit < 1 || limit > MaxSweepSize {
+		return 0, fmt.Errorf("%w: %d is outside 1..%d", ErrSweepLimit, limit, MaxSweepSize)
+	}
+	cutoff := r.now().UTC().Add(-retention)
+
+	var removed int64
+	err := r.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		removed, err = store.New(tx).DeleteAuditEventsBefore(ctx, store.DeleteAuditEventsBeforeParams{
+			Cutoff:     pgtype.Timestamptz{Time: cutoff, Valid: true},
+			SweepLimit: int32(limit),
+		})
+		if err != nil {
+			return fmt.Errorf("sweeping audit records: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+func listParams(filter Filter, after Position, limit int) (store.ListAuditEventsParams, error) {
+	if limit < 1 || limit > MaxPageSize {
+		limit = DefaultPageSize
+	}
+	params := store.ListAuditEventsParams{PageLimit: int32(limit)}
+
+	if filter.Action != "" {
+		if err := validateAction(filter.Action); err != nil {
+			return store.ListAuditEventsParams{}, err
+		}
+		params.Action = pgtype.Text{String: filter.Action, Valid: true}
+	}
+	if filter.ActorID != "" {
+		id, err := parseUUID(filter.ActorID)
+		if err != nil {
+			return store.ListAuditEventsParams{}, err
+		}
+		params.ActorID = id
+	}
+	if filter.SubjectKind != "" {
+		if !validSubjectKind(filter.SubjectKind) {
+			return store.ListAuditEventsParams{}, fmt.Errorf("%w: kind %q", ErrSubject, filter.SubjectKind)
+		}
+		params.SubjectKind = pgtype.Text{String: filter.SubjectKind, Valid: true}
+	}
+	if filter.SubjectID != "" {
+		if len(filter.SubjectID) > MaxSubjectIDBytes {
+			return store.ListAuditEventsParams{}, fmt.Errorf("%w: identifier is %d bytes", ErrSubject, len(filter.SubjectID))
+		}
+		params.SubjectID = pgtype.Text{String: filter.SubjectID, Valid: true}
+	}
+	if !filter.Since.IsZero() {
+		params.Since = pgtype.Timestamptz{Time: filter.Since.UTC(), Valid: true}
+	}
+	if !filter.Until.IsZero() {
+		params.Until = pgtype.Timestamptz{Time: filter.Until.UTC(), Valid: true}
+	}
+	if !after.IsZero() {
+		params.BeforeOccurredAt = pgtype.Timestamptz{Time: after.OccurredAt.UTC(), Valid: true}
+		params.BeforeID = pgtype.Int8{Int64: after.ID, Valid: true}
+	}
+	return params, nil
+}
+
+func recordFrom(row store.AuditEvent) (Record, error) {
+	detail, err := decodeDetail(row.Detail)
+	if err != nil {
+		return Record{}, err
+	}
+	return Record{
+		ID:            row.ID,
+		OccurredAt:    row.OccurredAt.Time.UTC(),
+		RecordedAt:    row.RecordedAt.Time.UTC(),
+		Action:        row.Action,
+		Outcome:       row.Outcome,
+		ActorKind:     row.ActorKind,
+		ActorID:       uuidString(row.ActorID),
+		SubjectKind:   row.SubjectKind.String,
+		SubjectID:     row.SubjectID.String,
+		ClientIP:      addressText(row.ClientIp),
+		RequestID:     row.RequestID.String,
+		CorrelationID: row.CorrelationID.String,
+		Detail:        detail,
+	}, nil
+}
+
+func validateAction(action string) error {
+	if action == "" || len(action) > MaxActionBytes {
+		return fmt.Errorf("%w: %d bytes, want 1..%d", ErrAction, len(action), MaxActionBytes)
+	}
+	segments := strings.Split(action, ".")
+	if len(segments) < 2 {
+		return fmt.Errorf("%w: %q has no dot", ErrAction, action)
+	}
+	for _, segment := range segments {
+		if !lowerSegment(segment) {
+			return fmt.Errorf("%w: %q", ErrAction, action)
+		}
+	}
+	return nil
+}
+
+func actorIdentity(event Event) (pgtype.UUID, error) {
+	switch event.ActorKind {
+	case ActorUser:
+		if event.ActorID == "" {
+			return pgtype.UUID{}, fmt.Errorf("%w: a user actor has no identity", ErrActor)
+		}
+		return parseUUID(event.ActorID)
+	case ActorSystem, ActorAnonymous:
+		if event.ActorID != "" {
+			return pgtype.UUID{}, fmt.Errorf("%w: a %s actor carries an identity", ErrActor, event.ActorKind)
+		}
+		return pgtype.UUID{}, nil
+	default:
+		return pgtype.UUID{}, fmt.Errorf("%w: kind %q", ErrActor, event.ActorKind)
+	}
+}
+
+func validateSubject(event Event) error {
+	if event.SubjectKind == "" && event.SubjectID == "" {
+		return nil
+	}
+	if event.SubjectKind == "" || event.SubjectID == "" {
+		return fmt.Errorf("%w: kind %q, identifier %q", ErrSubject, event.SubjectKind, event.SubjectID)
+	}
+	if !validSubjectKind(event.SubjectKind) {
+		return fmt.Errorf("%w: kind %q", ErrSubject, event.SubjectKind)
+	}
+	if len(event.SubjectID) > MaxSubjectIDBytes || !utf8.ValidString(event.SubjectID) {
+		return fmt.Errorf("%w: identifier is %d bytes", ErrSubject, len(event.SubjectID))
+	}
+	return nil
+}
+
+func validSubjectKind(kind string) bool {
+	return len(kind) <= MaxSubjectKindBytes && lowerSegment(kind)
+}
+
+// lowerSegment reports whether one dotted segment is lowercase alphanumeric
+// with underscores, starting with a letter.
+func lowerSegment(segment string) bool {
+	if segment == "" || segment[0] < 'a' || segment[0] > 'z' {
+		return false
+	}
+	for i := range len(segment) {
+		char := segment[i]
+		switch {
+		case char >= 'a' && char <= 'z', char >= '0' && char <= '9', char == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// encodeDetail validates and encodes the detail object.
+//
+// Keys are sorted before encoding so two records with the same fields have the
+// same bytes, which makes a stored record comparable and a diff readable.
+func encodeDetail(detail map[string]string) (map[string]string, []byte, error) {
+	if len(detail) > MaxDetailKeys {
+		return nil, nil, fmt.Errorf("%w: %d fields, maximum is %d", ErrDetail, len(detail), MaxDetailKeys)
+	}
+	keys := make([]string, 0, len(detail))
+	for key := range detail {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	copied := make(map[string]string, len(detail))
+	ordered := make([]byte, 0, 64)
+	ordered = append(ordered, '{')
+	for i, key := range keys {
+		if !lowerSegment(key) || len(key) > MaxDetailKeyBytes {
+			return nil, nil, fmt.Errorf("%w: key %q", ErrDetail, key)
+		}
+		// The rule is the logger's own, not a copy of it: a field the log
+		// would redact must not be written here in the clear either. It is
+		// refused rather than redacted so the caller finds out.
+		if logging.IsSensitiveKey(key) {
+			return nil, nil, fmt.Errorf("%w: key %q names something that must not be recorded", ErrDetail, key)
+		}
+		value := detail[key]
+		if len(value) > MaxDetailValueBytes || !utf8.ValidString(value) {
+			return nil, nil, fmt.Errorf("%w: value for %q is %d bytes", ErrDetail, key, len(value))
+		}
+		if i > 0 {
+			ordered = append(ordered, ',')
+		}
+		encodedKey, err := json.Marshal(key)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: key %q", ErrDetail, key)
+		}
+		encodedValue, err := json.Marshal(value)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: value for %q", ErrDetail, key)
+		}
+		ordered = append(ordered, encodedKey...)
+		ordered = append(ordered, ':')
+		ordered = append(ordered, encodedValue...)
+		copied[key] = value
+	}
+	ordered = append(ordered, '}')
+	if len(ordered) > MaxDetailBytes {
+		return nil, nil, fmt.Errorf("%w: encoded detail is %d bytes, maximum is %d", ErrDetail, len(ordered), MaxDetailBytes)
+	}
+	return copied, ordered, nil
+}
+
+func decodeDetail(raw []byte) (map[string]string, error) {
+	if len(raw) == 0 {
+		return map[string]string{}, nil
+	}
+	detail := map[string]string{}
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		return nil, fmt.Errorf("%w: stored detail is not an object of strings", ErrDetail)
+	}
+	return detail, nil
+}
+
+func addressText(address *netip.Addr) string {
+	if address == nil || !address.IsValid() {
+		return ""
+	}
+	return address.String()
+}
+
+func parseUUID(value string) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	if err := id.Scan(value); err != nil || !id.Valid {
+		return pgtype.UUID{}, fmt.Errorf("%w: %q is not a valid identifier", ErrActor, value)
+	}
+	return id, nil
+}
+
+func uuidString(id pgtype.UUID) string {
+	if !id.Valid {
+		return ""
+	}
+	value, err := id.Value()
+	if err != nil {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
+}

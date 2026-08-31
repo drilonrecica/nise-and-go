@@ -203,8 +203,8 @@ ORDER BY id;
 }
 
 // TestGeneratedSQLCTargetsAreHonestWithNoFeatures keeps the Makefile's
-// empty-tree behavior tested now that a generated project ships the auth
-// feature. The property belongs to the Makefile, not to the templates: an
+// empty-tree behavior tested now that a generated project ships query-owning
+// features. The property belongs to the Makefile, not to the templates: an
 // application that removes or has not yet added a query-owning feature must
 // still get an explicit message rather than a confusing success or failure.
 func TestGeneratedSQLCTargetsAreHonestWithNoFeatures(t *testing.T) {
@@ -220,8 +220,21 @@ func TestGeneratedSQLCTargetsAreHonestWithNoFeatures(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if err := os.RemoveAll(filepath.Join(root, "internal", "features", "auth")); err != nil {
-		t.Fatalf("remove the shipped feature: %v", err)
+	// Remove whatever query-owning features this generation shipped, without
+	// naming them: the property under test belongs to the Makefile, and a
+	// list here would break the day a third feature is added.
+	featureRoot := filepath.Join(root, "internal", "features")
+	entries, err := os.ReadDir(featureRoot)
+	if err != nil {
+		t.Fatalf("read the feature directory: %v", err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(featureRoot, entry.Name())); err != nil {
+			t.Fatalf("remove feature %s: %v", entry.Name(), err)
+		}
 	}
 	for _, target := range []string{"sqlc-compile", "sqlc-vet", "sqlc-generate"} {
 		cmd := exec.Command(makeBin, "--no-print-directory", target) // #nosec G204 -- makeBin is resolved and args are fixed literals.

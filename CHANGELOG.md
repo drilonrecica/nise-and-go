@@ -63,6 +63,13 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   script-readable cookie beside the session and echoed in `X-CSRF-Token`.
   Unauthenticated state changes are covered by the Origin and Fetch Metadata
   layers. Adds `ALLOWED_ORIGINS` and the `cross_site_request` Problem type.
+- Add the append-only audit log: an `audit_events` migration, a recorder that
+  can append inside a caller's transaction so a change and its record commit
+  together, a filtered newest-first query API paged on `(occurred_at, id)`, and
+  a retention sweep that refuses any window shorter than 30 days. Detail keys
+  the logger would redact are refused rather than redacted.
+- Add `logging.IsSensitiveKey`, so a second store of structured data can refuse
+  what the logger would redact using that rule rather than a copy of it.
 
 ### Fixed
 
