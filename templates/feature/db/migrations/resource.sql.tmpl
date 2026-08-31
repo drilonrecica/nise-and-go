@@ -1,0 +1,30 @@
+-- Generated once by nise; owned by this application. Nise will not overwrite it.
+--
+-- Nise wrote the least a table can be: an identifier, a name, and the two
+-- timestamps. It invented no columns, no constraints beyond the ones the name
+-- needs, and no relationships, because a schema a generator guessed is a
+-- schema nobody designed.
+--
+-- Every rule this domain has belongs here as well as in Go. A check the
+-- database enforces is a check that holds for a migration, a bulk import, and
+-- a hand-written UPDATE at three in the morning; a check only Go enforces is a
+-- check for the paths somebody remembered.
+
+-- +goose Up
+CREATE TABLE {{.Plural}} (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- The bound is repeated in Go (domain.go) so a bad value is refused before
+    -- it becomes a constraint violation an operator reads backwards from a log
+    -- line. Both are needed: this one is the guarantee.
+    name       text NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- The list reads newest first with a (created_at, id) cursor, so the index
+-- matches that order exactly. An index in a different order is an index the
+-- planner will not use for this query.
+CREATE INDEX {{.Plural}}_created_at_id_idx ON {{.Plural}} (created_at DESC, id DESC);
+
+-- +goose Down
+DROP TABLE {{.Plural}};

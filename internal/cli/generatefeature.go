@@ -31,7 +31,18 @@ func generateSlice(_ context.Context, root, name string, kind feature.Kind) (fea
 	if err != nil {
 		return feature.Plan{}, err
 	}
-	plan, err := feature.NewPlan(feature.Options{Kind: kind, Name: name, ModulePath: modulePath})
+	options := feature.Options{Kind: kind, Name: name, ModulePath: modulePath}
+	if kind == feature.KindResource {
+		// Read rather than derived from the clock: the migration history has
+		// to be contiguous, and a timestamped filename would reintroduce the
+		// nondeterminism ADR 0002 forbids.
+		next, err := feature.NextMigrationVersion(root)
+		if err != nil {
+			return feature.Plan{}, err
+		}
+		options.NextMigration = next
+	}
+	plan, err := feature.NewPlan(options)
 	if err != nil {
 		return feature.Plan{}, err
 	}
@@ -68,6 +79,14 @@ func (r generateResult) Human() string {
 	out.WriteString("write, so every change to a file you own stays in your own diff.\n\n")
 	for _, insertion := range r.Plan.Insertions {
 		out.WriteString(insertion.String())
+		out.WriteString("\n")
+	}
+
+	if len(r.Plan.Commands) > 0 {
+		out.WriteString("Then run, in this order:\n\n")
+		for _, command := range r.Plan.Commands {
+			fmt.Fprintf(&out, "    %s\n", command)
+		}
 		out.WriteString("\n")
 	}
 	return out.String()
