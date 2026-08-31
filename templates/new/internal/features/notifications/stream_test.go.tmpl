@@ -1,0 +1,294 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package notifications
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+)
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// TestAnInsertReachesASubscriber is the end-to-end path: a notification
+// written by a transaction reaches a live subscriber, through PostgreSQL's
+// own NOTIFY, with no polling anywhere in between.
+func TestAnInsertReachesASubscriber(t *testing.T) {
+	h := newHarness(t)
+
+	stream, err := NewStream(h.pool, discardLogger())
+	if err != nil {
+		t.Fatalf("NewStream: %v", err)
+	}
+	runCtx, stop := context.WithCancel(h.ctx)
+	defer stop()
+	go func() { _ = stream.Run(runCtx) }()
+
+	signals, unsubscribe := stream.Subscribe(h.recipient)
+	defer unsubscribe()
+
+	// Give the listener a moment to establish its LISTEN before the insert,
+	// because a notification queued before anybody is listening is
+	// delivered to nobody — which is the correct behaviour and would make
+	// this test flake rather than fail meaningfully.
+	waitForListener(t, h, stream)
+
+	h.notify(t, h.content())
+
+	select {
+	case <-signals:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a committed notification did not reach a live subscriber")
+	}
+}
+
+// TestARolledBackNotificationReachesNobody is the property that makes the
+// trigger safe to rely on. PostgreSQL's NOTIFY is transactional, so a
+// notification queued inside a transaction that then rolls back is discarded
+// — no outbox and no reconciliation needed.
+func TestARolledBackNotificationReachesNobody(t *testing.T) {
+	h := newHarness(t)
+
+	stream, err := NewStream(h.pool, discardLogger())
+	if err != nil {
+		t.Fatalf("NewStream: %v", err)
+	}
+	runCtx, stop := context.WithCancel(h.ctx)
+	defer stop()
+	go func() { _ = stream.Run(runCtx) }()
+
+	signals, unsubscribe := stream.Subscribe(h.recipient)
+	defer unsubscribe()
+	waitForListener(t, h, stream)
+
+	sentinel := errors.New("the change failed")
+	err = h.transactor.Within(h.ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		if _, notifyErr := h.notifications.Notify(ctx, tx, h.content()); notifyErr != nil {
+			return notifyErr
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Within = %v", err)
+	}
+
+	select {
+	case <-signals:
+		t.Fatal("a rolled-back notification reached a live subscriber")
+	case <-time.After(2 * time.Second):
+	}
+}
+
+// TestASignalReachesOnlyItsRecipient is the boundary. The channel is
+// process-wide; the fan-out is not.
+func TestASignalReachesOnlyItsRecipient(t *testing.T) {
+	h := newHarness(t)
+	other := h.createUser(t, "other@example.com")
+
+	stream, err := NewStream(h.pool, discardLogger())
+	if err != nil {
+		t.Fatalf("NewStream: %v", err)
+	}
+	runCtx, stop := context.WithCancel(h.ctx)
+	defer stop()
+	go func() { _ = stream.Run(runCtx) }()
+
+	mine, unsubscribeMine := stream.Subscribe(h.recipient)
+	defer unsubscribeMine()
+	theirs, unsubscribeTheirs := stream.Subscribe(other)
+	defer unsubscribeTheirs()
+	waitForListener(t, h, stream)
+
+	h.notify(t, h.content())
+
+	select {
+	case <-mine:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the recipient's own subscriber was not signalled")
+	}
+	select {
+	case <-theirs:
+		t.Fatal("another user's subscriber was signalled")
+	case <-time.After(time.Second):
+	}
+}
+
+// TestUnsubscribingStopsSignals covers the leak: a handler that returned must
+// not keep a subscriber registered, or a process serving a busy page
+// accumulates channels nobody reads.
+func TestUnsubscribingStopsSignals(t *testing.T) {
+	h := newHarness(t)
+
+	stream, err := NewStream(h.pool, discardLogger())
+	if err != nil {
+		t.Fatalf("NewStream: %v", err)
+	}
+	_, unsubscribe := stream.Subscribe(h.recipient)
+	if stream.Subscribers() != 1 {
+		t.Fatalf("Subscribers() = %d after one Subscribe", stream.Subscribers())
+	}
+	unsubscribe()
+	if stream.Subscribers() != 0 {
+		t.Errorf("Subscribers() = %d after unsubscribing", stream.Subscribers())
+	}
+	// Unsubscribing twice must not panic on a closed channel.
+	unsubscribe()
+}
+
+// TestASlowSubscriberCannotBlockTheListener is why the buffer is one and the
+// send is non-blocking. One client that has stopped reading must not stop
+// delivery for everybody.
+func TestASlowSubscriberCannotBlockTheListener(t *testing.T) {
+	h := newHarness(t)
+
+	stream, err := NewStream(h.pool, discardLogger())
+	if err != nil {
+		t.Fatalf("NewStream: %v", err)
+	}
+	_, unsubscribe := stream.Subscribe(h.recipient)
+	defer unsubscribe()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Far more signals than the buffer holds. Every one of them must
+		// return immediately.
+		for range 1000 {
+			stream.signal(h.recipient)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("signalling blocked on a subscriber that was not reading")
+	}
+}
+
+// TestTheHandlerRefusesAnUnauthenticatedRequest keeps the stream from being a
+// way to receive somebody else's signals.
+func TestTheHandlerRefusesAnUnauthenticatedRequest(t *testing.T) {
+	h := newHarness(t)
+
+	stream, err := NewStream(h.pool, discardLogger())
+	if err != nil {
+		t.Fatalf("NewStream: %v", err)
+	}
+	handler, err := stream.Handler(
+		func(*http.Request) (string, bool) { return "", false },
+		h.notifications.Unread,
+	)
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	handler(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/notifications/stream", nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("an unauthenticated request got %d, want 401", recorder.Code)
+	}
+	if stream.Subscribers() != 0 {
+		t.Error("a refused request left a subscriber behind")
+	}
+}
+
+// TestTheHandlerRefusesToBeConstructedWithoutItsDependencies keeps the stream
+// from being mounted without a way to identify the requesting user, which
+// would stream everybody's signals to anybody.
+func TestTheHandlerRefusesToBeConstructedWithoutItsDependencies(t *testing.T) {
+	h := newHarness(t)
+
+	stream, err := NewStream(h.pool, discardLogger())
+	if err != nil {
+		t.Fatalf("NewStream: %v", err)
+	}
+	if _, err := stream.Handler(nil, h.notifications.Unread); err == nil {
+		t.Error("Handler accepted a nil recipient resolver")
+	}
+	if _, err := stream.Handler(func(*http.Request) (string, bool) { return "u", true }, nil); err == nil {
+		t.Error("Handler accepted a nil unread counter")
+	}
+}
+
+// TestTheStreamSendsTheCurrentCountImmediately covers the case a client hits
+// every time it reloads: connecting after a notification arrived must not
+// leave it waiting for the next one to learn it has any.
+func TestTheStreamSendsTheCurrentCountImmediately(t *testing.T) {
+	h := newHarness(t)
+	h.notify(t, h.content())
+
+	stream, err := NewStream(h.pool, discardLogger())
+	if err != nil {
+		t.Fatalf("NewStream: %v", err)
+	}
+	handler, err := stream.Handler(
+		func(*http.Request) (string, bool) { return h.recipient, true },
+		h.notifications.Unread,
+	)
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(h.ctx, 3*time.Second)
+	defer cancel()
+	recorder := httptest.NewRecorder()
+	handler(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/notifications/stream", nil).WithContext(ctx))
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, "event: unread") {
+		t.Fatalf("the stream sent no unread event:\n%q", body)
+	}
+	var payload struct {
+		Count int64 `json:"count"`
+	}
+	line := body[strings.Index(body, "data: ")+len("data: "):]
+	line = line[:strings.IndexByte(line, '\n')]
+	if err := json.Unmarshal([]byte(line), &payload); err != nil {
+		t.Fatalf("the event payload does not parse: %v (%q)", err, line)
+	}
+	if payload.Count != 1 {
+		t.Errorf("count = %d, want 1", payload.Count)
+	}
+	if recorder.Header().Get("Content-Type") != "text/event-stream" {
+		t.Errorf("Content-Type = %q", recorder.Header().Get("Content-Type"))
+	}
+}
+
+// waitForListener blocks until the stream's LISTEN is established, by sending
+// notifications until one arrives. A notification queued before anybody is
+// listening is delivered to nobody — correct behaviour, and a race this test
+// would otherwise lose intermittently.
+func waitForListener(t *testing.T, h *harness, stream *Stream) {
+	t.Helper()
+
+	probe := "00000000-0000-0000-0000-000000000000"
+	signals, unsubscribe := stream.Subscribe(probe)
+	defer unsubscribe()
+
+	deadline := time.After(10 * time.Second)
+	for {
+		if _, err := h.pool.Exec(h.ctx,
+			`SELECT pg_notify('notification', json_build_object('recipient_id', $1::uuid)::text)`, probe); err != nil {
+			t.Fatalf("probing the listener: %v", err)
+		}
+		select {
+		case <-signals:
+			return
+		case <-time.After(50 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("the notification listener never established its LISTEN")
+		}
+	}
+}

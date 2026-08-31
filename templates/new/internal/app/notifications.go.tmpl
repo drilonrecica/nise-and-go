@@ -6,9 +6,15 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"{{.ModulePath}}/internal/features/notifications"
+	"{{.ModulePath}}/internal/platform/config"
 	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/httpauth"
 	"{{.ModulePath}}/internal/platform/mail"
 )
 
@@ -74,4 +80,60 @@ func (c *emailChannel) Deliver(ctx context.Context, notification notifications.N
 	_ = ctx
 	_ = notification
 	return errEmailChannelNotWired
+}
+
+// newNotificationStream builds the live-update fan-out, or nil when this
+// deployment has turned it off.
+//
+// Returning nil rather than a disabled stream is deliberate: a nil stream is
+// not mounted at all, so a client that asks for it gets a 404 and falls back
+// to polling immediately. A mounted-but-disabled endpoint would hold the
+// connection open and deliver nothing, which is the same outcome after a
+// much longer wait.
+func newNotificationStream(cfg config.Config, pool *pgxpool.Pool, logger *slog.Logger) (*notifications.Stream, error) {
+	if !cfg.NotificationsSSE {
+		return nil, nil
+	}
+	return notifications.NewStream(pool, logger)
+}
+
+// notificationRoutes returns the API registration function for this
+// application: the generated operations, plus the live-update endpoint when
+// this deployment has one.
+//
+// It resolves everything it needs up front and returns an error, so a
+// misconfigured stream stops startup rather than producing a route that fails
+// on its first request.
+//
+// The stream is mounted here rather than described in api/openapi.yaml, and
+// that is a deliberate exception with a narrow reason: an OpenAPI document
+// describes request and response *bodies*, and a server-sent-event stream has
+// no body in that sense — it has an unbounded sequence of framed events over
+// one response. Every attempt to express that in OpenAPI produces a
+// description generated code cannot use and a reader cannot trust. The
+// endpoint is documented in docs/notifications.md instead, and the polling
+// endpoints carrying the same information are in the document as usual.
+func notificationRoutes(
+	register func(chi.Router),
+	stream *notifications.Stream,
+	appNotifications *notifications.Notifications,
+) (func(chi.Router), error) {
+	if stream == nil {
+		// Not mounted at all, so a client asking for it gets a 404 and
+		// falls back to polling immediately. A mounted-but-disabled
+		// endpoint would hold the connection open and deliver nothing,
+		// which is the same outcome after a much longer wait.
+		return register, nil
+	}
+	handler, err := stream.Handler(func(r *http.Request) (string, bool) {
+		record, ok := httpauth.FromContext(r.Context())
+		return record.UserID, ok
+	}, appNotifications.Unread)
+	if err != nil {
+		return nil, err
+	}
+	return func(r chi.Router) {
+		register(r)
+		r.Get("/notifications/stream", handler)
+	}, nil
 }

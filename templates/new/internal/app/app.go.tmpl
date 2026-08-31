@@ -242,6 +242,37 @@ func Run(ctx context.Context, modeOverride string) error {
 		return fmt.Errorf("building the API adapter: %w", err)
 	}
 
+	// Mail is chosen once, here, so nothing downstream branches on which
+	// transport is in use. Production has already refused the log transport
+	// by this point; see config.Load.
+	mailer, err := newMailer(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("building the mailer: %w", err)
+	}
+	mailRenderer, err := mail.NewRenderer()
+	if err != nil {
+		return fmt.Errorf("parsing the embedded message templates: %w", err)
+	}
+
+{{- if .HasNotifications }}
+	appNotifications, err := newNotifications(transactor, mailer, mailRenderer, cfg.MailFrom, logger)
+	if err != nil {
+		return fmt.Errorf("building the notification use case: %w", err)
+	}
+{{- end }}
+
+	registerAPI := apiServer.Register
+{{- if .HasNotifications }}
+	notificationStream, err := newNotificationStream(cfg, pool, logger)
+	if err != nil {
+		return fmt.Errorf("building the notification stream: %w", err)
+	}
+	registerAPI, err = notificationRoutes(registerAPI, notificationStream, appNotifications)
+	if err != nil {
+		return fmt.Errorf("mounting the notification stream: %w", err)
+	}
+{{- end }}
+
 	handler, err := httpapi.New(httpapi.Deps{
 		Config:      cfg,
 		Logger:      logger,
@@ -250,7 +281,7 @@ func Run(ctx context.Context, modeOverride string) error {
 		Registry:    registry,
 		Metrics:     httpMetrics,
 		UI:          ui,
-		RegisterAPI: apiServer.Register,
+		RegisterAPI: registerAPI,
 		Middleware: httpapi.MiddlewareSlots{
 			// Resolving the session is a request-identity concern, so it
 			// runs on both surfaces: the document chain needs it as soon as
@@ -272,18 +303,6 @@ func Run(ctx context.Context, modeOverride string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("building the HTTP handler: %w", err)
-	}
-
-	// Mail is chosen once, here, so nothing downstream branches on which
-	// transport is in use. Production has already refused the log transport
-	// by this point; see config.Load.
-	mailer, err := newMailer(cfg, logger)
-	if err != nil {
-		return fmt.Errorf("building the mailer: %w", err)
-	}
-	mailRenderer, err := mail.NewRenderer()
-	if err != nil {
-		return fmt.Errorf("parsing the embedded message templates: %w", err)
 	}
 
 	// Every process builds a job client, because every process may need to
@@ -308,13 +327,6 @@ func Run(ctx context.Context, modeOverride string) error {
 	// failures, not first-message failures.
 	_, _ = mailer, mailRenderer
 
-{{- if .HasNotifications }}
-	appNotifications, err := newNotifications(transactor, mailer, mailRenderer, cfg.MailFrom, logger)
-	if err != nil {
-		return fmt.Errorf("building the notification use case: %w", err)
-	}
-{{- end }}
-
 	jobRegistry := jobs.NewRegistry()
 	if err := registerJobs(jobRegistry{{ if .HasUploads }}, uploadLifecycle{{ end }}{{ if .HasNotifications }}, appNotifications{{ end }}{{ if or .HasUploads .HasNotifications }}, logger{{ end }}); err != nil {
 		return fmt.Errorf("registering background jobs: %w", err)
@@ -325,7 +337,7 @@ func Run(ctx context.Context, modeOverride string) error {
 	}
 
 	server := lifecycle.NewHTTPServer(cfg.Addr(), handler, gate, lifecycle.WithLogger(logger))
-	worker := newWorker(jobClient, logger)
+	worker := newWorker(jobClient, logger{{ if .HasNotifications }}, notificationStream{{ end }})
 
 	group, err := lifecycle.NewGroup(mode, server, worker)
 	if err != nil {
@@ -345,6 +357,7 @@ func Run(ctx context.Context, modeOverride string) error {
 		slog.String("mail_transport", cfg.MailTransport),
 {{- if .HasNotifications }}
 		slog.Any("notification_channels", appNotifications.Channels()),
+		slog.Bool("notifications_sse", cfg.NotificationsSSE),
 {{- end }}
 {{- if .HasUploads }}
 		slog.String("storage_backend", cfg.StorageBackend),

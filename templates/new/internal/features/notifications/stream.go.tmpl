@@ -1,0 +1,296 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package notifications
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"{{.ModulePath}}/internal/platform/sse"
+)
+
+// Channel is the PostgreSQL notification channel live updates arrive on. It
+// matches the trigger in the notifications migration.
+const listenChannel = "notification"
+
+// Bounds on the live stream.
+const (
+	// MaxStreamLifetime is how long one connection is held before the
+	// client is asked to reconnect.
+	//
+	// A stream that never ends is a stream that never re-authenticates: a
+	// session revoked while a tab is open would keep receiving updates for
+	// as long as that tab stayed open. Ending the connection periodically
+	// means a revoked session stops receiving within this window, because
+	// the reconnection goes through the ordinary session check.
+	MaxStreamLifetime = 30 * time.Minute
+	// ReconnectDelay is what the client is told to wait before reconnecting.
+	// Longer than the browser's three-second default, so a deployment
+	// restarting with several thousand connected clients does not get all of
+	// them back within three seconds of each other.
+	ReconnectDelay = 5 * time.Second
+	// subscriberBuffer is how many pending signals one subscriber may hold
+	// before further ones are dropped. Dropping is correct: the signal
+	// carries no content, so a client that missed three of them and receives
+	// the fourth performs exactly the same read.
+	subscriberBuffer = 1
+)
+
+// Stream fans PostgreSQL notifications out to connected clients.
+//
+// One connection LISTENs for the whole process, not one per client. A
+// connection per client would put an upper bound on concurrent viewers equal
+// to the database's connection limit, which is a much smaller number than a
+// deployment expects to serve — and would spend a pooled connection on
+// waiting.
+//
+// It carries no content. A live event says "something changed for you", and
+// the client then performs the ordinary authorized read. That is not a
+// simplification: it is what keeps the authorization check in one place. A
+// stream that pushed the notification itself would be a second read path with
+// its own permission logic, and the two would eventually disagree.
+type Stream struct {
+	pool   *pgxpool.Pool
+	logger *slog.Logger
+
+	mu          sync.Mutex
+	subscribers map[string]map[chan struct{}]struct{}
+	started     bool
+}
+
+// NewStream builds the fan-out. It does not connect; [Stream.Run] does.
+func NewStream(pool *pgxpool.Pool, logger *slog.Logger) (*Stream, error) {
+	if pool == nil {
+		return nil, errors.New("notifications: a database pool is required")
+	}
+	if logger == nil {
+		return nil, errors.New("notifications: a logger is required")
+	}
+	return &Stream{
+		pool:        pool,
+		logger:      logger,
+		subscribers: make(map[string]map[chan struct{}]struct{}),
+	}, nil
+}
+
+// Run holds one dedicated connection and delivers what it hears until ctx is
+// done. It is a lifecycle.Worker loop; run it once per process.
+//
+// A dropped connection is reconnected rather than fatal. The database going
+// away is something a deployment survives, and a live update is the least
+// important thing in the process to lose: every client falls back to polling
+// on its own, having noticed nothing.
+func (s *Stream) Run(ctx context.Context) error {
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return errors.New("notifications: the stream is already running")
+	}
+	s.started = true
+	s.mu.Unlock()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		if err := s.listen(ctx); err != nil && ctx.Err() == nil {
+			s.logger.Warn("the notification listener stopped; clients fall back to polling",
+				slog.String("detail", err.Error()))
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(ReconnectDelay):
+			}
+		}
+	}
+}
+
+// listen holds one connection until it fails or ctx is done.
+func (s *Stream) listen(ctx context.Context) error {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquiring a listener connection: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, "LISTEN "+listenChannel); err != nil {
+		return fmt.Errorf("listening on %s: %w", listenChannel, err)
+	}
+
+	for {
+		notification, err := conn.Conn().WaitForNotification(ctx)
+		if err != nil {
+			return err
+		}
+		var payload struct {
+			RecipientID string `json:"recipient_id"`
+		}
+		if err := json.Unmarshal([]byte(notification.Payload), &payload); err != nil {
+			// A payload this process cannot parse is not worth stopping
+			// for: the trigger that produced it is in this application's
+			// own migration, so a mismatch means a deployment mid-upgrade.
+			s.logger.Warn("ignoring an unparseable notification payload")
+			continue
+		}
+		s.signal(payload.RecipientID)
+	}
+}
+
+// Subscribe returns a channel that receives a signal whenever something
+// changed for recipientID, and a function that unsubscribes.
+//
+// The signal is empty. It carries no content, and a subscriber that missed
+// three of them and receives the fourth performs exactly the same read — so a
+// full buffer drops rather than blocks. A live stream that could block the
+// listener would let one slow client stop delivery for everybody.
+func (s *Stream) Subscribe(recipientID string) (<-chan struct{}, func()) {
+	signals := make(chan struct{}, subscriberBuffer)
+
+	s.mu.Lock()
+	if s.subscribers[recipientID] == nil {
+		s.subscribers[recipientID] = make(map[chan struct{}]struct{})
+	}
+	s.subscribers[recipientID][signals] = struct{}{}
+	s.mu.Unlock()
+
+	// Idempotent, because a handler that unsubscribes on more than one exit
+	// path is an ordinary thing to write and closing an already-closed
+	// channel is a panic that takes the whole process with it. Once is
+	// cheaper than asking every caller to be careful.
+	var once sync.Once
+	return signals, func() {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if group, ok := s.subscribers[recipientID]; ok {
+				delete(group, signals)
+				if len(group) == 0 {
+					delete(s.subscribers, recipientID)
+				}
+			}
+			// Closing under the same lock signal takes is what makes this
+			// safe: a send can only happen while the channel is still in
+			// the map, and it is removed before it is closed.
+			close(signals)
+		})
+	}
+}
+
+// Subscribers reports how many connections are currently held, for a metric
+// and for a test.
+func (s *Stream) Subscribers() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	total := 0
+	for _, group := range s.subscribers {
+		total += len(group)
+	}
+	return total
+}
+
+// signal wakes every subscriber for one recipient.
+func (s *Stream) signal(recipientID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for signals := range s.subscribers[recipientID] {
+		select {
+		case signals <- struct{}{}:
+		default:
+			// Already pending. See Subscribe.
+		}
+	}
+}
+
+// Handler serves one client's live stream.
+//
+// recipient resolves the request's authenticated user. It is injected rather
+// than imported so this package does not depend on the session boundary, and
+// so a caller cannot accidentally mount the stream without one: a nil
+// resolver is refused at construction, and a request with no user is refused
+// with 401 rather than streamed everybody's signals.
+func (s *Stream) Handler(recipient func(*http.Request) (string, bool), unread func(context.Context, string) (int64, error)) (http.HandlerFunc, error) {
+	if recipient == nil {
+		return nil, errors.New("notifications: the stream handler needs a way to identify the requesting user")
+	}
+	if unread == nil {
+		return nil, errors.New("notifications: the stream handler needs a way to count unread notifications")
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		recipientID, ok := recipient(r)
+		if !ok || recipientID == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		stream, err := sse.Open(w)
+		if err != nil {
+			// The response writer cannot flush, which means something in
+			// front of this handler wrapped it without preserving
+			// http.Flusher. Streaming would silently deliver nothing, so
+			// the client is told to poll instead.
+			http.Error(w, "streaming is unavailable", http.StatusNotImplemented)
+			return
+		}
+		_ = stream.Retry(ReconnectDelay)
+
+		signals, unsubscribe := s.Subscribe(recipientID)
+		defer unsubscribe()
+
+		ctx := r.Context()
+		deadline := time.NewTimer(MaxStreamLifetime)
+		defer deadline.Stop()
+		heartbeat := time.NewTicker(sse.DefaultHeartbeat)
+		defer heartbeat.Stop()
+
+		// The first event is sent immediately, so a client that connects
+		// after a notification arrived is not left waiting for the next
+		// one to learn it has any.
+		if err := s.send(r.Context(), stream, unread, recipientID); err != nil {
+			return
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-deadline.C:
+				// The client reconnects, which re-runs the session check.
+				return
+			case <-heartbeat.C:
+				if err := stream.Heartbeat(); err != nil {
+					return
+				}
+			case _, open := <-signals:
+				if !open {
+					return
+				}
+				if err := s.send(ctx, stream, unread, recipientID); err != nil {
+					return
+				}
+			}
+		}
+	}, nil
+}
+
+// send writes the one event this stream carries: how many unread
+// notifications the recipient has.
+func (s *Stream) send(ctx context.Context, stream *sse.Stream, unread func(context.Context, string) (int64, error), recipientID string) error {
+	count, err := unread(ctx, recipientID)
+	if err != nil {
+		// A failed count is not worth closing the connection over: the
+		// client still has its polling fallback and its next signal.
+		s.logger.Warn("could not count unread notifications for a live stream",
+			slog.String("detail", err.Error()))
+		return nil
+	}
+	return stream.JSON("unread", map[string]int64{"count": count})
+}

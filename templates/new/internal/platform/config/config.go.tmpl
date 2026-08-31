@@ -124,6 +124,11 @@ type Config struct {
 	// It is the zero value when the backend is "local".
 	StorageS3 storage.S3Settings
 {{- end }}
+{{- if .HasNotifications }}
+	// NotificationsSSE enables the live-update endpoint. Turning it off
+	// leaves the polling endpoints, which carry the same information.
+	NotificationsSSE bool
+{{- end }}
 	// Jobs holds the validated background-worker limits. They apply only to
 	// a process running in "all" or "worker" mode; a web replica never
 	// fetches a job, so the numbers here are per worker process rather than
@@ -187,6 +192,9 @@ func Load() (Config, []string, error) {
 	s3PathStyle := l.Bool("S3_PATH_STYLE", rtconfig.Default("true"))
 	s3SecretKey := l.Secret("S3_SECRET_ACCESS_KEY", rtconfig.Default(""))
 	s3SessionToken := l.Secret("S3_SESSION_TOKEN", rtconfig.Default(""))
+{{- end }}
+{{- if .HasNotifications }}
+	notificationsSSE := l.Bool("NOTIFICATIONS_SSE", rtconfig.Default("true"))
 {{- end }}
 	mailTransport := l.String("MAIL_TRANSPORT", rtconfig.Default("log"))
 	mailFrom := l.String("MAIL_FROM", rtconfig.Default("noreply@localhost"))
@@ -276,6 +284,10 @@ func Load() (Config, []string, error) {
 	default:
 		return Config{}, warnings, fmt.Errorf("STORAGE_BACKEND: unknown backend %q, expected \"local\" or \"s3\"", storageBackend)
 	}
+{{- end }}
+
+{{- if .HasNotifications }}
+	cfg.NotificationsSSE = notificationsSSE
 {{- end }}
 
 	switch mailTransport {

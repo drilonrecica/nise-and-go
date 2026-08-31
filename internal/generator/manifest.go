@@ -360,6 +360,8 @@ var templateFiles = []templateFile{
 	{Template: "internal/features/notifications/notifications.go.tmpl", Output: "internal/features/notifications/notifications.go", Owner: OwnerApp, Module: recipe.ModuleNotifications},
 	{Template: "internal/features/notifications/notifications_test.go.tmpl", Output: "internal/features/notifications/notifications_test.go", Owner: OwnerApp, Module: recipe.ModuleNotifications},
 	{Template: "internal/features/notifications/queries/notifications.sql.tmpl", Output: "internal/features/notifications/queries/notifications.sql", Owner: OwnerApp, Raw: true, Module: recipe.ModuleNotifications},
+	{Template: "internal/features/notifications/stream.go.tmpl", Output: "internal/features/notifications/stream.go", Owner: OwnerApp, Module: recipe.ModuleNotifications},
+	{Template: "internal/features/notifications/stream_test.go.tmpl", Output: "internal/features/notifications/stream_test.go", Owner: OwnerApp, Module: recipe.ModuleNotifications},
 	{Template: "internal/features/notifications/sqlc.yaml.tmpl", Output: "internal/features/notifications/sqlc.yaml", Owner: OwnerApp, Raw: true, Module: recipe.ModuleNotifications},
 	{Template: "internal/features/notifications/store/db.go.tmpl", Output: "internal/features/notifications/store/db.go", Owner: OwnerNise, Raw: true, Module: recipe.ModuleNotifications},
 	{Template: "internal/features/notifications/store/models.go.tmpl", Output: "internal/features/notifications/store/models.go", Owner: OwnerNise, Raw: true, Module: recipe.ModuleNotifications},
@@ -412,6 +414,8 @@ var templateFiles = []templateFile{
 	// The uploads module's storage layer. Absent entirely when the module
 	// was not selected — no import, no dead code, and no configuration
 	// variable for a subsystem that is not there.
+	{Template: "internal/platform/sse/sse.go.tmpl", Output: "internal/platform/sse/sse.go", Owner: OwnerApp, Module: recipe.ModuleNotifications},
+	{Template: "internal/platform/sse/sse_test.go.tmpl", Output: "internal/platform/sse/sse_test.go", Owner: OwnerApp, Module: recipe.ModuleNotifications},
 	{Template: "internal/platform/storage/local.go.tmpl", Output: "internal/platform/storage/local.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
 	{Template: "internal/platform/storage/local_test.go.tmpl", Output: "internal/platform/storage/local_test.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
 	{Template: "internal/platform/storage/modes_unix_test.go.tmpl", Output: "internal/platform/storage/modes_unix_test.go", Owner: OwnerApp, Module: recipe.ModuleUploads},

@@ -52,7 +52,14 @@ func TestGeneratedProjectDefinesStrictOpenAPIBindings(t *testing.T) {
 		},
 		"internal/app/app.go": {
 			"apiServer, err := httpapi.NewServer(httpapi.ServerDeps{",
-			"RegisterAPI: apiServer.Register",
+			// Every generated operation reaches the router through the
+			// strict server's own Register. A project with the
+			// notifications module wraps it to mount one endpoint OpenAPI
+			// cannot describe (see docs/notifications.md), so the
+			// assertion is that the generated bindings are registered —
+			// not that nothing else is.
+			"registerAPI := apiServer.Register",
+			"RegisterAPI: registerAPI,",
 		},
 		"Makefile": {
 			"api-generate:",

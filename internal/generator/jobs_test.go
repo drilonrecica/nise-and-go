@@ -592,3 +592,63 @@ func TestAProjectWithoutNotificationsHasNoneAtAll(t *testing.T) {
 		}
 	}
 }
+
+// TestLiveUpdatesCarryNoContentAndFallBackToPolling pins M8-009: the stream
+// is an optimisation over the polling endpoints, never a second read path
+// with its own permission logic.
+func TestLiveUpdatesCarryNoContentAndFallBackToPolling(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, allModulesOptions())
+
+	// PostgreSQL's own transactional NOTIFY is the delivery mechanism, so
+	// there is no outbox and no reconciliation.
+	migration := content["db/migrations/00010_notifications.sql"]
+	for _, fragment := range []string{
+		"CREATE OR REPLACE FUNCTION notify_notification_recipient()",
+		"pg_notify('notification', json_build_object('recipient_id', NEW.recipient_id)::text)",
+		"CREATE TRIGGER notifications_notify",
+	} {
+		if !strings.Contains(migration, fragment) {
+			t.Errorf("the notifications migration lacks %q", fragment)
+		}
+	}
+	// The payload must carry the recipient and nothing else: it is visible
+	// to anything permitted to LISTEN, and content there would skip the
+	// authorization the read performs.
+	if strings.Contains(migration, "NEW.title") || strings.Contains(migration, "NEW.body") {
+		t.Error("the notification payload carries content, which skips the authorized read")
+	}
+
+	stream := content["internal/features/notifications/stream.go"]
+	for _, fragment := range []string{
+		`conn.Exec(ctx, "LISTEN "+listenChannel)`,
+		"MaxStreamLifetime = 30 * time.Minute",
+		"func (s *Stream) Subscribe(recipientID string) (<-chan struct{}, func())",
+		"http.StatusUnauthorized",
+	} {
+		if !strings.Contains(stream, fragment) {
+			t.Errorf("internal/features/notifications/stream.go lacks %q", fragment)
+		}
+	}
+	// A signal that could block would let one slow client stop delivery for
+	// everybody.
+	if !strings.Contains(stream, "default:") {
+		t.Error("the fan-out blocks on a full subscriber buffer")
+	}
+
+	// SSE must refuse a writer it cannot flush: silently delivering nothing
+	// is the failure that looks like success.
+	if !strings.Contains(content["internal/platform/sse/sse.go"], "ErrNotStreamable") {
+		t.Error("the SSE package accepts a writer that cannot flush")
+	}
+
+	// Turning it off must leave the endpoint unmounted, so a client falls
+	// back at once instead of holding an open connection.
+	if !strings.Contains(content["internal/app/notifications.go"], "if !cfg.NotificationsSSE {") {
+		t.Error("the stream cannot be turned off")
+	}
+	if !strings.Contains(content[".env.example"], "NOTIFICATIONS_SSE=true") {
+		t.Error(".env.example does not document the toggle")
+	}
+}
