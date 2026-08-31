@@ -221,6 +221,20 @@ components:
         issued as prev_cursor is accepted; it cannot be combined with after.
       schema:
         $ref: '#/components/schemas/Cursor'
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        A client-generated key that makes this command safe to retry. Reuse the
+        same key for every retry of the same request and a new key for a new
+        request; a key replayed with a different body is refused. Recorded
+        responses are replayable for a bounded retention window.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 255
+        pattern: '^[!-~]+$'
     ReportPageNumber:
       name: page
       in: query

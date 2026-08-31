@@ -22,6 +22,7 @@ import (
 	"{{.ModulePath}}/internal/platform/httpapi/httpjson"
 	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
 	"{{.ModulePath}}/internal/platform/httpapi/problem"
+	"{{.ModulePath}}/internal/platform/idempotency"
 )
 
 func TestStrictOpenAPIIndexRoute(t *testing.T) {
@@ -333,6 +334,123 @@ func TestReportRefusesDepthAndMixedPagination(t *testing.T) {
 	mixed := url.Values{"page": {"1"}, "after": {"nc1.a.b.c"}}
 	if _, err := pagination.ParseReport(mixed, limits); !errors.Is(err, pagination.ErrMixedPagination) {
 		t.Fatalf("error = %v, want ErrMixedPagination", err)
+	}
+}
+
+func TestIdempotencyKeyIsRequiredAndBounded(t *testing.T) {
+	t.Parallel()
+
+	valid := "01J00000000000000000000001"
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/payments", nil)
+	request.Header.Set(idempotency.HeaderName, valid)
+	got, err := idempotencyKey(request)
+	if err != nil || got != valid {
+		t.Fatalf("idempotencyKey = %q, %v; want the header value", got, err)
+	}
+
+	rejected := map[string]string{
+		"absent":          "",
+		"too short":       "short",
+		"with a space":    "01J0000000 0000000000001",
+		"with a newline":  "01J0000000000000000000001\n",
+		"non-ASCII":       "01J00000000000000000000é",
+		"control byte":    "01J000000000000000000\x0001",
+		"beyond the size": strings.Repeat("k", idempotency.MaxKeyBytes+1),
+	}
+	for name, key := range rejected {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			probe := httptest.NewRequest(http.MethodPost, "/api/v1/payments", nil)
+			if key != "" {
+				probe.Header[idempotency.HeaderName] = []string{key}
+			}
+			if _, err := idempotencyKey(probe); !errors.Is(err, idempotency.ErrInvalidKey) {
+				t.Fatalf("idempotencyKey accepted %q: %v", key, err)
+			}
+		})
+	}
+}
+
+func TestIdempotencyFingerprintIgnoresOnlyWhatItShould(t *testing.T) {
+	t.Parallel()
+
+	type payment struct {
+		Amount   int    `json:"amount"`
+		Currency string `json:"currency"`
+	}
+
+	base := httptest.NewRequest(http.MethodPost, "/api/v1/payments", nil)
+	original, err := idempotencyFingerprint(base, payment{Amount: 100, Currency: "EUR"})
+	if err != nil {
+		t.Fatalf("idempotencyFingerprint: %v", err)
+	}
+	if len(original) != idempotency.FingerprintBytes {
+		t.Fatalf("fingerprint is %d bytes, want %d", len(original), idempotency.FingerprintBytes)
+	}
+
+	same, err := idempotencyFingerprint(
+		httptest.NewRequest(http.MethodPost, "/api/v1/payments?trace=1", nil),
+		payment{Amount: 100, Currency: "EUR"},
+	)
+	if err != nil {
+		t.Fatalf("idempotencyFingerprint: %v", err)
+	}
+	if string(same) != string(original) {
+		t.Error("a query parameter changed the fingerprint; only method, path, and body are part of it")
+	}
+
+	different := []struct {
+		name    string
+		request *http.Request
+		body    payment
+	}{
+		{name: "amount", request: base, body: payment{Amount: 101, Currency: "EUR"}},
+		{name: "currency", request: base, body: payment{Amount: 100, Currency: "USD"}},
+		{name: "path", request: httptest.NewRequest(http.MethodPost, "/api/v1/refunds", nil), body: payment{Amount: 100, Currency: "EUR"}},
+		{name: "method", request: httptest.NewRequest(http.MethodPut, "/api/v1/payments", nil), body: payment{Amount: 100, Currency: "EUR"}},
+	}
+	for _, tc := range different {
+		t.Run(tc.name+" changes it", func(t *testing.T) {
+			t.Parallel()
+			got, err := idempotencyFingerprint(tc.request, tc.body)
+			if err != nil {
+				t.Fatalf("idempotencyFingerprint: %v", err)
+			}
+			if string(got) == string(original) {
+				t.Errorf("changing the %s did not change the fingerprint", tc.name)
+			}
+		})
+	}
+}
+
+func TestIdempotencyProblemDistinguishesRetryableFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "concurrent", err: idempotency.ErrConcurrentRequest, wantStatus: http.StatusConflict, wantCode: "idempotency_conflict"},
+		{name: "reused key", err: idempotency.ErrKeyReuse, wantStatus: http.StatusUnprocessableEntity, wantCode: "idempotency_key_reuse"},
+		{name: "invalid key", err: idempotency.ErrInvalidKey, wantStatus: http.StatusBadRequest, wantCode: "invalid_idempotency_key"},
+		{name: "anything else", err: errors.New("the database went away"), wantStatus: http.StatusInternalServerError, wantCode: "internal_server_error"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			definition := idempotencyProblem(fmt.Errorf("scope payments.create key 01J0secret: %w", tc.err))
+			if definition.Status() != tc.wantStatus || definition.Code() != tc.wantCode {
+				t.Fatalf("definition = %d/%q, want %d/%q", definition.Status(), definition.Code(), tc.wantStatus, tc.wantCode)
+			}
+
+			response := httptest.NewRecorder()
+			problem.Handler(definition)(response, transportRequestWithIDs(), fmt.Errorf("key 01J0secret: %w", tc.err))
+			if strings.Contains(response.Body.String(), "01J0secret") {
+				t.Errorf("response exposed the idempotency key: %q", response.Body.String())
+			}
+		})
 	}
 }
 

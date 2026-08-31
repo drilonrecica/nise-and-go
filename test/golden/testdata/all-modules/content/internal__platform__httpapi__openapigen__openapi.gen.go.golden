@@ -110,6 +110,9 @@ type CursorBefore = Cursor
 // CursorLimit defines model for CursorLimit.
 type CursorLimit = int32
 
+// IdempotencyKey defines model for IdempotencyKey.
+type IdempotencyKey = string
+
 // ReportPageNumber defines model for ReportPageNumber.
 type ReportPageNumber = int32
 

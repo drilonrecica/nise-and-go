@@ -76,6 +76,17 @@ with `invalid_pagination` or `cursor_expired`; `paginationProblem` does that
 mapping. A cursor is signed with `CURSOR_SIGNING_KEY` and expires after
 `CURSOR_TTL`.
 
+A command worth not repeating declares the reusable `IdempotencyKey` header
+parameter. `internal/platform/idempotency` records the response in the same
+transaction as the command, so a rolled-back command leaves no claim behind,
+and replays it byte-for-byte on a retry with the same key. Use
+`idempotencyKey`, `idempotencyFingerprint`, and `idempotencyProblem` in
+`api.go`: the public refusals are `400 invalid_idempotency_key`,
+`409 idempotency_conflict` while the first attempt is still running, and
+`422 idempotency_key_reuse` for a key replayed with a different body. Every
+write inside the command must use the callback's `pgx.Tx`, or it will survive a
+rollback and defeat the mechanism.
+
 The API and document routers are sibling security boundaries with independent
 policies. Application middleware may be added only through the documented
 `httpapi.MiddlewareSlots`, inside the fixed security, request identity/logging,

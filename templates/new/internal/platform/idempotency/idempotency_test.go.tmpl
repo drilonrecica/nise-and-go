@@ -1,0 +1,465 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package idempotency
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+)
+
+const idempotencyTestTimeout = 30 * time.Second
+
+// fixedNow is the instant the deterministic expiry tests read.
+var fixedNow = time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+
+// harness is one migrated, isolated database with an executor over it.
+type harness struct {
+	ctx        context.Context
+	pool       *pgxpool.Pool
+	transactor *database.Transactor
+	executor   *Executor
+	clock      func() time.Time
+	advance    func(time.Duration)
+}
+
+func newHarness(t *testing.T, retention time.Duration) *harness {
+	t.Helper()
+
+	testDatabase := dbtest.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), idempotencyTestTimeout)
+	t.Cleanup(cancel)
+
+	// The pool is wide enough for every goroutine the concurrency test
+	// starts. With a narrower pool the losers would queue on a connection
+	// rather than on the key, and the test would pass without ever
+	// exercising the path it exists to check.
+	settings, err := database.NewSettings(6, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	databaseURL := testDatabase.URL().Reveal()
+	databasePassword := testDatabase.Password().Reveal()
+	pool, err := database.Open(ctx, databaseURL, databasePassword, settings, database.OpenOptions{})
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	migrator, err := database.OpenMigrator(ctx, databaseURL, databasePassword, 5*time.Second, migrationdb.Migrations())
+	if err != nil {
+		t.Fatalf("OpenMigrator: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := migrator.Close(); err != nil {
+			t.Errorf("close migrator: %v", err)
+		}
+	})
+	if _, err := migrator.Up(ctx); err != nil {
+		t.Fatalf("migrate test database: %v", err)
+	}
+
+	transactor, err := database.NewTransactor(pool)
+	if err != nil {
+		t.Fatalf("NewTransactor: %v", err)
+	}
+
+	h := &harness{ctx: ctx, pool: pool, transactor: transactor}
+	current := fixedNow
+	var mu sync.Mutex
+	h.clock = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}
+	h.advance = func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		current = current.Add(d)
+	}
+	executor, err := NewExecutor(transactor, retention, WithClock(h.clock))
+	if err != nil {
+		t.Fatalf("NewExecutor: %v", err)
+	}
+	h.executor = executor
+	return h
+}
+
+func (h *harness) count(t *testing.T) int64 {
+	t.Helper()
+	var total int64
+	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM idempotency_keys`).Scan(&total); err != nil {
+		t.Fatalf("count idempotency records: %v", err)
+	}
+	return total
+}
+
+func TestExecutorRunsACommandOnceAndReplaysIt(t *testing.T) {
+	h := newHarness(t, DefaultRetention)
+	fingerprint := Fingerprint("POST", "/api/v1/payments", []byte(`{"amount":100}`))
+
+	runs := 0
+	command := func(ctx context.Context, tx pgx.Tx) (Response, error) {
+		runs++
+		if _, err := tx.Exec(ctx, `SELECT 1`); err != nil {
+			return Response{}, err
+		}
+		return Response{Status: 201, Body: []byte(`{"id":"pay_1"}`)}, nil
+	}
+
+	first, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000001", fingerprint, command)
+	if err != nil {
+		t.Fatalf("first Do: %v", err)
+	}
+	if first.Replayed || first.Status != 201 || string(first.Body) != `{"id":"pay_1"}` {
+		t.Fatalf("first result = %#v, want a fresh execution", first)
+	}
+
+	second, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000001", fingerprint, command)
+	if err != nil {
+		t.Fatalf("second Do: %v", err)
+	}
+	if !second.Replayed || second.Status != 201 || string(second.Body) != `{"id":"pay_1"}` {
+		t.Fatalf("second result = %#v, want a replay of the first", second)
+	}
+	if runs != 1 {
+		t.Fatalf("command ran %d times, want exactly 1", runs)
+	}
+	if got := h.count(t); got != 1 {
+		t.Fatalf("recorded %d rows, want 1", got)
+	}
+}
+
+func TestExecutorScopeAndKeyTogetherIdentifyARequest(t *testing.T) {
+	h := newHarness(t, DefaultRetention)
+	fingerprint := Fingerprint("POST", "/api/v1/payments", nil)
+
+	runs := 0
+	command := func(context.Context, pgx.Tx) (Response, error) {
+		runs++
+		return Response{Status: 200, Body: []byte(`{}`)}, nil
+	}
+
+	if _, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000001", fingerprint, command); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	// A different key under the same scope, and the same key under a
+	// different scope, are both different requests.
+	if _, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000002", fingerprint, command); err != nil {
+		t.Fatalf("Do with another key: %v", err)
+	}
+	if _, err := h.executor.Do(h.ctx, "refunds.create", "01J00000000000000000000001", fingerprint, command); err != nil {
+		t.Fatalf("Do under another scope: %v", err)
+	}
+	if runs != 3 {
+		t.Fatalf("command ran %d times, want 3", runs)
+	}
+}
+
+func TestExecutorRefusesAKeyReusedForADifferentRequest(t *testing.T) {
+	h := newHarness(t, DefaultRetention)
+	original := Fingerprint("POST", "/api/v1/payments", []byte(`{"amount":100}`))
+	altered := Fingerprint("POST", "/api/v1/payments", []byte(`{"amount":9999}`))
+
+	runs := 0
+	command := func(context.Context, pgx.Tx) (Response, error) {
+		runs++
+		return Response{Status: 201, Body: []byte(`{"id":"pay_1"}`)}, nil
+	}
+
+	if _, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000001", original, command); err != nil {
+		t.Fatalf("first Do: %v", err)
+	}
+	_, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000001", altered, command)
+	if !errors.Is(err, ErrKeyReuse) {
+		t.Fatalf("error = %v, want ErrKeyReuse", err)
+	}
+	if runs != 1 {
+		t.Fatalf("command ran %d times, want 1: a reused key must not execute", runs)
+	}
+}
+
+func TestExecutorRollbackLeavesNoRecord(t *testing.T) {
+	h := newHarness(t, DefaultRetention)
+	fingerprint := Fingerprint("POST", "/api/v1/payments", nil)
+	failure := errors.New("the command decided not to")
+
+	// The command writes before failing. Both the write and the claim must
+	// disappear: that is the point of sharing one transaction.
+	_, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000001", fingerprint, func(ctx context.Context, tx pgx.Tx) (Response, error) {
+		if _, execErr := tx.Exec(ctx, `CREATE TABLE rollback_probe (id integer)`); execErr != nil {
+			return Response{}, execErr
+		}
+		return Response{}, failure
+	})
+	if !errors.Is(err, failure) {
+		t.Fatalf("error = %v, want the command's own error", err)
+	}
+	if got := h.count(t); got != 0 {
+		t.Fatalf("recorded %d rows after a rolled-back command, want 0", got)
+	}
+	var probeExists bool
+	if err := h.pool.QueryRow(h.ctx, `SELECT to_regclass('public.rollback_probe') IS NOT NULL`).Scan(&probeExists); err != nil {
+		t.Fatalf("check rolled-back write: %v", err)
+	}
+	if probeExists {
+		t.Fatal("the command's write survived a rollback")
+	}
+
+	// A failed command is not a permanent refusal: the same key runs again.
+	result, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000001", fingerprint, func(context.Context, pgx.Tx) (Response, error) {
+		return Response{Status: 201, Body: []byte(`{"id":"pay_1"}`)}, nil
+	})
+	if err != nil {
+		t.Fatalf("retry after failure: %v", err)
+	}
+	if result.Replayed {
+		t.Fatal("the retry replayed a response that was never recorded")
+	}
+	if got := h.count(t); got != 1 {
+		t.Fatalf("recorded %d rows after the successful retry, want 1", got)
+	}
+}
+
+func TestExecutorRunsOnceUnderConcurrency(t *testing.T) {
+	h := newHarness(t, DefaultRetention)
+	fingerprint := Fingerprint("POST", "/api/v1/payments", nil)
+
+	const attempts = 4
+	var (
+		mu       sync.Mutex
+		runs     int
+		released = make(chan struct{})
+	)
+	command := func(ctx context.Context, tx pgx.Tx) (Response, error) {
+		mu.Lock()
+		runs++
+		mu.Unlock()
+		// Hold the transaction open so every other attempt is genuinely
+		// concurrent with this one rather than merely after it.
+		<-released
+		return Response{Status: 201, Body: []byte(`{"id":"pay_1"}`)}, nil
+	}
+
+	type outcome struct {
+		result Result
+		err    error
+	}
+	outcomes := make(chan outcome, attempts)
+	started := make(chan struct{}, attempts)
+	var wg sync.WaitGroup
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			started <- struct{}{}
+			result, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000001", fingerprint, command)
+			outcomes <- outcome{result: result, err: err}
+		}()
+	}
+	for range attempts {
+		<-started
+	}
+	// Give the losers time to reach and fail the advisory lock before the
+	// winner commits, so this exercises the concurrent path rather than the
+	// replay path.
+	time.Sleep(250 * time.Millisecond)
+	close(released)
+	wg.Wait()
+	close(outcomes)
+
+	var executed, conflicted, replayed int
+	for got := range outcomes {
+		switch {
+		case got.err == nil && got.result.Replayed:
+			replayed++
+		case got.err == nil:
+			executed++
+		case errors.Is(got.err, ErrConcurrentRequest):
+			conflicted++
+		default:
+			t.Errorf("unexpected error: %v", got.err)
+		}
+	}
+	if executed != 1 {
+		t.Errorf("%d attempts executed, want exactly 1", executed)
+	}
+	if runs != 1 {
+		t.Errorf("command ran %d times, want exactly 1", runs)
+	}
+	// Every loser reached the key while the winner still held it, so each is
+	// refused rather than served a replay. A replay here would mean the
+	// winner had already committed and the attempt was not concurrent after
+	// all, which is a different test.
+	if conflicted != attempts-1 {
+		t.Errorf("%d attempts were refused as concurrent, want %d (replayed %d)", conflicted, attempts-1, replayed)
+	}
+	if executed+conflicted+replayed != attempts {
+		t.Errorf("accounted for %d of %d attempts", executed+conflicted+replayed, attempts)
+	}
+	if got := h.count(t); got != 1 {
+		t.Errorf("recorded %d rows, want 1", got)
+	}
+}
+
+func TestExecutorExpiresARecordedResponse(t *testing.T) {
+	h := newHarness(t, time.Hour)
+	fingerprint := Fingerprint("POST", "/api/v1/payments", nil)
+
+	runs := 0
+	command := func(context.Context, pgx.Tx) (Response, error) {
+		runs++
+		return Response{Status: 201, Body: []byte(`{"id":"pay_1"}`)}, nil
+	}
+
+	if _, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000001", fingerprint, command); err != nil {
+		t.Fatalf("first Do: %v", err)
+	}
+
+	h.advance(59 * time.Minute)
+	replay, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000001", fingerprint, command)
+	if err != nil {
+		t.Fatalf("Do before expiry: %v", err)
+	}
+	if !replay.Replayed || runs != 1 {
+		t.Fatalf("a cursor inside its retention did not replay: %#v after %d runs", replay, runs)
+	}
+
+	h.advance(time.Hour)
+	fresh, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000001", fingerprint, command)
+	if err != nil {
+		t.Fatalf("Do after expiry: %v", err)
+	}
+	if fresh.Replayed || runs != 2 {
+		t.Fatalf("an expired record still replayed: %#v after %d runs", fresh, runs)
+	}
+	if got := h.count(t); got != 1 {
+		t.Fatalf("recorded %d rows, want the expired record replaced by one fresh row", got)
+	}
+
+	// An expired key is free again even for a different request.
+	h.advance(2 * time.Hour)
+	other := Fingerprint("POST", "/api/v1/payments", []byte(`{"amount":1}`))
+	if _, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000001", other, command); err != nil {
+		t.Fatalf("expired key reused for a different request: %v", err)
+	}
+}
+
+func TestDeleteExpiredIsBounded(t *testing.T) {
+	h := newHarness(t, time.Hour)
+	fingerprint := Fingerprint("POST", "/api/v1/payments", nil)
+	command := func(context.Context, pgx.Tx) (Response, error) {
+		return Response{Status: 204}, nil
+	}
+
+	const records = 5
+	for i := range records {
+		key := "01J0000000000000000000000" + string(rune('a'+i))
+		if _, err := h.executor.Do(h.ctx, "payments.create", key, fingerprint, command); err != nil {
+			t.Fatalf("Do %d: %v", i, err)
+		}
+	}
+	if got := h.count(t); got != records {
+		t.Fatalf("recorded %d rows, want %d", got, records)
+	}
+
+	// Nothing has expired yet.
+	removed, err := DeleteExpired(h.ctx, h.pool, h.clock(), 100)
+	if err != nil {
+		t.Fatalf("DeleteExpired: %v", err)
+	}
+	if removed != 0 {
+		t.Fatalf("removed %d unexpired rows", removed)
+	}
+
+	h.advance(2 * time.Hour)
+	removed, err = DeleteExpired(h.ctx, h.pool, h.clock(), 2)
+	if err != nil {
+		t.Fatalf("DeleteExpired: %v", err)
+	}
+	if removed != 2 {
+		t.Fatalf("removed %d rows, want the batch limit of 2", removed)
+	}
+	if got := h.count(t); got != records-2 {
+		t.Fatalf("%d rows remain, want %d", got, records-2)
+	}
+
+	total := int64(0)
+	for {
+		batch, err := DeleteExpired(h.ctx, h.pool, h.clock(), 2)
+		if err != nil {
+			t.Fatalf("DeleteExpired: %v", err)
+		}
+		if batch == 0 {
+			break
+		}
+		total += batch
+	}
+	if total != records-2 {
+		t.Fatalf("swept %d rows in the loop, want %d", total, records-2)
+	}
+	if got := h.count(t); got != 0 {
+		t.Fatalf("%d rows remain after the sweep", got)
+	}
+
+	if _, err := DeleteExpired(h.ctx, h.pool, h.clock(), 0); !errors.Is(err, ErrSweepLimit) {
+		t.Fatalf("DeleteExpired(0): error = %v, want ErrSweepLimit", err)
+	}
+}
+
+func TestExecutorRefusesAnOversizedOrInvalidResponse(t *testing.T) {
+	h := newHarness(t, DefaultRetention)
+	fingerprint := Fingerprint("POST", "/api/v1/payments", nil)
+
+	tests := []struct {
+		name     string
+		response Response
+		want     error
+	}{
+		{name: "status below the range", response: Response{Status: 99}, want: ErrInvalidStatus},
+		{name: "status above the range", response: Response{Status: 600}, want: ErrInvalidStatus},
+		{name: "zero status", response: Response{}, want: ErrInvalidStatus},
+		{name: "oversized body", response: Response{Status: 200, Body: make([]byte, MaxResponseBytes+1)}, want: ErrResponseTooLarge},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			key := "01J0000000000000000000000" + string(rune('A'+i))
+			_, err := h.executor.Do(h.ctx, "payments.create", key, fingerprint, func(context.Context, pgx.Tx) (Response, error) {
+				return tc.response, nil
+			})
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+	if got := h.count(t); got != 0 {
+		t.Fatalf("recorded %d rows for refused responses, want 0", got)
+	}
+
+	// A bodyless response is ordinary and must round-trip through a NOT NULL
+	// column.
+	result, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000009", fingerprint, func(context.Context, pgx.Tx) (Response, error) {
+		return Response{Status: 204}, nil
+	})
+	if err != nil {
+		t.Fatalf("bodyless Do: %v", err)
+	}
+	replay, err := h.executor.Do(h.ctx, "payments.create", "01J00000000000000000000009", fingerprint, func(context.Context, pgx.Tx) (Response, error) {
+		return Response{Status: 500}, nil
+	})
+	if err != nil {
+		t.Fatalf("bodyless replay: %v", err)
+	}
+	if !replay.Replayed || replay.Status != result.Status || len(replay.Body) != 0 {
+		t.Fatalf("bodyless replay = %#v, want the recorded 204", replay)
+	}
+}
