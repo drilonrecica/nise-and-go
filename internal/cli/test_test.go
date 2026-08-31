@@ -255,8 +255,34 @@ func TestRunSuiteAppendsExtraArgs(t *testing.T) {
 
 func TestRunSuiteKillsChildOnContextCancellation(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	plan := suitePlan{Name: "go", Runnable: true, Dir: dir, Argv: []string{"sh", "-c", "sleep 30"}}
+	assertRunSuiteReturnsOnCancellation(t, "sleep 30")
+}
+
+// TestRunSuiteKillsAGrandchildOnContextCancellation is the case that
+// actually happens. Nothing nise runs is a leaf: `go test` compiles and
+// executes test binaries as its own children, and `pnpm test` forks a
+// runner. Terminating only the process nise started leaves those behind,
+// and — because they inherited the write end of the pipe runSuite reads —
+// leaves runSuite blocked in Wait until they finish on their own, which is
+// the entire duration the interrupt was meant to cut short.
+//
+// `sleep 30 & wait` is the smallest shell spelling of that shape: the shell
+// is the direct child, the sleep is the grandchild holding the pipe, and no
+// shell optimises the pair into a single exec. Against a runSuite that
+// kills only its direct child this fails in the same five seconds and with
+// the same message as its sibling above, on every platform rather than only
+// where the shell happened to fork.
+func TestRunSuiteKillsAGrandchildOnContextCancellation(t *testing.T) {
+	t.Parallel()
+	assertRunSuiteReturnsOnCancellation(t, "sleep 30 & wait")
+}
+
+// assertRunSuiteReturnsOnCancellation runs script as a suite, cancels the
+// context once it is under way, and fails unless runSuite returns promptly.
+func assertRunSuiteReturnsOnCancellation(t *testing.T, script string) {
+	t.Helper()
+
+	plan := suitePlan{Name: "go", Runnable: true, Dir: t.TempDir(), Argv: []string{"sh", "-c", script}}
 	w := &fixtureWriter{}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -271,11 +297,12 @@ func TestRunSuiteKillsChildOnContextCancellation(t *testing.T) {
 
 	select {
 	case <-done:
-		// runSuite returned promptly after cancellation: the child was
-		// killed rather than left to run its full 30s sleep, which is
-		// exactly what must happen so a Ctrl-C never orphans a child.
+		// runSuite returned promptly after cancellation: the child tree
+		// was terminated rather than left to run its full 30s sleep,
+		// which is exactly what must happen so a Ctrl-C never orphans a
+		// process nise started.
 	case <-time.After(5 * time.Second):
-		t.Fatal("runSuite did not return within 5s of context cancellation; the child was not killed")
+		t.Fatalf("runSuite did not return within 5s of context cancellation for %q; the child tree was not terminated", script)
 	}
 }
 
