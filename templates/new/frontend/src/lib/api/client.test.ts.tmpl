@@ -136,4 +136,26 @@ describe('API client', () => {
 			void ({ items: [], page: { has_more: false, next_cursor: 'nc1.a.b.c' } } satisfies components['schemas']['APIRootCollection']);
 		}
 	});
+
+	it('types report pages as a separate page/size/total contract', () => {
+		const report: components['schemas']['APIRootReportCollection'] = {
+			items: [],
+			page: { page: 2, size: 25, total: 51, total_pages: 3, has_more: true }
+		};
+		expect(report.page.total_pages).toBe(3);
+
+		if (false) {
+			expectTypeOf<components['schemas']['ReportPage']>().not.toEqualTypeOf<
+				components['schemas']['CursorPage']
+			>();
+			// @ts-expect-error every reporting member is required.
+			void ({ items: [], page: { page: 1, size: 25 } } satisfies components['schemas']['APIRootReportCollection']);
+			// @ts-expect-error cursor members do not belong to the reporting contract.
+			void ({ items: [], page: { page: 1, size: 25, total: 0, total_pages: 0, has_more: false, next_cursor: 'nc1.a.b.c' } } satisfies components['schemas']['APIRootReportCollection']);
+			// @ts-expect-error a cursor page cannot stand in for a report page.
+			void ({ items: [], page: { has_more: false } } satisfies components['schemas']['APIRootReportCollection']);
+			// @ts-expect-error a report total is a number, never null for an empty report.
+			void ({ items: [], page: { page: 1, size: 25, total: null, total_pages: 0, has_more: false } } satisfies components['schemas']['APIRootReportCollection']);
+		}
+	});
 });

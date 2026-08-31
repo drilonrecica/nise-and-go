@@ -38,6 +38,7 @@ Every pagination failure is the client's, so all of them are `400` with an RFC
 | Code | When |
 |---|---|
 | `cursor_expired` | The cursor verified but is past `CURSOR_TTL`. Start the listing again. |
+| `report_too_deep` | The report page starts past the offset ceiling. Narrow the filters. |
 | `invalid_pagination` | Everything else. |
 
 The generic code deliberately covers a forged cursor, a cursor from another
@@ -133,6 +134,54 @@ Four rules the generated helpers exist to keep:
   argument, so two different result sets can never share one binding.
 - **Normalize nil items.** A Go slice is nil-able; the contract says `items` is
   an array. The collection constructor is where that is enforced.
+
+## Offset reporting pagination
+
+A report is a different question from a listing: a page number is something a
+person quotes, and a total is something they need. So it is a separate
+contract, not a mode of the cursor one. The parameters are different, the page
+schema is different, and a request that mixes the two is refused.
+
+| Parameter | Meaning |
+|---|---|
+| `page` | 1-based page number. Absent means the first page. |
+| `size` | Page size. Absent takes the report's default. |
+
+```json
+{
+  "items": [],
+  "page": { "page": 2, "size": 25, "total": 51, "total_pages": 3, "has_more": true }
+}
+```
+
+`total_pages` is `0` for an empty result set, so "page 1 of 0" reads as an
+empty report rather than as a page that does not exist. `page` and `size` are
+echoed from the request the totals were computed for, never recomputed, so a
+report can never describe a page other than the one it returned.
+
+### Bounds
+
+- `page` is 1 through 100,000, and `size` is 1 through 200. Neither is clamped.
+- The **offset ceiling** is the real limit. A report configures its own with
+  `NewReportLimits(defaultSize, maxSize, maxOffset)`, up to 1,000,000. A page
+  whose first row is past it is refused with `report_too_deep`, because past
+  that point the database discards more rows than it returns and the honest
+  answer is a narrower filter or an export, not a slower page.
+- `Report.Offset()` returns `int64`. Two in-range `int` values do not have an
+  in-range `int` product on a 32-bit platform, and this value goes straight
+  into SQL.
+- `Report.Totals(total)` re-checks the report's bounds, which is what lets the
+  transport layer narrow `page` and `size` to the contract's `int32` without a
+  silent wrap.
+
+### Choosing between the two
+
+Use cursor pagination for anything a user scrolls: it is stable under
+concurrent inserts and it does not get slower on page 400. Use a report when
+the page number is part of the answer — an exported statement, a printed
+listing, a table where "page 7 of 12" is the point. A report pays for that with
+a `COUNT`, with rows that shift under it as data changes, and with a depth
+ceiling.
 
 ## Related
 

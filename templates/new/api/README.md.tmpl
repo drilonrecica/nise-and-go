@@ -57,6 +57,15 @@ components so every collection names the same three parameters.
 `next_cursor` and `prev_cursor` are absent, never null, when there is no page
 in that direction. `APIRootCursorCollection` is the fixture.
 
+A report — where a page number is part of the answer — uses the separate
+`ReportPage` contract with the `ReportPageNumber` and `ReportPageSize`
+parameters and `APIRootReportCollection` as its fixture. It is not a mode of
+cursor paging: the parameters differ, and a request combining them is refused.
+`issueReportPage` echoes the requested page and size back rather than
+recomputing them, and `pagination.NewReportLimits` sets the depth ceiling past
+which a page is refused as `report_too_deep`. Prefer cursors for anything a
+user scrolls; reach for a report only when the page number itself matters.
+
 In `api.go`, `cursorBinding` fingerprints the query a cursor belongs to —
 every parameter except `limit`, `after`, and `before` — and `issueCursorPage`
 mints one authenticated cursor per direction that has a further page. Query one

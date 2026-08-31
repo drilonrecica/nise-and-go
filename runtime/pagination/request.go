@@ -156,11 +156,8 @@ func parseLimit(query url.Values, limits Limits) (int, error) {
 	if !present {
 		return limits.defaultSize, nil
 	}
-	if !plainDecimal(raw) {
-		return 0, fmt.Errorf("%w: %q is not a decimal integer", ErrInvalidLimit, raw)
-	}
-	limit, err := strconv.Atoi(raw)
-	if err != nil {
+	limit, ok := decimalValue(raw, 4)
+	if !ok {
 		return 0, fmt.Errorf("%w: %q is not a decimal integer", ErrInvalidLimit, raw)
 	}
 	if limit < 1 || limit > limits.maxSize {
@@ -190,16 +187,25 @@ func single(query url.Values, name string) (string, bool, error) {
 	}
 }
 
-// plainDecimal rejects the forms strconv.Atoi accepts but a page size should
-// not carry: a sign, a leading zero, or a value long enough to be a probe.
-func plainDecimal(raw string) bool {
-	if raw == "" || len(raw) > 4 || (len(raw) > 1 && raw[0] == '0') {
-		return false
+// decimalValue parses a plain decimal of at most maxDigits digits.
+//
+// It rejects the forms strconv.Atoi accepts but a page parameter should not
+// carry — a sign, surrounding space, a leading zero, a Unicode digit — and
+// refuses anything longer than the parameter's own ceiling before parsing, so
+// an arbitrarily long numeric string is a length comparison rather than a
+// conversion.
+func decimalValue(raw string, maxDigits int) (int, bool) {
+	if raw == "" || len(raw) > maxDigits || (len(raw) > 1 && raw[0] == '0') {
+		return 0, false
 	}
-	for _, char := range raw {
-		if char < '0' || char > '9' {
-			return false
+	for i := range len(raw) {
+		if raw[i] < '0' || raw[i] > '9' {
+			return 0, false
 		}
 	}
-	return true
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
 }

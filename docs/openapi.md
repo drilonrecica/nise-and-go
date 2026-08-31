@@ -45,10 +45,21 @@ inventing a public list endpoint.
 
 The token itself is authenticated, versioned, expiring, and bound to the query
 it was issued for; `runtime/pagination` owns that format and the generated
-application owns the per-collection decisions. Pagination failures are `400`
-with the `invalid_pagination` or `cursor_expired` Problem code. See
+application owns the per-collection decisions. See
 [Pagination](pagination.md) and
 [ADR 0016](adr/0016-authenticated-cursor-pagination.md).
+
+## Offset reporting pagination
+
+`ReportPage` is the separate contract for reports where a page number is
+meaningful: required `page`, `size`, `total`, `total_pages`, and `has_more`,
+with the reusable `ReportPageNumber` and `ReportPageSize` parameters.
+`APIRootReportCollection` is its fixture. It is deliberately not a variant of
+`CursorPage`: the parameters differ, the schemas are disjoint, and a request
+combining them is refused rather than resolved.
+
+Pagination failures across both contracts are `400` with the
+`invalid_pagination`, `cursor_expired`, or `report_too_deep` Problem code.
 
 ## Files and ownership
 

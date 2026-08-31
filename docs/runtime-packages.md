@@ -18,7 +18,7 @@ Import path prefix: `github.com/drilonrecica/nise-and-go/runtime/…` ([ADR 0007
 | `runtime/observability` | HTTP, database-pool, and job metrics, and the optional tracing interface. | implemented | M2-011 |
 | `runtime/secure` | Security headers and Content Security Policy for the embedded frontend. | implemented | M2-012 |
 | `runtime/transaction` | Driver-independent use-case transaction lifecycle, rollback bounds, and closed isolation/access options. | implemented | M3-005 |
-| `runtime/pagination` | Authenticated versioned cursor tokens, key rotation, and `limit`/`after`/`before` parsing. | implemented | M4-007 |
+| `runtime/pagination` | Authenticated versioned cursor tokens, key rotation, cursor parsing, and the separate offset reporting contract. | implemented | M4-007, M4-008 |
 
 `runtime/internal/…` is reserved for shared implementation. No such package exists yet — every `runtime/` package to date compiles against the standard library alone. If one is added, the Go toolchain makes it invisible to applications, and it will carry no compatibility promise.
 

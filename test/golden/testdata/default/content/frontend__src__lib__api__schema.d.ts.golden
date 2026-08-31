@@ -40,12 +40,29 @@ export interface components {
             next_cursor?: components["schemas"]["Cursor"];
             prev_cursor?: components["schemas"]["Cursor"];
         };
+        /** @description Offset reporting pagination metadata, for reports where a page number is something a person quotes and a total is something they need. It is a separate contract from CursorPage, never a variant of it. */
+        ReportPage: {
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            size: number;
+            /** Format: int64 */
+            total: number;
+            /** Format: int64 */
+            total_pages: number;
+            has_more: boolean;
+        };
         /** @description An opaque authenticated position token. Return it verbatim in after or before; never parse, construct, or store it beyond the current listing. */
         Cursor: string;
         /** @description A concrete collection contract fixture; domain collections define their own schemas. */
         APIRootCollection: {
             items: components["schemas"]["APIRoot"][];
             page: components["schemas"]["Page"];
+        };
+        /** @description A concrete offset-paginated reporting collection fixture; domain reports define their own schemas. */
+        APIRootReportCollection: {
+            items: components["schemas"]["APIRoot"][];
+            page: components["schemas"]["ReportPage"];
         };
         /** @description A concrete cursor-paginated collection fixture; domain collections define their own schemas. */
         APIRootCursorCollection: {
@@ -85,6 +102,10 @@ export interface components {
         CursorAfter: components["schemas"]["Cursor"];
         /** @description Read the page preceding this cursor. Only a cursor this collection issued as prev_cursor is accepted; it cannot be combined with after. */
         CursorBefore: components["schemas"]["Cursor"];
+        /** @description 1-based page number. Absent means the first page. A page whose first row is past the report's offset ceiling is refused rather than served slowly. */
+        ReportPageNumber: number;
+        /** @description Report page size. Absent means the report's default. Out of range is refused rather than clamped. It cannot be combined with the cursor parameters. */
+        ReportPageSize: number;
     };
     requestBodies: never;
     headers: never;

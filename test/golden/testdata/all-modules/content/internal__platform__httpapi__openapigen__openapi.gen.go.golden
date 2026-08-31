@@ -53,6 +53,14 @@ type APIRootCursorCollection struct {
 	Page CursorPage `json:"page"`
 }
 
+// APIRootReportCollection A concrete offset-paginated reporting collection fixture; domain reports define their own schemas.
+type APIRootReportCollection struct {
+	Items []APIRoot `json:"items"`
+
+	// Page Offset reporting pagination metadata, for reports where a page number is something a person quotes and a total is something they need. It is a separate contract from CursorPage, never a variant of it.
+	Page ReportPage `json:"page"`
+}
+
 // Cursor An opaque authenticated position token. Return it verbatim in after or before; never parse, construct, or store it beyond the current listing.
 type Cursor = string
 
@@ -84,6 +92,15 @@ type Problem struct {
 	Type          string  `json:"type"`
 }
 
+// ReportPage Offset reporting pagination metadata, for reports where a page number is something a person quotes and a total is something they need. It is a separate contract from CursorPage, never a variant of it.
+type ReportPage struct {
+	HasMore    bool  `json:"has_more"`
+	Page       int32 `json:"page"`
+	Size       int32 `json:"size"`
+	Total      int64 `json:"total"`
+	TotalPages int64 `json:"total_pages"`
+}
+
 // CursorAfter An opaque authenticated position token. Return it verbatim in after or before; never parse, construct, or store it beyond the current listing.
 type CursorAfter = Cursor
 
@@ -92,6 +109,12 @@ type CursorBefore = Cursor
 
 // CursorLimit defines model for CursorLimit.
 type CursorLimit = int32
+
+// ReportPageNumber defines model for ReportPageNumber.
+type ReportPageNumber = int32
+
+// ReportPageSize defines model for ReportPageSize.
+type ReportPageSize = int32
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {

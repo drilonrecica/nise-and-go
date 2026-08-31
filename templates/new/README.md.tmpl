@@ -224,6 +224,13 @@ without it, and `CURSOR_RETIRED_KEYS` rotates it without breaking outstanding
 cursors. `runtime/pagination` owns the token; `api.go` owns the per-collection
 binding, page issuing, and `400` mapping.
 
+Reports use a separate `page`/`size` contract returning `ReportPage` with
+`total` and `total_pages`. Offsets are computed in `int64`, page and size are
+refused rather than clamped, a page past the report's offset ceiling is
+`report_too_deep`, and a request mixing report and cursor parameters is
+refused. Use cursors for anything a user scrolls; use a report only when the
+page number is part of the answer.
+
 Declared JSON request bodies are limited to 1 MiB and require the exact
 declared media type (parameters are allowed), one value, no unknown fields,
 and no repeated object keys, including case variants at any nesting level.

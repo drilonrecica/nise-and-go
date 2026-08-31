@@ -256,6 +256,86 @@ func TestParsePageThroughTheApplicationCodec(t *testing.T) {
 	}
 }
 
+func TestReportCollectionResponseShape(t *testing.T) {
+	t.Parallel()
+
+	report, err := pagination.ParseReport(url.Values{"page": {"2"}, "size": {"25"}}, testReportLimits(t))
+	if err != nil {
+		t.Fatalf("ParseReport: %v", err)
+	}
+	if report.Offset() != 25 {
+		t.Fatalf("Offset = %d, want 25", report.Offset())
+	}
+	totals, err := report.Totals(51)
+	if err != nil {
+		t.Fatalf("Totals: %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	if err := httpjson.Write(response, http.StatusOK, newAPIRootReportCollection(nil, issueReportPage(totals))); err != nil {
+		t.Fatalf("write report collection fixture: %v", err)
+	}
+	const want = `{"items":[],"page":{"has_more":true,"page":2,"size":25,"total":51,"total_pages":3}}` + "\n"
+	if got := response.Body.String(); got != want {
+		t.Fatalf("body = %q, want exact reporting shape %q", got, want)
+	}
+	for _, forbidden := range []string{"next_cursor", "prev_cursor", `"data"`, "null"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Errorf("report page contains %q: %q", forbidden, response.Body.String())
+		}
+	}
+}
+
+func TestReportPageEchoesTheRequestedPage(t *testing.T) {
+	t.Parallel()
+
+	limits := testReportLimits(t)
+	tests := []struct {
+		name        string
+		query       url.Values
+		total       int64
+		wantPage    int32
+		wantPages   int64
+		wantHasMore bool
+	}{
+		{name: "first page of an empty report", query: url.Values{}, total: 0, wantPage: 1, wantPages: 0, wantHasMore: false},
+		{name: "last page", query: url.Values{"page": {"3"}, "size": {"25"}}, total: 51, wantPage: 3, wantPages: 3, wantHasMore: false},
+		{name: "past the end", query: url.Values{"page": {"9"}, "size": {"25"}}, total: 51, wantPage: 9, wantPages: 3, wantHasMore: false},
+		{name: "exact multiple", query: url.Values{"page": {"2"}, "size": {"25"}}, total: 50, wantPage: 2, wantPages: 2, wantHasMore: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			report, err := pagination.ParseReport(tc.query, limits)
+			if err != nil {
+				t.Fatalf("ParseReport: %v", err)
+			}
+			totals, err := report.Totals(tc.total)
+			if err != nil {
+				t.Fatalf("Totals: %v", err)
+			}
+			page := issueReportPage(totals)
+			if page.Page != tc.wantPage || page.TotalPages != tc.wantPages || page.HasMore != tc.wantHasMore || page.Total != tc.total {
+				t.Fatalf("page = %#v", page)
+			}
+		})
+	}
+}
+
+func TestReportRefusesDepthAndMixedPagination(t *testing.T) {
+	t.Parallel()
+
+	limits := testReportLimits(t)
+	tooDeep := url.Values{"page": {"100000"}, "size": {"200"}}
+	if _, err := pagination.ParseReport(tooDeep, limits); !errors.Is(err, pagination.ErrReportTooDeep) {
+		t.Fatalf("error = %v, want ErrReportTooDeep", err)
+	}
+	mixed := url.Values{"page": {"1"}, "after": {"nc1.a.b.c"}}
+	if _, err := pagination.ParseReport(mixed, limits); !errors.Is(err, pagination.ErrMixedPagination) {
+		t.Fatalf("error = %v, want ErrMixedPagination", err)
+	}
+}
+
 func TestPaginationProblemMapsEveryFailureToTheClient(t *testing.T) {
 	t.Parallel()
 
@@ -272,6 +352,10 @@ func TestPaginationProblemMapsEveryFailureToTheClient(t *testing.T) {
 		{name: "unsupported version", err: pagination.ErrCursorVersion, wantCode: "invalid_pagination"},
 		{name: "limit", err: pagination.ErrInvalidLimit, wantCode: "invalid_pagination"},
 		{name: "conflicting cursors", err: pagination.ErrConflictingCursors, wantCode: "invalid_pagination"},
+		{name: "report too deep", err: pagination.ErrReportTooDeep, wantCode: "report_too_deep"},
+		{name: "report page", err: pagination.ErrInvalidPage, wantCode: "invalid_pagination"},
+		{name: "report size", err: pagination.ErrInvalidSize, wantCode: "invalid_pagination"},
+		{name: "mixed pagination", err: pagination.ErrMixedPagination, wantCode: "invalid_pagination"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -300,8 +384,11 @@ func TestPaginationProblemMapsEveryFailureToTheClient(t *testing.T) {
 				t.Fatalf("decode problem: %v", err)
 			}
 			wantDetail := "The pagination parameters are not valid for this collection."
-			if tc.wantCode == "cursor_expired" {
+			switch tc.wantCode {
+			case "cursor_expired":
 				wantDetail = "The pagination cursor has expired; start the listing again."
+			case "report_too_deep":
+				wantDetail = "The requested report page is beyond the supported depth; narrow the filters."
 			}
 			if body.Detail != wantDetail {
 				t.Errorf("detail = %q, want the catalog text %q", body.Detail, wantDetail)
@@ -392,6 +479,18 @@ func testCursorCodec(t *testing.T) *pagination.Codec {
 		t.Fatalf("NewCodec: %v", err)
 	}
 	return codec
+}
+
+// testReportLimits is one report's policy. A real report chooses its own; the
+// depth ceiling is what keeps a page number from becoming an unbounded scan.
+func testReportLimits(t *testing.T) pagination.ReportLimits {
+	t.Helper()
+
+	limits, err := pagination.NewReportLimits(50, 200, 100000)
+	if err != nil {
+		t.Fatalf("NewReportLimits: %v", err)
+	}
+	return limits
 }
 
 func testServer(t *testing.T) *Server {

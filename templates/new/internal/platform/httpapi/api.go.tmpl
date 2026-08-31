@@ -75,10 +75,14 @@ func requestTransportError(w http.ResponseWriter, r *http.Request, err error) {
 // expired cursor gets its own code because it is the one case a well-behaved
 // client can act on without changing anything: start the listing again.
 func paginationProblem(err error) problem.Definition {
-	if errors.Is(err, pagination.ErrCursorExpired) {
+	switch {
+	case errors.Is(err, pagination.ErrCursorExpired):
 		return problem.CursorExpired()
+	case errors.Is(err, pagination.ErrReportTooDeep):
+		return problem.ReportTooDeep()
+	default:
+		return problem.InvalidPagination()
 	}
-	return problem.InvalidPagination()
 }
 
 // GetAPIIndex returns the versioned API root directly, without a generic
@@ -160,6 +164,37 @@ func newAPIRootCursorCollection(items []openapigen.APIRoot, page openapigen.Curs
 		items = []openapigen.APIRoot{}
 	}
 	return openapigen.APIRootCursorCollection{
+		Items: items,
+		Page:  page,
+	}
+}
+
+// issueReportPage turns a parsed report and its total row count into the wire
+// contract.
+//
+// Nothing here recomputes the page or the size: they are echoed from the
+// request the totals were built for, so a report can never describe a page
+// other than the one it returned. The int32 narrowing is safe because
+// pagination.Report.Totals refuses a page number or size outside the bounds
+// the wire contract declares.
+func issueReportPage(totals pagination.Totals) openapigen.ReportPage {
+	return openapigen.ReportPage{
+		Page:       int32(totals.Page),
+		Size:       int32(totals.Size),
+		Total:      totals.Total,
+		TotalPages: totals.TotalPages,
+		HasMore:    totals.HasMore,
+	}
+}
+
+// newAPIRootReportCollection keeps the offset-paginated fixture faithful to
+// its non-null OpenAPI contract, for the same reason newAPIRootCollection
+// does.
+func newAPIRootReportCollection(items []openapigen.APIRoot, page openapigen.ReportPage) openapigen.APIRootReportCollection {
+	if items == nil {
+		items = []openapigen.APIRoot{}
+	}
+	return openapigen.APIRootReportCollection{
 		Items: items,
 		Page:  page,
 	}

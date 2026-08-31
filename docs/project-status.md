@@ -21,8 +21,9 @@ response limits are strict and bounded. RFC 9457 Problem Details uses a typed,
 closed extension set across generated and routing failures. Direct resources
 and explicit non-null `{items,page}` collections are defined and generated in
 both languages. Cursor pagination is authenticated, versioned, expiring, bound
-to its query, and rotatable. Reporting pagination and idempotency remain in
-progress; this is not yet a complete public API surface.
+to its query, and rotatable, and offset reporting pagination is a separate
+overflow-safe page/size/total contract. Idempotency remains in progress; this
+is not yet a complete public API surface.
 
 V0.1 may implement and correct the documented foundation. It may not add another router, database, frontend framework, plugin system, AI integration, billing system, or deployment platform merely because it could be useful someday.
 
