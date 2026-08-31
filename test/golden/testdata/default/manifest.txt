@@ -38,11 +38,16 @@ deploy/Dockerfile file 0644 396d7a7bcbeb0685aedaf5abf1ae93d00f16a8a8d9e7fb9ac410
 deploy/README.md file 0644 8040eed460f74fbece44b0f5bf1080bf1d821f99d6a7119947028ddb396c2f37
 deploy/compose.yaml file 0644 a993cfffeb42db237179c3663f8e22e574580ef0c7ab74a008664b961c332933
 frontend dir 0755
-frontend/.gitignore file 0644 eb010afc393f40f48ed0ae314791412f77516e00fb4dae5182966ed770030b04
+frontend/.gitignore file 0644 1380f1568db81261efe97cb0fc35bac6a3749fd99165acc9c8eb549c3c12bf00
 frontend/README.md file 0644 77dae261d467ec50d4f68a39d1ecc30c02c35837bb26628096985db3236fbadc
+frontend/e2e dir 0755
+frontend/e2e/README.md file 0644 85514f6774878c9a5bfd1c6e1890cd90a5dc50e2cf39f6b6be46d7a4ae5dbdce
+frontend/e2e/session.spec.ts file 0644 b27aea5a6a2d036d12606c7320f188d7127eb7b7fd173a56474132fbe4b77112
+frontend/e2e/sign-in.spec.ts file 0644 0bb4376f6dabd4754f1872ce26dbe33b3b7a4babe72cb61dea60c28020519637
 frontend/messages dir 0755
 frontend/messages/en.json file 0644 6b33bd279db3620e1adbe5e0c91d06930f7b5b1fd2988b27709abbac959aebcc
-frontend/package.json file 0644 57dc122d27d88468d5dee99bbc8cf6e8250701572ed8bed87801f190f2ed1ec4
+frontend/package.json file 0644 32bd3aa3da5841a17ff5f1fbffb2340e51ff7a8bcbdeb492fe21b3183dd523be
+frontend/playwright.config.ts file 0644 654fdd05be27bdf3c7f7ffab6ee264b0aa36791cc8ebdd3b295e36bfa41308ff
 frontend/project.inlang dir 0755
 frontend/project.inlang/settings.json file 0644 eb47d55cb1f7fba1f8ec9db09de790361da295135fabe2cb73ebb1677eba4a5c
 frontend/scripts dir 0755
@@ -55,8 +60,8 @@ frontend/src/app.html file 0644 2d34de7c7e3337aa7fe687bd9c6450da3dea0731fe0222b9
 frontend/src/lib dir 0755
 frontend/src/lib/a11y.ts file 0644 1e7c2f11d72cb2c526740a006d32740cd5b6639e7e05a3843ef5a14acdfdd32e
 frontend/src/lib/api dir 0755
-frontend/src/lib/api/client.test.ts file 0644 36096cc0043e747e968f94fc81049c2a5ae83eda6be17459461b25285aa159a8
-frontend/src/lib/api/client.ts file 0644 c0c2aee1d64c938ed6564304226dc263ff3e5c3dae917154c485408d5b87ef48
+frontend/src/lib/api/client.test.ts file 0644 5165c6ea7d701eefa08e0f91a4e4186f15f65c180ecd3b6b3f44d884c9072531
+frontend/src/lib/api/client.ts file 0644 b2c2fa7761e3ec37e22ea1c8a74cacd4a45295e3292209e9111bef99c1cc014e
 frontend/src/lib/api/problem.test.ts file 0644 10d98186a29ac2fc7f3a1f734705572965124461794bb7e425adc8357383d382
 frontend/src/lib/api/problem.ts file 0644 1128ddfe426bf87e0d120851cc0bff3374ac9899878722634ec8569030965d7c
 frontend/src/lib/api/schema.d.ts file 0644 b24f13fb4fd92aa299cce14305d0948975e4c5498c85ebf35c0f471e724aeae2

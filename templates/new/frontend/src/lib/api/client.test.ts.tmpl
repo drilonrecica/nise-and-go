@@ -287,16 +287,31 @@ describe('readCSRFCookie', () => {
 		expect(readCSRFCookie('other=1; __Host-session_csrf=abc123; more=2')).toBe('abc123');
 	});
 
+	it('reads the unprefixed name a development origin uses', () => {
+		// The session cookie gives up __Host- when SESSION_COOKIE_INSECURE is
+		// set, and the anti-forgery cookie is named after it. Production
+		// refuses that setting, so this name only appears where the prefix was
+		// already given up deliberately.
+		expect(readCSRFCookie('session_csrf=devvalue')).toBe('devvalue');
+	});
+
+	it('prefers the hardened name when a document carries both', () => {
+		expect(readCSRFCookie('session_csrf=old; __Host-session_csrf=current')).toBe('current');
+	});
+
 	it('does not match a cookie whose name merely ends with the right characters', () => {
 		// Matching loosely is how a value an attacker could set gets echoed
 		// into the header the server trusts.
 		expect(readCSRFCookie('x__Host-session_csrf=attacker')).toBeNull();
 		expect(readCSRFCookie('__Host-session_csrf_other=attacker')).toBeNull();
+		expect(readCSRFCookie('xsession_csrf=attacker')).toBeNull();
+		expect(readCSRFCookie('session_csrf_other=attacker')).toBeNull();
 	});
 
 	it('is null when there is no cookie, or it is empty', () => {
 		expect(readCSRFCookie('')).toBeNull();
 		expect(readCSRFCookie(undefined)).toBeNull();
 		expect(readCSRFCookie('__Host-session_csrf=')).toBeNull();
+		expect(readCSRFCookie('session_csrf=')).toBeNull();
 	});
 });

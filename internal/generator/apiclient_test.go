@@ -23,7 +23,7 @@ func TestGeneratedAPIClientHandlesProblems(t *testing.T) {
 			// State changes echo the anti-forgery cookie into the header. That
 			// is the whole mechanism: a form posted from another origin cannot
 			// set a request header.
-			"const CSRF_COOKIE = '__Host-session_csrf'",
+			"const CSRF_COOKIE_NAMES = ['__Host-session_csrf', 'session_csrf']",
 			"const CSRF_HEADER = 'X-CSRF-Token'",
 			"UNSAFE_METHODS.has(method)",
 			// Sensitive commands can carry a key.

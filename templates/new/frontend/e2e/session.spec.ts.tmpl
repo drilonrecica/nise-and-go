@@ -1,0 +1,70 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { expect, test } from '@playwright/test';
+
+// The authenticated journey: sign in, be inside the shell, sign out.
+//
+// It needs an account, and an account is deployment-specific, so the
+// credentials come from the environment and the suite skips with a reason
+// when they are absent. A journey that invented its own account would need a
+// way to create one from the outside, and "a way to create an administrator
+// from the outside" is not a thing to build for a test.
+//
+//   E2E_EMAIL=… E2E_PASSWORD=… pnpm test:e2e
+//
+// Create one with `./bin/<app> admin bootstrap --email <address>` and accept
+// the invitation it prints.
+const email = process.env.E2E_EMAIL;
+const password = process.env.E2E_PASSWORD;
+
+test.describe('a signed-in session', () => {
+	test.skip(
+		!email || !password,
+		'set E2E_EMAIL and E2E_PASSWORD to run the authenticated journey'
+	);
+
+	test('signs in, lands in the shell, and signs out again', async ({ page }) => {
+		await page.goto('/sign-in');
+		await page.getByLabel('Email').fill(email!);
+		await page.getByLabel('Password').fill(password!);
+		await page.getByRole('button', { name: 'Sign in' }).click();
+
+		// Inside the shell: the landmarks a person navigates by, and the
+		// account menu that only exists for somebody who is signed in.
+		await expect(page).toHaveURL(/\/$/);
+		await expect(page.getByRole('navigation', { name: 'Main' })).toBeVisible();
+		await expect(page.getByRole('button', { name: new RegExp(email!, 'i') })).toBeVisible();
+
+		// The credential is in a cookie the page cannot read. If this ever
+		// finds it, something put the session token where every proxy and
+		// every extension can see it.
+		const readable = await page.evaluate(() => document.cookie);
+		expect(readable).not.toContain('session=');
+
+		await page.goto('/account');
+		await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
+		// Scoped to the main landmark: the account menu in the top bar shows
+		// the same address, and an unscoped match would be ambiguous — which
+		// Playwright is right to refuse.
+		await expect(page.locator('#main').getByText(email!)).toBeVisible();
+
+		await page.goto('/sign-out');
+		await expect(page).toHaveURL(/\/sign-in/);
+
+		// Signed out means signed out: a protected route sends them back.
+		await page.goto('/settings');
+		await expect(page).toHaveURL(/\/sign-in/);
+	});
+
+	test('returns to where somebody was going after signing in', async ({ page }) => {
+		await page.goto('/settings');
+		await expect(page).toHaveURL(/next=%2Fsettings/);
+
+		await page.getByLabel('Email').fill(email!);
+		await page.getByLabel('Password').fill(password!);
+		await page.getByRole('button', { name: 'Sign in' }).click();
+
+		await expect(page).toHaveURL(/\/settings/);
+		await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+	});
+});

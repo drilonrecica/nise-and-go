@@ -1,0 +1,46 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+
+# End-to-end journeys
+
+These drive a real browser against the real binary and a real database. That
+is the point: a journey proved against a mock is a journey proved against the
+mock.
+
+It is also why they are not part of `pnpm check`. They need a database, they
+take minutes rather than seconds, and they are the slowest and most brittle
+layer of the pyramid — so this suite covers *journeys*, the paths where a
+defect means nobody can use the application at all, and nothing else.
+Everything else belongs in the component suite, which also runs in a browser
+and takes seconds.
+
+## Running them
+
+```sh
+# Once: download the browser.
+pnpm exec playwright install chromium
+
+# A database, and the environment the application needs.
+make -C .. -f Makefile compose-up   # or your own PostgreSQL
+export DATABASE_URL=...
+
+pnpm test:e2e
+```
+
+By default the config builds and starts the application itself. Point
+`APP_BASE_URL` at an instance you are already running to skip that:
+
+```sh
+APP_BASE_URL=http://127.0.0.1:8080 pnpm test:e2e
+```
+
+## What belongs here
+
+A journey earns a place here if its failure means nobody can use the
+application: signing in, the shell rendering, a resource being created and
+read back. A journey does not earn a place here because it is hard to unit
+test.
+
+Write assertions about what a person experiences — a form, a refusal that says
+what to do, a page they end up on — rather than about the calls underneath.
+The calls are already covered by the transport tests; what no unit test can
+see is that the pieces are wired to each other.

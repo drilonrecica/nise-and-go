@@ -166,6 +166,7 @@ var frontendDependencies = []Dependency{
 	{Name: "@sveltejs/adapter-static", Version: "3.0.10"},
 	{Name: "@sveltejs/kit", Version: "2.70.3"},
 	{Name: "@sveltejs/vite-plugin-svelte", Version: "7.3.0"},
+	{Name: "@playwright/test", Version: PlaywrightVersion},
 	{Name: "@tailwindcss/vite", Version: "4.3.3"},
 	{Name: "@vitest/browser", Version: VitestVersion},
 	{Name: "@vitest/browser-playwright", Version: VitestVersion},
