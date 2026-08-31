@@ -5,6 +5,7 @@ package idempotency
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -462,4 +463,72 @@ func TestExecutorRefusesAnOversizedOrInvalidResponse(t *testing.T) {
 	if !replay.Replayed || replay.Status != result.Status || len(replay.Body) != 0 {
 		t.Fatalf("bodyless replay = %#v, want the recorded 204", replay)
 	}
+}
+
+// FuzzValidateKey drives the key validator with arbitrary strings. An accepted
+// key must be exactly what the schema's CHECK constraint and the OpenAPI
+// pattern also accept, or a key this code let through would be one the
+// database refuses at insert time.
+func FuzzValidateKey(f *testing.F) {
+	for _, seed := range []string{
+		"01J00000000000000000000001",
+		"short",
+		"",
+		"01J0000000 0000000000001",
+		"01J0000000000000000000001\n",
+		"01J00000000000000000000é",
+		strings.Repeat("k", MaxKeyBytes),
+		strings.Repeat("k", MaxKeyBytes+1),
+		"\x00\x01\x02\x03\x04\x05\x06\x07",
+		"~~~~~~~~",
+		"!!!!!!!!",
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, key string) {
+		err := ValidateKey(key)
+		if err != nil {
+			if !errors.Is(err, ErrInvalidKey) {
+				t.Fatalf("ValidateKey(%q) returned an unclassified error: %v", key, err)
+			}
+			return
+		}
+		if len(key) < MinKeyBytes || len(key) > MaxKeyBytes {
+			t.Fatalf("ValidateKey accepted %d bytes", len(key))
+		}
+		for i := range len(key) {
+			if key[i] <= 0x20 || key[i] >= 0x7f {
+				t.Fatalf("ValidateKey accepted byte %#x at %d", key[i], i)
+			}
+		}
+	})
+}
+
+// FuzzFingerprint asserts the two properties a request fingerprint must have:
+// a fixed width, and no way to assemble two different requests into the same
+// input by moving a byte across a field boundary.
+func FuzzFingerprint(f *testing.F) {
+	f.Add("POST", "/api/v1/payments", `{"amount":100}`)
+	f.Add("", "", "")
+	f.Add("POSTX", "/a", "b")
+	f.Add("POST", "X/a", "b")
+
+	f.Fuzz(func(t *testing.T, method, target, body string) {
+		got := Fingerprint(method, target, []byte(body))
+		if len(got) != FingerprintBytes {
+			t.Fatalf("Fingerprint is %d bytes, want %d", len(got), FingerprintBytes)
+		}
+		if string(got) != string(Fingerprint(method, target, []byte(body))) {
+			t.Fatal("Fingerprint is not deterministic")
+		}
+		// Shifting one byte from the method into the target is a different
+		// request and must be a different fingerprint.
+		if len(method) > 0 {
+			shifted := Fingerprint(method[:len(method)-1], method[len(method)-1:]+target, []byte(body))
+			if string(shifted) == string(got) {
+				t.Fatalf("Fingerprint collided across the method/target boundary for %q %q", method, target)
+			}
+		}
+	})
 }

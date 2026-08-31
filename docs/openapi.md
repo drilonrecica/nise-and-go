@@ -82,6 +82,7 @@ different request; `idempotencyKey`, `idempotencyFingerprint`, and
 | `internal/platform/httpapi/openapigen/openapi.gen.go` | Nise/tool | complete checked-in oapi-codegen output |
 | `internal/platform/httpapi/api.go` | application | explicit strict handler adapter, registration, cursor binding and page issuing |
 | `internal/platform/httpapi/api_test.go` | application | route, collection, and cursor contracts through the real middleware core |
+| `internal/platform/httpapi/transport_test.go` | application | end-to-end transport contract and the hostile-input fuzz target |
 | `internal/platform/httpapi/httpjson/json.go` | application | bounded strict request decoder and response writer |
 | `internal/platform/httpapi/httpjson/json_test.go` | application | malformed, duplicate, unknown, and oversized-body contracts |
 | `internal/platform/httpapi/problem/problem.go` | application | validated RFC 9457 catalog and bounded writer |
@@ -219,6 +220,26 @@ Wrapped decoder/handler errors and panic values never cross the wire. Expected
 stable code, status, and concrete error type; recovery similarly records the
 panic type, never its value. Public text is encoded with the standard JSON
 encoder, including HTML escaping, rather than concatenated into JSON.
+
+## The transport contract suite
+
+`internal/platform/httpapi/transport_test.go` drives the handler `New` builds —
+with its real security headers, request identity, recovery, metrics, and
+Problem writer — through probe routes mounted on the ordinary
+`Deps.RegisterAPI` seam. The unit suites beside it check each policy alone;
+this one checks that they are wired together, in order, on the path a client
+takes: routing and `404`/`405`, method and content negotiation, every strict
+decoding refusal, both pagination contracts, idempotency key handling, and the
+pre-commit response bound.
+
+`FuzzTransportSurface` drives the same chain with arbitrary methods, paths,
+media types, keys, and bodies. Its properties are the ones that must hold for
+every request: no panic, a status in range, security headers and valid request
+identity present, the Problem media type and a matching status on every API
+failure, and no goroutine dump, runtime error, or internal package path in the
+body. `FuzzDecode` holds the strict decoder to its four declared sentinels, and
+`FuzzValidateKey` and `FuzzFingerprint` hold idempotency keys to the same
+bounds the database enforces.
 
 ## Frontend generation
 

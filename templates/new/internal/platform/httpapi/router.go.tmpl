@@ -159,9 +159,61 @@ func New(d Deps) (http.Handler, error) {
 	// Each core is composed around its router as an opaque http.Handler. This
 	// keeps an empty API's default 404 inside the core without adding a wildcard
 	// route that would turn a known path's native 405 into a 404.
-	root.Mount("/api/v1", newCoreHandler(d, apiPolicy, d.Middleware.API, api, problem.HTTPHandler(problem.InternalServerError()), true))
-	root.Mount("/", newCoreHandler(d, documentPolicy, d.Middleware.Document, document, fixedHTTPError(http.StatusInternalServerError, "internal server error"), false))
+	apiCore := newCoreHandler(d, apiPolicy, d.Middleware.API, api, problem.HTTPHandler(problem.InternalServerError()), true)
+	documentCore := newCoreHandler(d, documentPolicy, d.Middleware.Document, document, fixedHTTPError(http.StatusInternalServerError, "internal server error"), false)
+	root.Mount(APIPathPrefix, apiCore)
+	root.Mount("/", documentCore)
+	root.MethodNotAllowed(unsupportedMethod(apiCore, documentCore))
 	return root, nil
+}
+
+// APIPathPrefix is the versioned API boundary. Routes registered through
+// Deps.RegisterAPI are relative to it.
+const APIPathPrefix = "/api/v1"
+
+// apiPathRemainder reports whether path is inside the API boundary, and what
+// is left of it after the prefix.
+//
+// The prefix is a path segment, not a string prefix: "/api/v10" is a document
+// path that merely starts with the same characters, and treating it as an API
+// path would move a whole future version of this application under the wrong
+// security policy.
+func apiPathRemainder(path string) (string, bool) {
+	remainder, found := strings.CutPrefix(path, APIPathPrefix)
+	if !found || (remainder != "" && !strings.HasPrefix(remainder, "/")) {
+		return "", false
+	}
+	return remainder, true
+}
+
+// unsupportedMethod dispatches a request whose method chi's own router does
+// not know.
+//
+// chi answers such a request from Mux.routeHTTP before any mounted handler
+// runs, which means the response would be the only one this server produces
+// with no security headers, no request identity, no log line, and no metric —
+// reachable by anyone willing to send WebDAV's PROPFIND, or the single
+// character "0". Sending it into the surface's own core instead restores every
+// invariant the rest of the server holds; the core's inner router still
+// produces the per-surface 405, because it reaches the same unknown-method
+// branch one level down, this time from inside the chain.
+func unsupportedMethod(apiCore, documentCore http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		remainder, underAPI := apiPathRemainder(r.URL.Path)
+		if !underAPI {
+			documentCore.ServeHTTP(w, r)
+			return
+		}
+		// Reproduce what chi's own Mount does to the routing path, so the
+		// API 405 can still report the methods that path does allow.
+		if routeContext := chi.RouteContext(r.Context()); routeContext != nil {
+			if remainder == "" {
+				remainder = "/"
+			}
+			routeContext.RoutePath = remainder
+		}
+		apiCore.ServeHTTP(w, r)
+	}
 }
 
 // newCoreHandler fixes the core ordering in one place. Application middleware

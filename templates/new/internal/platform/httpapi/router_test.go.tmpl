@@ -451,6 +451,86 @@ func TestRecoveryResponseWriterPreservesInformationalThenFinalStatus(t *testing.
 	}
 }
 
+func TestRouterKeepsUnknownMethodsInsideTheSecurityCore(t *testing.T) {
+	t.Parallel()
+
+	deps, registry, _ := routerTestDeps(t)
+	deps.RegisterAPI = func(r chi.Router) {
+		r.Get("/widgets", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	}
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	apiPolicy, err := secure.NewAPIPolicy(secure.Development)
+	if err != nil {
+		t.Fatalf("NewAPIPolicy: %v", err)
+	}
+	documentPolicy, err := secure.NewDocumentPolicy(
+		secure.Development,
+		secure.WithScriptHashes(deps.UI.ScriptHashes()...),
+		secure.WithStyleHashes(deps.UI.StyleHashes()...),
+	)
+	if err != nil {
+		t.Fatalf("NewDocumentPolicy: %v", err)
+	}
+
+	// chi answers a method outside its own table from Mux.routeHTTP, before
+	// any mounted handler runs. Without the unsupported-method seam these
+	// would be the only responses on this server with no policy, no request
+	// identity, and no metric.
+	tests := []struct {
+		name        string
+		method      string
+		path        string
+		wantPolicy  string
+		wantProblem bool
+		wantAllow   string
+	}{
+		{name: "WebDAV method on a known API path", method: "PROPFIND", path: "/api/v1/widgets", wantPolicy: apiPolicy.ContentSecurityPolicy(), wantProblem: true, wantAllow: http.MethodGet},
+		{name: "one-character method on the API root", method: "0", path: "/api/v1/", wantPolicy: apiPolicy.ContentSecurityPolicy(), wantProblem: true},
+		{name: "unknown method on an unknown API path", method: "PURGE", path: "/api/v1/nothing-here", wantPolicy: apiPolicy.ContentSecurityPolicy(), wantProblem: true},
+		{name: "unknown method on the document surface", method: "PROPFIND", path: "/", wantPolicy: documentPolicy.ContentSecurityPolicy()},
+		{name: "a version-adjacent path stays on the document surface", method: "PROPFIND", path: "/api/v10", wantPolicy: documentPolicy.ContentSecurityPolicy()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			response := serveRouterMethod(handler, tc.method, tc.path)
+			if response.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want 405", response.Code)
+			}
+			if got := response.Header().Get(secure.HeaderCSP); got != tc.wantPolicy {
+				t.Errorf("CSP = %q, want %q", got, tc.wantPolicy)
+			}
+			for _, header := range []string{logging.DefaultRequestIDHeader, logging.DefaultCorrelationIDHeader} {
+				if value := response.Header().Get(header); value == "" || !logging.ValidID(value) {
+					t.Errorf("%s = %q, want a valid identifier", header, value)
+				}
+			}
+			if tc.wantProblem {
+				if got := response.Header().Get("Content-Type"); got != problem.MediaType {
+					t.Errorf("Content-Type = %q, want %q", got, problem.MediaType)
+				}
+			}
+			if tc.wantAllow != "" {
+				if got := response.Header().Get("Allow"); got != tc.wantAllow {
+					t.Errorf("Allow = %q, want %q", got, tc.wantAllow)
+				}
+			}
+		})
+	}
+	// The metric is the proof that the request went through the whole core
+	// rather than only the header-setting outer layer.
+	var metrics bytes.Buffer
+	if err := observability.WriteText(&metrics, registry); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	if !strings.Contains(metrics.String(), `status_class="4xx"`) {
+		t.Errorf("unsupported-method requests were not counted:\n%s", metrics.String())
+	}
+}
+
 func routerTestDeps(t *testing.T) (Deps, *observability.Registry, *bytes.Buffer) {
 	t.Helper()
 	ui, err := webui.New(false)
