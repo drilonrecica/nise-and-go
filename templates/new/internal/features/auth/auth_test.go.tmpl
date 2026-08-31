@@ -28,11 +28,23 @@ var fixedNow = time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 // harness is one migrated, isolated database with the auth use cases over it
 // and a clock the test controls.
 type harness struct {
-	ctx      context.Context
-	pool     *pgxpool.Pool
-	accounts *Accounts
-	sessions *Sessions
-	advance  func(time.Duration)
+	ctx          context.Context
+	pool         *pgxpool.Pool
+	accounts     *Accounts
+	sessions     *Sessions
+	transactorOf *database.Transactor
+	advance      func(time.Duration)
+}
+
+// transactor returns the harness's transaction runner, for a use case the
+// harness does not construct itself.
+func (h *harness) transactor(t *testing.T) *database.Transactor {
+	t.Helper()
+
+	if h.transactorOf == nil {
+		t.Fatal("the harness has no transactor")
+	}
+	return h.transactorOf
 }
 
 func newHarness(t *testing.T, lifetime session.Lifetime) *harness {
@@ -81,7 +93,7 @@ func newHarness(t *testing.T, lifetime session.Lifetime) *harness {
 		defer mu.Unlock()
 		return current
 	}
-	h := &harness{ctx: ctx, pool: pool}
+	h := &harness{ctx: ctx, pool: pool, transactorOf: transactor}
 	h.advance = func(d time.Duration) {
 		mu.Lock()
 		defer mu.Unlock()

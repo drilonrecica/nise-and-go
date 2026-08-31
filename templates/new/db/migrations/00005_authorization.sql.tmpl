@@ -1,0 +1,25 @@
+-- Generated once by nise; owned by this application. Nise will not overwrite it.
+--
+-- Role *definitions* are code, in internal/platform/authorization. Only the
+-- *assignments* are data: which account holds which role. That split is
+-- deliberate. A role's meaning is a decision worth reviewing, and one that must
+-- be identical on every replica; a role's holder changes as people join and
+-- leave, and belongs in a table an administrator can change without a deploy.
+
+-- +goose Up
+CREATE TABLE user_roles (
+    user_id    uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    role       text NOT NULL,
+    granted_at timestamptz NOT NULL,
+    -- Null when the application granted the role itself, during enrollment or
+    -- a migration. There is no foreign key: the record of who granted a
+    -- privilege must outlive the granter's account.
+    granted_by uuid,
+    CONSTRAINT user_roles_pkey PRIMARY KEY (user_id, role),
+    CONSTRAINT user_roles_role CHECK (role ~ '^[a-z][a-z0-9_]{0,31}$')
+);
+
+CREATE INDEX user_roles_role_idx ON user_roles (role);
+
+-- +goose Down
+DROP TABLE user_roles;

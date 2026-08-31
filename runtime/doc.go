@@ -20,6 +20,8 @@
 //   - runtime/pagination    authenticated versioned cursor tokens, key
 //     rotation, cursor request parsing, and the separate offset reporting
 //     contract
+//   - runtime/authz         permissions, role bundles, and the closed catalog
+//     that declares them
 //   - runtime/forwarded     trusted-proxy policy, and the real client address,
 //     scheme, and host behind it
 //   - runtime/password      Argon2id hashing, versioned parameter sets,

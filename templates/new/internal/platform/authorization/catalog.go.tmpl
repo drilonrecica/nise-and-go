@@ -1,0 +1,97 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package authorization declares this application's permissions and the roles
+// that bundle them.
+//
+// The declarations are code, not configuration or data. A permission's meaning
+// is decided by the use case that checks it, so the list has to be reviewed
+// alongside that code; a role's meaning is a decision worth reviewing too, and
+// one that must be identical on every replica. Only the *assignments* — which
+// account holds which role — are data, in user_roles, where an administrator
+// can change them without a deploy.
+//
+// Adding a permission is two edits in one commit: declare it here, and check it
+// in the use case that needs it. The catalog refuses a role bundling a
+// permission that is not declared, so the two cannot drift apart silently.
+package authorization
+
+import (
+	"fmt"
+
+	"github.com/drilonrecica/nise-and-go/runtime/authz"
+)
+
+// The permissions this application checks.
+//
+// The starter set covers the surfaces the framework itself ships: accounts and
+// the audit log. Delete what this application does not have and add what it
+// does; nothing outside this package depends on these particular names.
+var (
+	// UsersRead permits reading account records other than one's own.
+	UsersRead = authz.MustPermission("users.read")
+	// UsersManage permits enabling, disabling, and enrolling accounts.
+	UsersManage = authz.MustPermission("users.manage")
+	// RolesRead permits seeing who holds which role.
+	RolesRead = authz.MustPermission("roles.read")
+	// RolesManage permits granting and revoking roles. It is the permission
+	// that can lead to every other one, so it belongs to the smallest
+	// possible number of people.
+	RolesManage = authz.MustPermission("roles.manage")
+	// SessionsRevoke permits ending another account's sessions.
+	SessionsRevoke = authz.MustPermission("sessions.revoke")
+	// AuditRead permits reading the audit log. It is separate from
+	// UsersManage on purpose: the people who can change things and the
+	// people who can see what was changed do not have to be the same, and in
+	// some organizations must not be.
+	AuditRead = authz.MustPermission("audit.read")
+)
+
+// Role names this application grants.
+const (
+	// RoleAdministrator can do everything the framework's own surfaces
+	// offer.
+	RoleAdministrator = "administrator"
+	// RoleAuditor can read the audit log and the directory, and change
+	// nothing. It exists to make "look, do not touch" expressible, which is
+	// what makes an audit role safe to grant widely.
+	RoleAuditor = "auditor"
+)
+
+// permissions is every permission this application checks.
+func permissions() []authz.Permission {
+	return []authz.Permission{
+		UsersRead,
+		UsersManage,
+		RolesRead,
+		RolesManage,
+		SessionsRevoke,
+		AuditRead,
+	}
+}
+
+// roles are the bundles this application grants.
+func roles() ([]authz.Role, error) {
+	administrator, err := authz.NewRole(RoleAdministrator,
+		UsersRead, UsersManage, RolesRead, RolesManage, SessionsRevoke, AuditRead)
+	if err != nil {
+		return nil, err
+	}
+	auditor, err := authz.NewRole(RoleAuditor, UsersRead, RolesRead, AuditRead)
+	if err != nil {
+		return nil, err
+	}
+	return []authz.Role{administrator, auditor}, nil
+}
+
+// Catalog builds this application's permission catalog.
+func Catalog() (*authz.Catalog, error) {
+	bundles, err := roles()
+	if err != nil {
+		return nil, fmt.Errorf("building the role bundles: %w", err)
+	}
+	catalog, err := authz.NewCatalog(permissions(), bundles)
+	if err != nil {
+		return nil, fmt.Errorf("building the permission catalog: %w", err)
+	}
+	return catalog, nil
+}

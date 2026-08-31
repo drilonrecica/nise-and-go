@@ -35,3 +35,34 @@ UPDATE users
 SET status = $2,
     updated_at = $3
 WHERE id = $1;
+
+-- GrantRole assigns one role. Re-granting is a no-op rather than an error, so
+-- an administrator repeating themselves does not need a special case, and the
+-- original grant's time and granter are preserved.
+-- name: GrantRole :execrows
+INSERT INTO user_roles (user_id, role, granted_at, granted_by)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (user_id, role) DO NOTHING;
+
+-- RevokeRole removes one assignment.
+-- name: RevokeRole :execrows
+DELETE FROM user_roles
+WHERE user_id = $1
+  AND role = $2;
+
+-- ListUserRoles returns the roles one account holds, in a stable order.
+-- name: ListUserRoles :many
+SELECT role, granted_at, granted_by
+FROM user_roles
+WHERE user_id = $1
+ORDER BY role;
+
+-- ListRoleHolders answers "who can do this", which is the question an audit or
+-- an offboarding review actually asks.
+-- name: ListRoleHolders :many
+SELECT u.id, u.email, u.status, r.granted_at
+FROM user_roles r
+JOIN users u ON u.id = r.user_id
+WHERE r.role = $1
+ORDER BY u.email
+LIMIT $2;
