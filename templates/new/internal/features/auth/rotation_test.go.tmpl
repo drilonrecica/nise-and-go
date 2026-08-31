@@ -1,0 +1,163 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/session"
+
+	"{{.ModulePath}}/internal/platform/authorization"
+)
+
+func TestRotateReplacesTheTokenAndEndsTheOldSession(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+	issued, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	h.advance(10 * time.Minute)
+	rotated, err := h.sessions.Rotate(h.ctx, issued.Record.ID, "reauthenticated")
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if rotated.Token.Value() == issued.Token.Value() {
+		t.Fatal("rotation returned the same token")
+	}
+	if rotated.Record.ID == issued.Record.ID {
+		t.Fatal("rotation reused the session identifier")
+	}
+	if rotated.Record.UserID != account.ID {
+		t.Fatalf("the rotated session belongs to %q", rotated.Record.UserID)
+	}
+
+	// There is no instant in which both work: the old token is dead the
+	// moment the new one exists.
+	if _, err := h.sessions.Authenticate(h.ctx, rotated.Token.Value()); err != nil {
+		t.Fatalf("the new token does not authenticate: %v", err)
+	}
+	var inactive *InactiveError
+	if _, err := h.sessions.Authenticate(h.ctx, issued.Token.Value()); !errors.As(err, &inactive) || inactive.State != session.Revoked {
+		t.Fatalf("the old token = %v, want a revoked session", err)
+	}
+
+	var reason string
+	if err := h.pool.QueryRow(h.ctx, `SELECT revoked_reason FROM sessions WHERE id = $1`, issued.Record.ID).Scan(&reason); err != nil {
+		t.Fatalf("read revoked_reason: %v", err)
+	}
+	if reason != "reauthenticated" {
+		t.Errorf("revoked_reason = %q", reason)
+	}
+}
+
+func TestRotationDoesNotExtendTheAbsoluteDeadline(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+	issued, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	deadline := issued.Record.ExpiresAt
+
+	// Rotate repeatedly across most of the absolute lifetime. If each
+	// rotation recomputed the deadline, this session would never end, which
+	// is the exact bound the absolute deadline exists to impose.
+	current := issued
+	for range 20 {
+		h.advance(time.Hour)
+		next, err := h.sessions.Rotate(h.ctx, current.Record.ID, "rotated")
+		if err != nil {
+			break
+		}
+		if !next.Record.ExpiresAt.Equal(deadline) {
+			t.Fatalf("rotation moved the deadline from %s to %s", deadline, next.Record.ExpiresAt)
+		}
+		if !next.Record.CreatedAt.Equal(issued.Record.CreatedAt) {
+			t.Fatalf("rotation reset the session's creation time")
+		}
+		current = next
+	}
+
+	h.advance(30 * time.Hour)
+	if _, err := h.sessions.Authenticate(h.ctx, current.Record.ID); err == nil {
+		t.Fatal("a repeatedly rotated session outlived its absolute deadline")
+	}
+	var inactive *InactiveError
+	if _, err := h.sessions.Authenticate(h.ctx, current.Token.Value()); !errors.As(err, &inactive) || inactive.State != session.Expired {
+		t.Fatalf("the rotated session = %v, want expired", err)
+	}
+}
+
+func TestRotateRefusesWhatCannotBeRotated(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account := h.account(t, "person@example.test")
+	issued, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	if _, err := h.sessions.Rotate(h.ctx, "not-a-uuid", "rotated"); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("error = %v, want ErrSessionNotFound", err)
+	}
+	if _, err := h.sessions.Rotate(h.ctx, "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "rotated"); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("rotating a session that does not exist: error = %v", err)
+	}
+	for _, reason := range []string{"", strings.Repeat("x", MaxRevocationReason+1)} {
+		if _, err := h.sessions.Rotate(h.ctx, issued.Record.ID, reason); !errors.Is(err, ErrRevocationReason) {
+			t.Errorf("Rotate(reason %d bytes) error = %v", len(reason), err)
+		}
+	}
+
+	// A revoked session cannot be rotated back into life.
+	if err := h.sessions.Revoke(h.ctx, issued.Record.ID, "signed out"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if _, err := h.sessions.Rotate(h.ctx, issued.Record.ID, "rotated"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("a revoked session was rotated: %v", err)
+	}
+}
+
+func TestRevokingAnotherAccountsSessionsIsChecked(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	target := h.account(t, "person@example.test")
+	admin := h.account(t, "admin@example.test")
+	issued, err := h.sessions.Issue(h.ctx, target.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	// Ending somebody else's sessions is an administrative act, and denies by
+	// default like every other one.
+	contexts := map[string]bool{"no authority": false, "the wrong permission": false}
+	for name := range contexts {
+		ctx := h.ctx
+		if name == "the wrong permission" {
+			ctx = authorized(t, admin.ID, authorization.AuditRead)
+		}
+		if _, err := h.sessions.RevokeForAccount(ctx, target.ID, "compromised"); !errors.Is(err, authorization.ErrDenied) {
+			t.Errorf("%s: error = %v, want ErrDenied", name, err)
+		}
+	}
+	if _, err := h.sessions.Authenticate(h.ctx, issued.Token.Value()); err != nil {
+		t.Fatalf("a denied revocation ended the session: %v", err)
+	}
+
+	operator := authorized(t, admin.ID, authorization.SessionsRevoke)
+	revoked, err := h.sessions.RevokeForAccount(operator, target.ID, "compromised")
+	if err != nil {
+		t.Fatalf("RevokeForAccount: %v", err)
+	}
+	if revoked != 1 {
+		t.Fatalf("revoked %d sessions, want 1", revoked)
+	}
+	// Immediately, not on the next request: that is the difference between
+	// this and disabling the account.
+	if _, err := h.sessions.Authenticate(h.ctx, issued.Token.Value()); err == nil {
+		t.Error("the session survived an administrative revocation")
+	}
+}

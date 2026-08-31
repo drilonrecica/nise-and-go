@@ -154,44 +154,58 @@ func (c *Credentials) rehash(ctx context.Context, userID, secret string) error {
 
 // ChangePassword replaces an account's password after proving the current one.
 //
-// It ends every other session the account holds. A password change is what
-// somebody does when they think a credential has leaked, and leaving the other
-// sessions alive would make that gesture do nothing.
-func (c *Credentials) ChangePassword(ctx context.Context, userID, current, next string, compromised password.Compromised, keepSessionID string) error {
+// It ends every other session the account holds and rotates the one that made
+// the change. A password change is what somebody does when they think a
+// credential has leaked; leaving the other sessions alive, or leaving the
+// current token unchanged, would make that gesture do nothing.
+//
+// It returns the rotated session for the caller that made the change, so the
+// response can set the new cookie. When keepSessionID is empty every session
+// ends and the zero value is returned.
+func (c *Credentials) ChangePassword(ctx context.Context, userID, current, next string, compromised password.Compromised, keepSessionID string) (Issued, error) {
 	account, err := c.accounts.FindByID(ctx, userID)
 	if err != nil {
-		return err
+		return Issued{}, err
 	}
 	credential, err := c.accounts.FindCredentialByEmail(ctx, account.Email)
 	if err != nil {
-		return err
+		return Issued{}, err
 	}
 
 	verification, err := c.policy.Verify(credential.PasswordHash, current)
 	if err != nil || !verification.Match {
-		return ErrInvalidCredentials
+		return Issued{}, ErrInvalidCredentials
 	}
 	if err := passwords.Check(ctx, next, account.Email, compromised); err != nil {
-		return err
+		return Issued{}, err
 	}
 
 	encoded, err := c.policy.Hash(next)
 	if err != nil {
-		return err
+		return Issued{}, err
 	}
 	if err := c.accounts.UpdatePasswordHash(ctx, userID, encoded); err != nil {
-		return err
+		return Issued{}, err
 	}
 
 	if keepSessionID == "" {
-		_, err = c.sessions.RevokeAllForUser(ctx, userID, "password changed")
-	} else {
-		_, err = c.sessions.RevokeOtherSessions(ctx, userID, keepSessionID, "password changed")
+		if _, err := c.sessions.RevokeAllForUser(ctx, userID, "password changed"); err != nil {
+			return Issued{}, fmt.Errorf("ending sessions after a password change: %w", err)
+		}
+		return Issued{}, nil
 	}
+
+	if _, err := c.sessions.RevokeOtherSessions(ctx, userID, keepSessionID, "password changed"); err != nil {
+		return Issued{}, fmt.Errorf("ending other sessions after a password change: %w", err)
+	}
+	// The surviving session gets a new token. The old one may have been what
+	// prompted the change, and a password change that left the possibly-stolen
+	// credential working would be a gesture rather than a response.
+	rotated, err := c.sessions.Rotate(ctx, keepSessionID, "password changed")
 	if err != nil {
-		return fmt.Errorf("ending other sessions after a password change: %w", err)
+		return Issued{}, fmt.Errorf("rotating the session after a password change: %w", err)
 	}
-	return nil
+	return rotated, nil
 }
 
 // SetPassword stores a password without proving a previous one.

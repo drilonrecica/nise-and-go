@@ -248,3 +248,58 @@ func TestGeneratedProjectCarriesTheSessionCookie(t *testing.T) {
 		}
 	}
 }
+
+func TestGeneratedProjectRotatesWithoutExtendingTheDeadline(t *testing.T) {
+	t.Parallel()
+
+	files, err := generator.Plan(defaultOptions())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	content := make(map[string]string, len(files))
+	for _, file := range files {
+		content[file.Path] = string(file.Content)
+	}
+
+	wants := map[string][]string{
+		"internal/features/auth/queries/sessions.sql": {
+			"-- name: RotateSession :one",
+			"SELECT previous.user_id, $2, previous.created_at, $3, previous.expires_at",
+		},
+		"internal/features/auth/sessions.go": {
+			"func (s *Sessions) Rotate(ctx context.Context, sessionID, reason string) (Issued, error)",
+			"func (s *Sessions) RevokeForAccount(ctx context.Context, userID, reason string) (int64, error)",
+			"authorization.Require(ctx, authorization.SessionsRevoke)",
+		},
+		"internal/features/auth/rotation_test.go": {
+			"TestRotationDoesNotExtendTheAbsoluteDeadline",
+			"TestRotateRefusesWhatCannotBeRotated",
+			"TestRevokingAnotherAccountsSessionsIsChecked",
+		},
+	}
+	for path, fragments := range wants {
+		for _, fragment := range fragments {
+			if !strings.Contains(content[path], fragment) {
+				t.Errorf("%s lacks %q", path, fragment)
+			}
+		}
+	}
+
+	// The rotation query must copy the deadline from the previous row. A
+	// recomputed one would make repeated rotation an unbounded session.
+	query := content["internal/features/auth/queries/sessions.sql"]
+	rotate := strings.Index(query, "-- name: RotateSession")
+	if rotate < 0 {
+		t.Fatal("no rotation query")
+	}
+	body := query[rotate:]
+	if end := strings.Index(body[1:], "-- name:"); end >= 0 {
+		body = body[:end]
+	}
+	if strings.Contains(body, "now()") {
+		t.Error("the rotation query computes a time rather than copying the previous session's")
+	}
+	if !strings.Contains(body, "previous.expires_at") {
+		t.Error("the rotation query does not copy the absolute deadline")
+	}
+}

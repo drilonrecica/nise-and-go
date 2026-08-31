@@ -100,6 +100,11 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   unusable invitation, a bounded expiry sweep that keeps accepted records, and
   an `<app> admin bootstrap` command that works only on an empty directory and
   withdraws earlier links when rerun.
+- Add session rotation: a new token for the same session, ending the old one in
+  the same transaction and copying the absolute deadline rather than recomputing
+  it, so repeated rotation cannot become an unbounded session. A password change
+  now rotates the session that made it. Adds `RevokeForAccount` for ending
+  another account's sessions, which requires `sessions.revoke`.
 
 ### Fixed
 

@@ -77,6 +77,10 @@ type Querier interface {
 	// RevokeUserSessions ends every session an account holds, which is what a
 	// password change or a compromise response needs.
 	RevokeUserSessions(ctx context.Context, arg RevokeUserSessionsParams) (int64, error)
+	// RotateSession replaces one session with a new token, preserving the original
+	// absolute deadline. Copying created_at and expires_at rather than recomputing
+	// them is what stops repeated rotation from becoming an unbounded session.
+	RotateSession(ctx context.Context, arg RotateSessionParams) (RotateSessionRow, error)
 	// SetUserStatus enables or disables an account. Disabling stops the account's
 	// sessions from authenticating on their next request; revoking them is a
 	// separate, explicit step.
