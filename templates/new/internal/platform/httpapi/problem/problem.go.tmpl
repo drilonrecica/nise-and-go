@@ -91,6 +91,10 @@ var (
 		"/problems/idempotency-key-reuse", "Idempotency Key Reuse", http.StatusUnprocessableEntity,
 		"This idempotency key was already used for a different request.", "idempotency_key_reuse",
 	)
+	crossSiteRequest = mustDefinition(
+		"/problems/cross-site-request", "Cross-Site Request", http.StatusForbidden,
+		"This state-changing request did not come from this application.", "cross_site_request",
+	)
 	unsupportedMediaType = mustDefinition(
 		"/problems/unsupported-media-type", "Unsupported Media Type", http.StatusUnsupportedMediaType,
 		"The request Content-Type is not supported for this operation.", "unsupported_media_type",
@@ -141,6 +145,11 @@ func IdempotencyConflict() Definition { return idempotencyConflict }
 // failure. It is a 422 because the request is syntactically fine and
 // semantically wrong, and no retry of it will ever succeed.
 func IdempotencyKeyReuse() Definition { return idempotencyKeyReuse }
+
+// CrossSiteRequest returns the anti-forgery refusal. It is deliberately one
+// public code for every reason the check failed: which of a caller's guesses
+// was structurally valid is not something to tell them.
+func CrossSiteRequest() Definition { return crossSiteRequest }
 
 // UnsupportedMediaType returns the request media-type failure.
 func UnsupportedMediaType() Definition { return unsupportedMediaType }

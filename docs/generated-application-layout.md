@@ -123,7 +123,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
         │   ├── router_test.go         [app]   surface boundary and middleware-order contract
         │   └── openapigen/
         │       └── openapi.gen.go     [nise]  complete strict chi types and bindings
-        ├── httpauth/                  [app]   session cookie boundary and the request-identity resolver
+        ├── httpauth/                  [app]   session cookie boundary, request-identity resolver, and the anti-forgery guard
         ├── idempotency/               [app]   transaction-owned idempotent command executor and its store
         ├── passwords/                 [app]   this application's Argon2id parameter history
         ├── jobs/                      [app]   core: the River runner, queues, and registration

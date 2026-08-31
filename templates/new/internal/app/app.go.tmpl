@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 
 	rtconfig "github.com/drilonrecica/nise-and-go/runtime/config"
@@ -27,6 +28,7 @@ import (
 	"{{.ModulePath}}/internal/platform/config"
 	"{{.ModulePath}}/internal/platform/database"
 	"{{.ModulePath}}/internal/platform/httpapi"
+	"{{.ModulePath}}/internal/platform/httpapi/problem"
 	"{{.ModulePath}}/internal/platform/httpauth"
 	"{{.ModulePath}}/internal/platform/webui"
 )
@@ -129,6 +131,22 @@ func Run(ctx context.Context, modeOverride string) error {
 	if err != nil {
 		return fmt.Errorf("building the session resolver: %w", err)
 	}
+	originPolicy, err := httpauth.NewOriginPolicy(cfg.AllowedOrigins)
+	if err != nil {
+		return fmt.Errorf("building the allowed-origin policy: %w", err)
+	}
+	// Two guards over one policy: each surface refuses in its own format, so
+	// neither package has to know about the other's.
+	apiGuard, err := httpauth.NewGuard(originPolicy, sessionCookies, problem.HTTPHandler(problem.CrossSiteRequest()))
+	if err != nil {
+		return fmt.Errorf("building the API anti-forgery guard: %w", err)
+	}
+	documentGuard, err := httpauth.NewGuard(originPolicy, sessionCookies, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	})
+	if err != nil {
+		return fmt.Errorf("building the document anti-forgery guard: %w", err)
+	}
 	apiServer, err := httpapi.NewServer(cursors)
 	if err != nil {
 		return fmt.Errorf("building the API adapter: %w", err)
@@ -148,8 +166,12 @@ func Run(ctx context.Context, modeOverride string) error {
 			// runs on both surfaces: the document chain needs it as soon as
 			// the frontend has protected pages, and running it in one place
 			// is what keeps the two from disagreeing about who is asking.
-			API:      []httpapi.Middleware{sessionResolver.Middleware},
-			Document: []httpapi.Middleware{sessionResolver.Middleware},
+			//
+			// The anti-forgery guard runs inside the resolver, so the
+			// session it checks the token against is the one already
+			// resolved for this request.
+			API:      []httpapi.Middleware{sessionResolver.Middleware, apiGuard.Middleware},
+			Document: []httpapi.Middleware{sessionResolver.Middleware, documentGuard.Middleware},
 		},
 	})
 	if err != nil {

@@ -87,6 +87,11 @@ type Config struct {
 	SessionLifetime session.Lifetime
 	// SessionCookie is the name and attributes of the session cookie.
 	SessionCookie session.CookiePolicy
+	// AllowedOrigins are the origins permitted to make state-changing
+	// requests. Its zero value means this application's own origin, derived
+	// per request, which is the right policy for a single-origin
+	// application.
+	AllowedOrigins []string
 	// SessionCookieInsecure reports that the session cookie has given up the
 	// __Host- prefix and the Secure attribute. It exists for a development
 	// origin that is not localhost; production refuses it.
@@ -135,6 +140,7 @@ func Load() (Config, []string, error) {
 	sessionCookieName := l.String("SESSION_COOKIE_NAME", rtconfig.Default(""))
 	trustedProxyCount := l.Int("TRUSTED_PROXY_COUNT", rtconfig.Default("0"))
 	trustedProxyNetworks := l.String("TRUSTED_PROXY_NETWORKS", rtconfig.Default(""))
+	allowedOrigins := l.String("ALLOWED_ORIGINS", rtconfig.Default(""))
 	// The two cursor key variables are read into locals rather than kept as
 	// Config fields: once the ring is built, holding the raw material would
 	// only add a second place for it to escape from.
@@ -217,6 +223,8 @@ func Load() (Config, []string, error) {
 	if trustedProxies.TrustsForwardedHeaders() && len(proxyNetworks) == 0 {
 		warnings = append(warnings, "TRUSTED_PROXY_NETWORKS is unset: forwarded headers are honored from any peer, so this is only safe when the application's port cannot be reached except through the proxy")
 	}
+
+	cfg.AllowedOrigins = splitList(allowedOrigins)
 
 	sessionLifetime, err := session.NewLifetime(
 		time.Duration(sessionIdle),
@@ -351,6 +359,20 @@ func parseLevel(raw string) (slog.Level, error) {
 	default:
 		return 0, fmt.Errorf(`LOG_LEVEL: must be one of debug, info, warn, error; found %q`, raw)
 	}
+}
+
+// splitList reads a comma-separated setting into trimmed entries, dropping
+// nothing: an empty entry reaches the validator that knows what it means.
+func splitList(value string) []string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	entries := strings.Split(trimmed, ",")
+	for i := range entries {
+		entries[i] = strings.TrimSpace(entries[i])
+	}
+	return entries
 }
 
 // isWildcardAddr reports whether addr binds every interface.

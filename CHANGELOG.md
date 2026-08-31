@@ -57,6 +57,12 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   peer-network allowlist gates who may be a proxy; both default to trusting
   nothing, and `TRUST_PROXY_HEADERS` without a declared proxy now fails startup
   (ADR 0019).
+- Add session-bound CSRF protection with Origin and Fetch Metadata checks. The
+  anti-forgery token is derived from the session token itself, so it needs no
+  server key, no stored column, and no lifetime of its own; it is delivered in a
+  script-readable cookie beside the session and echoed in `X-CSRF-Token`.
+  Unauthenticated state changes are covered by the Origin and Fetch Metadata
+  layers. Adds `ALLOWED_ORIGINS` and the `cross_site_request` Problem type.
 
 ### Fixed
 

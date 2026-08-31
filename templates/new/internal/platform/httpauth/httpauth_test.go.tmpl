@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drilonrecica/nise-and-go/runtime/forwarded"
 	"github.com/drilonrecica/nise-and-go/runtime/logging"
 	"github.com/drilonrecica/nise-and-go/runtime/session"
 )
@@ -274,12 +275,16 @@ func TestResolverAttachesAValidSession(t *testing.T) {
 	token := testToken(t)
 	authenticator := &stubAuthenticator{
 		accepted: token.Value(),
-		record:   session.Record{ID: "s1", UserID: "u1", LastSeenAt: fixedNow},
+		record: session.Record{
+			ID: "s1", UserID: "u1",
+			LastSeenAt: fixedNow,
+			ExpiresAt:  fixedNow.Add(24 * time.Hour),
+		},
 	}
 	resolver, _ := testResolver(t, authenticator)
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	request.AddCookie(&http.Cookie{Name: "__Host-session", Value: token.Value()})
+	request.AddCookie(namedCookie("__Host-session", token.Value()))
 	response, record, authenticated := serve(t, resolver, request)
 
 	if !authenticated {
@@ -288,8 +293,26 @@ func TestResolverAttachesAValidSession(t *testing.T) {
 	if record.UserID != "u1" || UserID(request.Context()) != "" {
 		t.Fatalf("record = %#v; the identity must live in the handler's context, not the original request's", record)
 	}
-	if response.Header().Get("Set-Cookie") != "" {
-		t.Errorf("a valid session's cookie was rewritten: %q", response.Header().Get("Set-Cookie"))
+
+	// The session cookie itself is never rewritten on an ordinary request;
+	// only the anti-forgery cookie the browser was missing.
+	headers := response.Header()["Set-Cookie"]
+	if len(headers) != 1 || !strings.HasPrefix(headers[0], "__Host-session_csrf=") {
+		t.Fatalf("Set-Cookie = %v, want only the missing anti-forgery cookie", headers)
+	}
+	if strings.Contains(headers[0], token.Value()) {
+		t.Error("the anti-forgery cookie carries the session credential")
+	}
+
+	// With the right cookie already held, nothing is written: a Set-Cookie on
+	// every authenticated response would be a header on every page for no
+	// benefit.
+	repeat := httptest.NewRequest(http.MethodGet, "/", nil)
+	repeat.AddCookie(namedCookie("__Host-session", token.Value()))
+	repeat.AddCookie(namedCookie("__Host-session_csrf", session.CSRFToken(token)))
+	quiet, _, _ := serve(t, resolver, repeat)
+	if got := quiet.Header()["Set-Cookie"]; len(got) != 0 {
+		t.Errorf("Set-Cookie = %v on a request that already held the pair", got)
 	}
 }
 
@@ -386,6 +409,22 @@ func TestContextIdentityCannotBeForged(t *testing.T) {
 	if !ok || record.UserID != "u1" || UserID(real) != "u1" {
 		t.Fatalf("record = %#v, ok = %t", record, ok)
 	}
+}
+
+// trustedProxyMiddleware resolves the edge view the way the real chain does,
+// so a test's forwarded scheme reaches the origin comparison.
+func trustedProxyMiddleware(t *testing.T) func(http.Handler) http.Handler {
+	t.Helper()
+
+	networks, err := forwarded.ParseNetworks("0.0.0.0/0")
+	if err != nil {
+		t.Fatalf("ParseNetworks: %v", err)
+	}
+	policy, err := forwarded.NewPolicy(1, networks)
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+	return policy.Middleware
 }
 
 // namedCookie builds one request cookie.

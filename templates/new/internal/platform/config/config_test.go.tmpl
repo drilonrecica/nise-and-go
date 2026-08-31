@@ -417,6 +417,29 @@ func TestLoadRejectsUnusableProxyConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadReadsAllowedOrigins(t *testing.T) {
+	setTestEnvironment(t)
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Empty is not "allow anything": it means this application's own origin,
+	// derived per request.
+	if len(cfg.AllowedOrigins) != 0 {
+		t.Errorf("AllowedOrigins = %v, want none by default", cfg.AllowedOrigins)
+	}
+
+	t.Setenv("ALLOWED_ORIGINS", " https://app.example , https://console.example ")
+	cfg, _, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.AllowedOrigins) != 2 || cfg.AllowedOrigins[0] != "https://app.example" {
+		t.Fatalf("AllowedOrigins = %v", cfg.AllowedOrigins)
+	}
+}
+
 func setTestEnvironment(t *testing.T) {
 	t.Helper()
 	values := map[string]string{
@@ -449,6 +472,7 @@ func setTestEnvironment(t *testing.T) {
 		"SESSION_COOKIE_INSECURE":  "false",
 		"TRUSTED_PROXY_COUNT":      "0",
 		"TRUSTED_PROXY_NETWORKS":   "",
+		"ALLOWED_ORIGINS":          "",
 	}
 	for name, value := range values {
 		t.Setenv(name, value)

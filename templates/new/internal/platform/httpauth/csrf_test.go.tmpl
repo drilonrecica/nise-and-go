@@ -1,0 +1,409 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpauth
+
+import (
+	"errors"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/session"
+)
+
+const appOrigin = "https://app.example"
+
+func testGuard(t *testing.T, origins ...string) (*Guard, *Cookies) {
+	t.Helper()
+
+	policy, err := NewOriginPolicy(origins)
+	if err != nil {
+		t.Fatalf("NewOriginPolicy: %v", err)
+	}
+	cookies := testCookies(t, true)
+	guard, err := NewGuard(policy, cookies, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	if err != nil {
+		t.Fatalf("NewGuard: %v", err)
+	}
+	return guard, cookies
+}
+
+// guardRequest builds a state-changing request to the application's own host.
+type guardRequest struct {
+	method     string
+	origin     string
+	referer    string
+	fetchSite  string
+	sessionRaw string
+	csrf       string
+}
+
+func (g guardRequest) build(t *testing.T) *http.Request {
+	t.Helper()
+
+	method := g.method
+	if method == "" {
+		method = http.MethodPost
+	}
+	r := httptest.NewRequest(method, appOrigin+"/api/v1/things", strings.NewReader("{}"))
+	r.Host = "app.example"
+	r.TLS = nil
+	// The guard derives the application's own origin the way a deployment
+	// behind TLS termination does. The forwarded scheme is only read once the
+	// address chain itself resolves, so both headers are needed to describe
+	// one proxied request.
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+	r.Header.Set("X-Forwarded-Proto", "https")
+	if g.origin != "" {
+		r.Header.Set(HeaderOrigin, g.origin)
+	}
+	if g.referer != "" {
+		r.Header.Set(HeaderReferer, g.referer)
+	}
+	if g.fetchSite != "" {
+		r.Header.Set(HeaderFetchSite, g.fetchSite)
+	}
+	if g.sessionRaw != "" {
+		r.AddCookie(namedCookie("__Host-session", g.sessionRaw))
+	}
+	if g.csrf != "" {
+		r.Header.Set(session.CSRFHeaderName, g.csrf)
+	}
+	return r
+}
+
+// serveGuard runs the guard with the forwarded middleware in front, so the
+// application's own origin resolves the way it does in the real chain.
+func serveGuard(t *testing.T, guard *Guard, request *http.Request) (*httptest.ResponseRecorder, bool, string) {
+	t.Helper()
+
+	reached := false
+	logs := &strings.Builder{}
+	handler := trustedProxyMiddleware(t)(guard.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached = true
+	})))
+	ctx := logging.WithLogger(request.Context(), slog.New(slog.NewTextHandler(logs, nil)))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request.WithContext(ctx))
+	return response, reached, logs.String()
+}
+
+func TestNewGuardRequiresItsDependencies(t *testing.T) {
+	t.Parallel()
+
+	policy, err := NewOriginPolicy(nil)
+	if err != nil {
+		t.Fatalf("NewOriginPolicy: %v", err)
+	}
+	if _, err := NewGuard(policy, nil, func(http.ResponseWriter, *http.Request) {}); err == nil {
+		t.Error("NewGuard accepted a nil cookie boundary")
+	}
+	if _, err := NewGuard(policy, testCookies(t, true), nil); err == nil {
+		t.Error("NewGuard accepted a nil refusal handler")
+	}
+}
+
+func TestGuardLetsSafeMethodsThrough(t *testing.T) {
+	t.Parallel()
+
+	guard, _ := testGuard(t)
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions, "TRACE"} {
+		// No Origin, no Fetch Metadata, no token: a safe method must not be
+		// checked, because a GET that changes state is a defect this layer
+		// cannot fix anyway.
+		request := guardRequest{method: method}.build(t)
+		_, reached, _ := serveGuard(t, guard, request)
+		if !reached {
+			t.Errorf("%s was refused", method)
+		}
+	}
+}
+
+func TestGuardChecksEveryUnsafeMethod(t *testing.T) {
+	t.Parallel()
+
+	guard, _ := testGuard(t)
+	// The safe set is closed, so a method nobody anticipated is checked
+	// rather than exempt.
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, "PROPFIND", "PURGE"} {
+		request := guardRequest{method: method}.build(t)
+		response, reached, _ := serveGuard(t, guard, request)
+		if reached {
+			t.Errorf("%s reached the handler with no origin", method)
+		}
+		if response.Code != http.StatusForbidden {
+			t.Errorf("%s status = %d, want 403", method, response.Code)
+		}
+	}
+}
+
+func TestGuardRefusesCrossSiteFetchMetadata(t *testing.T) {
+	t.Parallel()
+
+	guard, _ := testGuard(t)
+	// A browser sets these and a page cannot change them, so this is the one
+	// check an attacker cannot satisfy from another site at all. same-site is
+	// refused with cross-site: a sibling subdomain is a different security
+	// boundary, which is why the session cookie carries __Host-.
+	for _, site := range []string{"cross-site", "same-site", "none"} {
+		request := guardRequest{origin: appOrigin, fetchSite: site}.build(t)
+		response, reached, logs := serveGuard(t, guard, request)
+		if reached {
+			t.Errorf("Sec-Fetch-Site: %s reached the handler", site)
+		}
+		if response.Code != http.StatusForbidden {
+			t.Errorf("Sec-Fetch-Site: %s status = %d", site, response.Code)
+		}
+		if !strings.Contains(logs, ReasonCrossSite) {
+			t.Errorf("Sec-Fetch-Site: %s was not logged as cross-site: %s", site, logs)
+		}
+	}
+
+	request := guardRequest{origin: appOrigin, fetchSite: "same-origin"}.build(t)
+	if _, reached, _ := serveGuard(t, guard, request); !reached {
+		t.Error("a same-origin request was refused")
+	}
+}
+
+func TestGuardRequiresAKnownOrigin(t *testing.T) {
+	t.Parallel()
+
+	guard, _ := testGuard(t)
+
+	tests := []struct {
+		name    string
+		request guardRequest
+		reason  string
+	}{
+		{name: "no origin at all", request: guardRequest{}, reason: ReasonOriginMissing},
+		{name: "the null origin", request: guardRequest{origin: "null"}, reason: ReasonOriginMissing},
+		{name: "another site", request: guardRequest{origin: "https://evil.example"}, reason: ReasonOriginMismatch},
+		{name: "the same host over http", request: guardRequest{origin: "http://app.example"}, reason: ReasonOriginMismatch},
+		{name: "a sibling subdomain", request: guardRequest{origin: "https://other.app.example"}, reason: ReasonOriginMismatch},
+		{name: "a prefix of the host", request: guardRequest{origin: "https://app.example.evil.test"}, reason: ReasonOriginMismatch},
+		{name: "an origin with a path", request: guardRequest{origin: appOrigin + "/x"}, reason: ReasonOriginMissing},
+		{name: "a referer from another site", request: guardRequest{referer: "https://evil.example/page"}, reason: ReasonOriginMismatch},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			response, reached, logs := serveGuard(t, guard, tc.request.build(t))
+			if reached {
+				t.Fatal("the request reached the handler")
+			}
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403", response.Code)
+			}
+			if !strings.Contains(logs, tc.reason) {
+				t.Errorf("logs do not name %q: %s", tc.reason, logs)
+			}
+		})
+	}
+
+	// Referer is a fallback for a browser that stripped Origin, and only its
+	// origin is read.
+	request := guardRequest{referer: appOrigin + "/some/page?x=1"}.build(t)
+	if _, reached, _ := serveGuard(t, guard, request); !reached {
+		t.Error("a same-origin Referer fallback was refused")
+	}
+}
+
+func TestGuardHonorsAnExplicitOriginList(t *testing.T) {
+	t.Parallel()
+
+	guard, _ := testGuard(t, "https://console.example", "https://app.example")
+	if _, reached, _ := serveGuard(t, guard, guardRequest{origin: "https://console.example"}.build(t)); !reached {
+		t.Error("a listed origin was refused")
+	}
+	if _, reached, _ := serveGuard(t, guard, guardRequest{origin: "https://other.example"}.build(t)); reached {
+		t.Error("an unlisted origin was allowed")
+	}
+}
+
+func TestNewOriginPolicyRejectsUnusableEntries(t *testing.T) {
+	t.Parallel()
+
+	rejected := map[string]string{
+		"empty":             "",
+		"no scheme":         "app.example",
+		"a path":            "https://app.example/",
+		"a query":           "https://app.example?x=1",
+		"credentials":       "https://user:pass@app.example",
+		"an unknown scheme": "ftp://app.example",
+		"no host":           "https://",
+		"oversized":         "https://" + strings.Repeat("a", MaxOriginBytes),
+	}
+	for name, origin := range rejected {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := NewOriginPolicy([]string{origin}); !errors.Is(err, ErrOrigins) {
+				t.Fatalf("NewOriginPolicy(%q) error = %v, want ErrOrigins", origin, err)
+			}
+		})
+	}
+	if _, err := NewOriginPolicy([]string{appOrigin, appOrigin}); !errors.Is(err, ErrOrigins) {
+		t.Errorf("a repeated origin was accepted: %v", err)
+	}
+
+	policy, err := NewOriginPolicy([]string{" https://app.example ", "http://localhost:5173"})
+	if err != nil {
+		t.Fatalf("NewOriginPolicy: %v", err)
+	}
+	if got := policy.Allowed(); len(got) != 2 || got[0] != appOrigin {
+		t.Errorf("Allowed = %v", got)
+	}
+}
+
+func TestGuardRequiresTheSessionBoundToken(t *testing.T) {
+	t.Parallel()
+
+	guard, _ := testGuard(t)
+	token, err := session.New()
+	if err != nil {
+		t.Fatalf("session.New: %v", err)
+	}
+	other, err := session.New()
+	if err != nil {
+		t.Fatalf("session.New: %v", err)
+	}
+
+	// With a session, Origin alone is not enough: the token is the check an
+	// attacker cannot satisfy even if the first two somehow pass.
+	tests := []struct {
+		name   string
+		csrf   string
+		reason string
+	}{
+		{name: "no token", csrf: "", reason: ReasonTokenMissing},
+		{name: "another session's token", csrf: session.CSRFToken(other), reason: ReasonTokenMismatch},
+		{name: "the session token itself", csrf: token.Value(), reason: ReasonTokenMismatch},
+		{name: "a truncated token", csrf: session.CSRFToken(token)[:10], reason: ReasonTokenMismatch},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			request := guardRequest{origin: appOrigin, sessionRaw: token.Value(), csrf: tc.csrf}.build(t)
+			response, reached, logs := serveGuard(t, guard, request)
+			if reached {
+				t.Fatal("the request reached the handler")
+			}
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403", response.Code)
+			}
+			if !strings.Contains(logs, tc.reason) {
+				t.Errorf("logs do not name %q: %s", tc.reason, logs)
+			}
+			if strings.Contains(logs, token.Value()) {
+				t.Errorf("the log recorded the session credential: %s", logs)
+			}
+		})
+	}
+
+	valid := guardRequest{origin: appOrigin, sessionRaw: token.Value(), csrf: session.CSRFToken(token)}.build(t)
+	if _, reached, _ := serveGuard(t, guard, valid); !reached {
+		t.Error("a correctly bound token was refused")
+	}
+}
+
+func TestGuardProtectsUnauthenticatedStateChanges(t *testing.T) {
+	t.Parallel()
+
+	// Logging in is a state-changing request with no session, and login CSRF
+	// is a real attack. Origin and Fetch Metadata have to carry it.
+	guard, _ := testGuard(t)
+	if _, reached, _ := serveGuard(t, guard, guardRequest{origin: "https://evil.example"}.build(t)); reached {
+		t.Error("an unauthenticated cross-origin state change was allowed")
+	}
+	if _, reached, _ := serveGuard(t, guard, guardRequest{origin: appOrigin}.build(t)); !reached {
+		t.Error("an unauthenticated same-origin state change was refused")
+	}
+
+	// A malformed credential is not an authenticated request; the resolver
+	// has already cleared it, and the token check has nothing to bind to.
+	malformed := guardRequest{origin: appOrigin, sessionRaw: "not-a-token"}.build(t)
+	if _, reached, _ := serveGuard(t, guard, malformed); !reached {
+		t.Error("a malformed credential turned a valid request into a refusal")
+	}
+}
+
+func TestCSRFCookieIsReadableAndPairedWithTheSession(t *testing.T) {
+	t.Parallel()
+
+	cookies := testCookies(t, true)
+	token, err := session.New()
+	if err != nil {
+		t.Fatalf("session.New: %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	cookies.Write(response, token, fixedNow.Add(time.Hour), fixedNow)
+	cookies.WriteCSRFCookie(response, token, fixedNow.Add(time.Hour), fixedNow)
+
+	headers := response.Header()["Set-Cookie"]
+	if len(headers) != 2 {
+		t.Fatalf("wrote %d cookies, want the session and its token", len(headers))
+	}
+	sessionCookie, csrfCookie := headers[0], headers[1]
+
+	if !strings.Contains(sessionCookie, "HttpOnly") {
+		t.Error("the session cookie is readable by script")
+	}
+	// The anti-forgery cookie must be readable: the application's own script
+	// has to echo it in a header, which is the entire mechanism.
+	if strings.Contains(csrfCookie, "HttpOnly") {
+		t.Error("the anti-forgery cookie is HttpOnly, so no script can echo it")
+	}
+	if !strings.HasPrefix(csrfCookie, "__Host-session_csrf=") {
+		t.Errorf("anti-forgery cookie = %q, want the derived name", csrfCookie)
+	}
+	if !strings.Contains(csrfCookie, session.CSRFToken(token)) {
+		t.Error("the anti-forgery cookie does not carry the bound token")
+	}
+	if strings.Contains(csrfCookie, token.Value()) {
+		t.Error("the anti-forgery cookie carries the session credential")
+	}
+	// A browser that will not send one must not send the other.
+	for _, attribute := range []string{"Secure", "SameSite=Lax", "Path=/"} {
+		if !strings.Contains(csrfCookie, attribute) {
+			t.Errorf("anti-forgery cookie = %q, missing %q", csrfCookie, attribute)
+		}
+	}
+
+	cleared := httptest.NewRecorder()
+	cookies.ClearCSRFCookie(cleared)
+	if !strings.Contains(cleared.Header().Get("Set-Cookie"), "Max-Age=0") {
+		t.Errorf("ClearCSRFCookie = %q", cleared.Header().Get("Set-Cookie"))
+	}
+	expired := httptest.NewRecorder()
+	cookies.WriteCSRFCookie(expired, token, fixedNow, fixedNow)
+	if !strings.Contains(expired.Header().Get("Set-Cookie"), "Max-Age=0") {
+		t.Error("an already-expired session still received an anti-forgery cookie")
+	}
+}
+
+func TestResolverClearsBothCookies(t *testing.T) {
+	t.Parallel()
+
+	authenticator := &stubAuthenticator{err: &refusal{reason: "revoked"}}
+	resolver, _ := testResolver(t, authenticator)
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.AddCookie(namedCookie("__Host-session", testToken(t).Value()))
+	response, _, _ := serve(t, resolver, request)
+
+	headers := response.Header()["Set-Cookie"]
+	if len(headers) != 2 {
+		t.Fatalf("cleared %d cookies, want both halves of the pair", len(headers))
+	}
+	for _, header := range headers {
+		if !strings.Contains(header, "Max-Age=0") {
+			t.Errorf("Set-Cookie = %q, want a clearing cookie", header)
+		}
+	}
+}

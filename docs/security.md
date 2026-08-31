@@ -6,7 +6,7 @@ This document records the planned baseline, not an audit or guarantee.
 
 - Opaque sessions stored in PostgreSQL. Implemented; see [sessions](sessions.md). Only the token digest is stored, the absolute deadline is fixed at issue, and revocation is immediate.
 - Browser identifier in a `__Host-` prefixed Secure, HttpOnly, SameSite=Lax cookie.
-- Session-bound CSRF token plus Origin and Fetch Metadata checks.
+- Session-bound CSRF token plus Origin and Fetch Metadata checks. Implemented; see [sessions](sessions.md). The token is derived from the session token, so it has no separate key, column, or lifetime, and all three checks must pass for a state-changing request.
 - Future native clients use opaque, hashed, revocable bearer device tokens—not JWTs.
 - Argon2id password hashing with versioned, benchmarked parameters and rehash-on-login. Implemented; see [password hashing](passwords.md). The parameter history is application-owned Go code, retiring a set is explicit, and the unknown-account login path pays the same cost as a real one.
 - Closed registration by default through administrators or invitations.

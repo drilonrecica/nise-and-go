@@ -18,10 +18,12 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/logging"
 	"github.com/drilonrecica/nise-and-go/runtime/pagination"
 	"github.com/drilonrecica/nise-and-go/runtime/secure"
+	"github.com/drilonrecica/nise-and-go/runtime/session"
 
 	"{{.ModulePath}}/internal/platform/httpapi/httpjson"
 	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
 	"{{.ModulePath}}/internal/platform/httpapi/problem"
+	"{{.ModulePath}}/internal/platform/httpauth"
 	"{{.ModulePath}}/internal/platform/idempotency"
 )
 
@@ -576,6 +578,105 @@ func TestTransportContractReportPagination(t *testing.T) {
 				t.Errorf("problem code = %q, want %q", code, tc.wantCode)
 			}
 		})
+	}
+}
+
+func TestTransportContractRefusesCrossSiteStateChanges(t *testing.T) {
+	t.Parallel()
+
+	// The probe router is built without the anti-forgery guard, so this
+	// exercise wires one the way the application does and drives it through
+	// the same chain.
+	deps, _, _ := routerTestDeps(t)
+	cookiePolicy, err := session.NewCookiePolicy(true)
+	if err != nil {
+		t.Fatalf("NewCookiePolicy: %v", err)
+	}
+	cookies, err := httpauth.NewCookies(cookiePolicy)
+	if err != nil {
+		t.Fatalf("NewCookies: %v", err)
+	}
+	origins, err := httpauth.NewOriginPolicy(nil)
+	if err != nil {
+		t.Fatalf("NewOriginPolicy: %v", err)
+	}
+	guard, err := httpauth.NewGuard(origins, cookies, problem.HTTPHandler(problem.CrossSiteRequest()))
+	if err != nil {
+		t.Fatalf("NewGuard: %v", err)
+	}
+	deps.Middleware.API = []Middleware{guard.Middleware}
+
+	limits, err := pagination.NewLimits(25, 100)
+	if err != nil {
+		t.Fatalf("NewLimits: %v", err)
+	}
+	reportLimits, err := pagination.NewReportLimits(50, 200, 100000)
+	if err != nil {
+		t.Fatalf("NewReportLimits: %v", err)
+	}
+	probe := &transportProbe{cursors: testCursorCodec(t), limits: limits, reportLimits: reportLimits}
+	apiServer, err := NewServer(probe.cursors)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	deps.RegisterAPI = func(r chi.Router) {
+		apiServer.Register(r)
+		probe.register(r)
+	}
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	post := func(headers map[string]string) *httptest.ResponseRecorder {
+		request := transportRequest{
+			method: http.MethodPost,
+			target: probeCommandPath,
+			headers: map[string]string{
+				"Content-Type":         "application/json",
+				idempotency.HeaderName: "01J00000000000000000000001",
+			},
+			body: `{"name":"ok","amount":1}`,
+		}
+		for name, value := range headers {
+			request.headers[name] = value
+		}
+		return request.do(handler)
+	}
+
+	// A cross-site state change is refused as a Problem, with every response
+	// invariant the rest of the API holds.
+	refused := post(map[string]string{"Origin": "https://evil.example"})
+	assertAPIResponseInvariants(t, refused)
+	if refused.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body %q)", refused.Code, refused.Body.String())
+	}
+	if got := decodeProblem(t, refused).Code; got != "cross_site_request" {
+		t.Errorf("problem code = %q, want cross_site_request", got)
+	}
+	// The refusal must not say which check failed.
+	for _, forbidden := range []string{"origin", "Origin", "csrf", "evil.example"} {
+		if strings.Contains(refused.Body.String(), forbidden) {
+			t.Errorf("the refusal named %q: %q", forbidden, refused.Body.String())
+		}
+	}
+
+	crossSite := post(map[string]string{"Origin": "http://example.com", "Sec-Fetch-Site": "cross-site"})
+	if crossSite.Code != http.StatusForbidden {
+		t.Errorf("a cross-site fetch status = %d, want 403", crossSite.Code)
+	}
+
+	// A same-origin request passes and reaches the handler.
+	allowed := post(map[string]string{"Origin": "http://example.com"})
+	assertAPIResponseInvariants(t, allowed)
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("a same-origin request status = %d (body %q)", allowed.Code, allowed.Body.String())
+	}
+
+	// Safe methods are never checked.
+	list := transportRequest{method: http.MethodGet, target: probeCursorPath}.do(handler)
+	if list.Code != http.StatusOK {
+		t.Errorf("a safe method was refused: %d", list.Code)
 	}
 }
 
