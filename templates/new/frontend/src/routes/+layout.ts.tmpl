@@ -1,9 +1,26 @@
 // Generated once by nise; owned by this application. Nise will not overwrite it.
 
-// The whole application is prerendered to one static fallback page and
-// hydrated in the browser: adapter-static writes index.html, the Go binary
-// embeds it, and client-side routing takes over from there. Server-side
-// rendering is off because there is no Node server in the deployment — the
-// single Go binary serves the built assets.
-export const prerender = true;
+// This application is one statically built single-page application embedded
+// in the Go binary. Both settings below are the whole of that contract, and
+// both are inherited by every route unless a route deliberately overrides
+// them.
+//
+//   - ssr = false. There is no Node server in the deployment: the Go binary
+//     serves the built assets, so nothing can render a route per request.
+//     Universal `load` functions therefore run only in the browser.
+//
+//   - prerender = false. adapter-static writes exactly one HTML document,
+//     the `fallback` page named in svelte.config.js, and the Go server
+//     serves it for every unmatched path. Prerendering here would instead
+//     write one HTML file per crawled route, each a copy of the same empty
+//     shell, and the fallback would then overwrite index.html at the end of
+//     the build — the "Overwriting … with fallback page" warning adapter-
+//     static prints when both apply to the same route.
+//
+// Protected routes are never prerendered, which this setting already
+// guarantees for the whole tree. A genuinely public, content-shaped page may
+// opt back in with `export const prerender = true` in its own +page.ts, but
+// only if it needs no session: a prerendered page is written at build time
+// and served identically to everyone.
 export const ssr = false;
+export const prerender = false;

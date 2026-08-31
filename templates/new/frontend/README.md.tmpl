@@ -59,6 +59,35 @@ be committed inside `embedded/client/`; the committed placeholder that keeps
 `go build` working in a fresh clone is its sibling,
 `embedded/placeholder.html`.
 
+`make dist` is the shipping build: it runs `pnpm build` and then compiles the
+binary around its output. Plain `make build` deliberately does not, so a Go
+change can be compiled without Node installed — it embeds whatever build is
+already there, or the placeholder page when there is none. `make web-clean`
+removes the build and returns to the placeholder.
+
+## One HTML document, and only one
+
+`src/routes/+layout.ts` sets `ssr = false` and `prerender = false` for the
+whole tree, so the build produces exactly one HTML document: the
+`fallback: 'index.html'` page named in `svelte.config.js`. The Go server
+serves that document for every path it does not recognise as an asset, and
+client-side routing takes it from there.
+
+Prerendering is off rather than on because there is nothing to prerender:
+with `ssr = false` every route renders to the same empty shell, so
+prerendering would write one identical copy per route and the fallback would
+then overwrite `index.html` at the end of the build. It also states the
+security rule structurally — a protected route is never written to disk at
+build time. A genuinely public, content-shaped page may set
+`export const prerender = true` in its own `+page.ts`, but only if it needs
+no session: a prerendered page is written once at build time and served
+identically to everyone.
+
+The Go server reads that document's inline bootstrap script at startup and
+puts its hash into the Content Security Policy
+(`internal/platform/webui/webui.go`). A build that produced no inline script
+fails closed rather than serving a page the policy would blank.
+
 ## Two settings that must stay at their defaults
 
 - **`kit.csp` is unset.** The Go server sends the single authoritative
