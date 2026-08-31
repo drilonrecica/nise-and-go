@@ -1,0 +1,183 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package jobs
+
+import (
+	"context"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
+)
+
+// sweepArgs is a job kind these tests schedule.
+type sweepArgs struct{}
+
+func (sweepArgs) Kind() string { return "sweep" }
+
+type sweepWorker struct {
+	river.WorkerDefaults[sweepArgs]
+}
+
+func (sweepWorker) Work(context.Context, *river.Job[sweepArgs]) error { return nil }
+
+func TestPeriodicRejectsAnImpossibleInterval(t *testing.T) {
+	t.Parallel()
+
+	for _, interval := range []time.Duration{
+		0,
+		-time.Hour,
+		MinPeriodicInterval - time.Second,
+		MaxPeriodicInterval + time.Hour,
+	} {
+		r := NewRegistry()
+		if err := Periodic(r, interval, sweepArgs{}); err == nil {
+			t.Errorf("Periodic(%s) = nil error, want a refusal", interval)
+		}
+		if got := r.PeriodicKinds(); len(got) != 0 {
+			t.Errorf("Periodic(%s) recorded %v despite refusing", interval, got)
+		}
+	}
+}
+
+func TestPeriodicRefusesToScheduleAKindTwice(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	if err := Periodic(r, time.Hour, sweepArgs{}); err != nil {
+		t.Fatalf("Periodic: %v", err)
+	}
+	err := Periodic(r, 2*time.Hour, sweepArgs{})
+	if err == nil {
+		t.Fatal("a kind was scheduled twice; the two schedules would race for one unique period")
+	}
+	if !strings.Contains(err.Error(), "already scheduled") {
+		t.Errorf("the refusal does not say why: %v", err)
+	}
+}
+
+// TestAScheduledKindWithNoWorkerIsDetected covers the worst periodic failure
+// there is. A kind scheduled with no worker registered is inserted forever
+// and never run: the queue grows, the work never happens, and nothing
+// anywhere reports an error. New turns it into a refusal at startup; the
+// PostgreSQL suite proves New actually asks.
+func TestAScheduledKindWithNoWorkerIsDetected(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	if err := Periodic(r, time.Hour, sweepArgs{}); err != nil {
+		t.Fatalf("Periodic: %v", err)
+	}
+	// Deliberately no Register(r, &sweepWorker{}).
+	if got := r.scheduledWithoutWorker(); len(got) != 1 || got[0] != "sweep" {
+		t.Fatalf("scheduledWithoutWorker() = %v, want [sweep]", got)
+	}
+
+	Register(r, &sweepWorker{})
+	if got := r.scheduledWithoutWorker(); len(got) != 0 {
+		t.Fatalf("scheduledWithoutWorker() = %v after registering the worker, want none", got)
+	}
+}
+
+// TestAScheduledJobIsUniquePerPeriod is the property the whole file exists
+// for, asserted on the insert options River will actually use.
+//
+// The scheduler's own leader election is not enough. Each elected scheduler
+// keeps its timing in memory, so a leader change restarts the schedule from
+// scratch — and a rolling deploy is a sequence of leader changes. Only a
+// database constraint makes two insertions in one period impossible rather
+// than merely unlikely.
+func TestAScheduledJobIsUniquePerPeriod(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	Register(r, &sweepWorker{})
+	const interval = 6 * time.Hour
+	if err := Periodic(r, interval, sweepArgs{}); err != nil {
+		t.Fatalf("Periodic: %v", err)
+	}
+	if got := r.PeriodicKinds(); len(got) != 1 || got[0] != "sweep" {
+		t.Fatalf("PeriodicKinds() = %v, want [sweep]", got)
+	}
+
+	args, opts := periodicConstructor(t, r, 0)
+	if args.Kind() != "sweep" {
+		t.Fatalf("the schedule constructs %q, want sweep", args.Kind())
+	}
+	if opts == nil {
+		t.Fatal("the schedule inserts with no options at all; nothing makes it unique")
+	}
+	if opts.UniqueOpts.ByPeriod != interval {
+		t.Errorf("ByPeriod = %s, want the schedule's own interval %s", opts.UniqueOpts.ByPeriod, interval)
+	}
+	// Completed must be in the set. A run that finished still has to block a
+	// second insert inside the same period, which is exactly the case a
+	// leader change produces.
+	if !slices.Contains(opts.UniqueOpts.ByState, rivertype.JobStateCompleted) {
+		t.Errorf("ByState = %v, and does not include completed; a finished run would not block a duplicate", opts.UniqueOpts.ByState)
+	}
+	for _, required := range []rivertype.JobState{
+		rivertype.JobStateAvailable,
+		rivertype.JobStatePending,
+		rivertype.JobStateRunning,
+		rivertype.JobStateScheduled,
+	} {
+		if !slices.Contains(opts.UniqueOpts.ByState, required) {
+			t.Errorf("ByState = %v, and does not include the required state %s", opts.UniqueOpts.ByState, required)
+		}
+	}
+}
+
+// TestTheConstructorIsStable covers a subtle way this could go wrong: River
+// calls the constructor on every firing, so a constructor that built fresh
+// options each time could drift, and one that closed over mutable state
+// would be a data race between the scheduler and whoever mutated it.
+func TestTheConstructorIsStable(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	Register(r, &sweepWorker{})
+	if err := Periodic(r, time.Hour, sweepArgs{}); err != nil {
+		t.Fatalf("Periodic: %v", err)
+	}
+
+	firstArgs, firstOpts := periodicConstructor(t, r, 0)
+	secondArgs, secondOpts := periodicConstructor(t, r, 0)
+	if firstArgs.Kind() != secondArgs.Kind() {
+		t.Error("two firings construct different job kinds")
+	}
+	if firstOpts.UniqueOpts.ByPeriod != secondOpts.UniqueOpts.ByPeriod {
+		t.Error("two firings construct different unique periods")
+	}
+}
+
+// TestRunOnStartIsSetSoALongScheduleCannotBeSkipped pins the pairing: the
+// hedge against a process that restarts before its first firing, which is
+// only safe because the unique period absorbs the duplicate it would
+// otherwise create.
+func TestRunOnStartIsSetSoALongScheduleCannotBeSkipped(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	Register(r, &sweepWorker{})
+	if err := Periodic(r, 24*time.Hour, sweepArgs{}); err != nil {
+		t.Fatalf("Periodic: %v", err)
+	}
+	if len(r.periodic) != 1 {
+		t.Fatalf("registered %d periodic jobs, want 1", len(r.periodic))
+	}
+}
+
+// periodicConstructor reaches into the registry's nth periodic job and runs
+// its constructor, which is what River does on every firing.
+func periodicConstructor(t *testing.T, r *Registry, n int) (river.JobArgs, *river.InsertOpts) {
+	t.Helper()
+
+	if n >= len(r.periodic) {
+		t.Fatalf("the registry holds %d periodic jobs, wanted index %d", len(r.periodic), n)
+	}
+	return r.periodic[n].constructor()
+}

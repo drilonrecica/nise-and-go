@@ -234,6 +234,67 @@ implementing `NextRetry` or `Timeout`, or by passing `river.InsertOpts` at
 enqueue time — `MaxAttempts`, `Priority`, `ScheduledAt`, and a different
 queue among them.
 
+## Jobs that run on a timer
+
+```go
+func registerJobs(registry *jobs.Registry) error {
+    jobs.Register(registry, &PruneSessionsWorker{sessions: sessions})
+    return jobs.Periodic(registry, time.Hour, PruneSessionsArgs{})
+}
+```
+
+That is one insertion per hour **across the whole deployment**, not per
+replica — and the guarantee comes from a database constraint, not from
+electing a scheduler.
+
+The distinction matters more than it looks. River does elect a leader through
+the database, and only the leader schedules, which stops three worker
+processes from inserting three copies at the same moment. What it does not
+stop is a leader *change*: each scheduler keeps its timing in memory, so when
+a leader dies and another is elected, the new one starts its schedule from
+scratch with no knowledge of what the old one already inserted. A rolling
+deploy across three replicas is a sequence of leader changes, and can produce
+three runs of an hourly job inside a minute. Leader election is exactly the
+thing that happens most often during a deploy, which is when a duplicated
+maintenance job is least welcome.
+
+So every scheduled job carries a unique period equal to its interval, which
+River implements as a partial unique index on `river_job`. A second insert
+inside the same period is not a duplicate that something later reconciles —
+PostgreSQL refuses it, at insert time, whichever process attempted it.
+
+That is also what makes `RunOnStart` safe. A long-interval job that only ever
+inserts on schedule is skipped entirely by a process that restarts before its
+first firing; inserting on start closes that hole, and would be a
+duplicate-generating machine without the unique period underneath it.
+
+The unique state set includes `completed`, deliberately: a run that has
+already *finished* still blocks a second insert inside the same period, which
+is precisely the case a leader change produces.
+
+### Refusals
+
+Scheduling is validated at startup, not discovered in production:
+
+- An interval shorter than a minute or longer than a week is refused. Below a
+  minute a "periodic" job is really a poll, and a poll belongs in a worker
+  that can decide for itself when to look again — where it can back off.
+  Above a week is a schedule nobody will notice has stopped firing.
+- Scheduling one kind twice is refused: two schedules for one kind race for
+  the same unique period, and one of them silently loses.
+- Scheduling a kind whose worker is not registered **stops the process**. That
+  is the worst periodic failure there is — the job is inserted forever and
+  never run, so the queue grows, the work never happens, and nothing anywhere
+  reports an error.
+
+### A schedule that is not a fixed interval
+
+`jobs.PeriodicOn` takes any `river.PeriodicSchedule` — a cron expression, a
+business calendar — plus the unique period explicitly, because a schedule
+cannot be asked how far apart its firings are. Set it to at least the shortest
+gap the schedule can produce: too short and a leader change duplicates a run,
+too long and a legitimate second run is silently dropped.
+
 ## Every job must be safe to run twice
 
 A process killed mid-job leaves its row in the `running` state, and the next

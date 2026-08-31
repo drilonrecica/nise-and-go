@@ -1,0 +1,160 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package jobs
+
+import (
+	"fmt"
+	"slices"
+	"time"
+
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
+)
+
+// Bounds on a periodic schedule.
+const (
+	// MinPeriodicInterval is the shortest schedule this application accepts.
+	// Below a minute a "periodic" job is really a poll, and a poll belongs in
+	// a worker that decides for itself when to look again — where it can back
+	// off — rather than in a scheduler that cannot.
+	MinPeriodicInterval = time.Minute
+	// MaxPeriodicInterval is the longest. A schedule measured in months is
+	// one nobody will notice has stopped firing.
+	MaxPeriodicInterval = 7 * 24 * time.Hour
+)
+
+// Periodic schedules args to be inserted every interval, at most once per
+// interval across the whole deployment.
+//
+// "Across the whole deployment" is the hard part, and it is not solved by
+// running the scheduler on one replica.
+//
+// River elects a leader through the database and only the leader schedules,
+// which stops three worker processes from inserting three copies at the same
+// moment. What it does not stop is a leader change: each scheduler keeps its
+// timing in memory, so when a leader dies and another is elected the new one
+// starts its schedule from scratch, with no idea what the old one already
+// inserted. A deploy that rolls three replicas can therefore produce three
+// runs of an hourly job inside a minute — and leader election is exactly the
+// thing that happens most often during a deploy, which is when a duplicated
+// maintenance job is least welcome.
+//
+// So uniqueness is enforced by the database, not by the scheduler. Every job
+// this function schedules carries a unique period equal to its interval,
+// which River implements as a partial unique index on river_job. A second
+// insert inside the same period is not a duplicate row that something later
+// has to reconcile: it is refused by PostgreSQL, at insert time, whichever
+// process attempted it.
+//
+// That is also what makes RunOnStart safe here. A long-interval job that
+// only ever inserts on schedule can be skipped entirely by a process that
+// restarts before its first firing; inserting on start closes that hole, and
+// would be a duplicate-generating machine without the unique period
+// underneath it.
+//
+// The worker for args must also be registered with [Register]. [New] refuses
+// a registry that schedules a kind it cannot run, because a periodic job with
+// no worker is silence that looks exactly like success.
+func Periodic[T river.JobArgs](r *Registry, interval time.Duration, args T) error {
+	return PeriodicOn(r, river.PeriodicInterval(interval), interval, args)
+}
+
+// PeriodicOn is [Periodic] for a schedule that is not a fixed interval — a
+// cron expression, a business calendar, anything implementing
+// river.PeriodicSchedule.
+//
+// uniquePeriod is separate because the schedule cannot be asked how far apart
+// its firings are. It is the window within which two insertions are
+// considered the same run, and it should be at least as long as the shortest
+// gap the schedule can produce: too short and a leader change duplicates a
+// run, too long and a legitimate second run is silently dropped.
+func PeriodicOn[T river.JobArgs](r *Registry, schedule river.PeriodicSchedule, uniquePeriod time.Duration, args T) error {
+	if r == nil {
+		return fmt.Errorf("jobs: a registry is required to schedule %q", args.Kind())
+	}
+	if schedule == nil {
+		return fmt.Errorf("jobs: a schedule is required for %q", args.Kind())
+	}
+	if uniquePeriod < MinPeriodicInterval || uniquePeriod > MaxPeriodicInterval {
+		return fmt.Errorf("jobs: the unique period for %q must be between %s and %s, found %s",
+			args.Kind(), MinPeriodicInterval, MaxPeriodicInterval, uniquePeriod)
+	}
+	for _, spec := range r.periodic {
+		if spec.kind == args.Kind() {
+			return fmt.Errorf("jobs: %q is already scheduled; two schedules for one kind would race for the same unique period", spec.kind)
+		}
+	}
+
+	opts := &river.InsertOpts{
+		UniqueOpts: river.UniqueOpts{
+			ByPeriod: uniquePeriod,
+			// The default state set, spelled out. It includes completed, so
+			// a run that has already finished still blocks a second insert
+			// inside the same period — which is exactly the case a leader
+			// change produces, and the one an implicit default is easiest to
+			// misread.
+			ByState: rivertype.UniqueOptsByStateDefault(),
+		},
+	}
+	r.periodic = append(r.periodic, periodicSpec{
+		kind:     args.Kind(),
+		schedule: schedule,
+		// The constructor closes over values that never change after this
+		// call. River invokes it on every firing, from the scheduler's own
+		// goroutine, so anything mutable in here would be a data race with
+		// whoever mutated it.
+		constructor: func() (river.JobArgs, *river.InsertOpts) { return args, opts },
+	})
+	return nil
+}
+
+// periodicSpec is one scheduled kind, as this package describes it. The
+// river.PeriodicJob values are built from these when the client is
+// constructed, so the registry keeps a shape its own tests can read rather
+// than a struct whose fields are all unexported.
+type periodicSpec struct {
+	kind        string
+	schedule    river.PeriodicSchedule
+	constructor river.PeriodicJobConstructor
+}
+
+// riverPeriodicJobs renders the schedule for river.Config.
+func (r *Registry) riverPeriodicJobs() []*river.PeriodicJob {
+	out := make([]*river.PeriodicJob, 0, len(r.periodic))
+	for _, spec := range r.periodic {
+		out = append(out, river.NewPeriodicJob(spec.schedule, spec.constructor, &river.PeriodicJobOpts{
+			ID: spec.kind,
+			// A long-interval job that only ever inserts on schedule is
+			// skipped entirely by a process that restarts before its first
+			// firing. Inserting on start closes that hole — and would be a
+			// duplicate-generating machine without the unique period above.
+			RunOnStart: true,
+		}))
+	}
+	return out
+}
+
+// scheduledWithoutWorker returns the kinds this registry schedules but cannot
+// run, in registration order. [New] refuses a registry that reports any: a
+// periodic job with no worker is inserted forever and never runs, so the
+// queue grows, the work never happens, and nothing anywhere reports an error.
+// It is the periodic failure that is hardest to notice, so it is the one that
+// stops the process at startup.
+func (r *Registry) scheduledWithoutWorker() []string {
+	var out []string
+	for _, spec := range r.periodic {
+		if !slices.Contains(r.kinds, spec.kind) {
+			out = append(out, spec.kind)
+		}
+	}
+	return out
+}
+
+// PeriodicKinds returns the scheduled job kinds, in registration order.
+func (r *Registry) PeriodicKinds() []string {
+	out := make([]string, 0, len(r.periodic))
+	for _, spec := range r.periodic {
+		out = append(out, spec.kind)
+	}
+	return out
+}

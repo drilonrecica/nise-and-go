@@ -274,7 +274,9 @@ func Run(ctx context.Context, modeOverride string) error {
 	// enqueue. Only the worker component ever starts one, so a web replica
 	// holds a client that never fetches a job.
 	jobRegistry := jobs.NewRegistry()
-	registerJobs(jobRegistry)
+	if err := registerJobs(jobRegistry); err != nil {
+		return fmt.Errorf("registering background jobs: %w", err)
+	}
 	jobClient, err := jobs.New(pool, jobRegistry, cfg.Jobs, logger)
 	if err != nil {
 		return fmt.Errorf("building the job client: %w", err)
@@ -297,6 +299,7 @@ func Run(ctx context.Context, modeOverride string) error {
 		slog.String("session_cookie", cfg.SessionCookie.Name()),
 		slog.Any("modules", SelectedModules()),
 		slog.Any("job_kinds", jobClient.Kinds()),
+		slog.Any("periodic_job_kinds", jobClient.PeriodicKinds()),
 	)
 
 	// Initialization is complete: open the gate so the startup probe

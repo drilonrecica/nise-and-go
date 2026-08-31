@@ -31,6 +31,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -119,6 +121,11 @@ func NewSettings(maxWorkers int, pollInterval time.Duration) (Settings, error) {
 type Registry struct {
 	workers *river.Workers
 	kinds   []string
+	// periodic is appended by Periodic and PeriodicOn in periodic.go. It is
+	// kept here, beside kinds, because New has to compare the two:
+	// scheduling a kind with no registered worker is silence that looks
+	// exactly like success.
+	periodic []periodicSpec
 }
 
 // NewRegistry returns an empty registry.
@@ -137,6 +144,16 @@ func Register[T river.JobArgs](r *Registry, worker river.Worker[T]) {
 	r.kinds = append(r.kinds, args.Kind())
 }
 
+// quoted renders kinds for an error message, so a name with a space or an
+// empty string reads as a value rather than as part of the sentence.
+func quoted(kinds []string) []string {
+	out := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		out = append(out, strconv.Quote(k))
+	}
+	return out
+}
+
 // Kinds returns the registered job kinds, in registration order.
 func (r *Registry) Kinds() []string {
 	out := make([]string, len(r.kinds))
@@ -148,10 +165,11 @@ func (r *Registry) Kinds() []string {
 // [Client.Start] is called on a process whose registry had at least one kind
 // — a pool of workers as well.
 type Client struct {
-	river    *river.Client[pgx.Tx]
-	kinds    []string
-	settings Settings
-	works    bool
+	river         *river.Client[pgx.Tx]
+	kinds         []string
+	periodicKinds []string
+	settings      Settings
+	works         bool
 }
 
 // New builds the job client.
@@ -175,9 +193,13 @@ func New(pool *pgxpool.Pool, registry *Registry, settings Settings, logger *slog
 	if logger == nil {
 		return nil, errors.New("jobs: a logger is required")
 	}
+	if orphans := registry.scheduledWithoutWorker(); len(orphans) > 0 {
+		return nil, fmt.Errorf("jobs: %s scheduled periodically but has no registered worker; it would be inserted forever and never run", strings.Join(quoted(orphans), ", "))
+	}
 
 	cfg := &river.Config{
-		Logger: logger,
+		Logger:       logger,
+		PeriodicJobs: registry.riverPeriodicJobs(),
 		// Retry, timeout, and attempt limits are this application's, not
 		// River's defaults. See retry.go for the schedule and why it is
 		// shorter and jittered.
@@ -200,7 +222,13 @@ func New(pool *pgxpool.Pool, registry *Registry, settings Settings, logger *slog
 	if err != nil {
 		return nil, fmt.Errorf("jobs: building the job client: %w", err)
 	}
-	return &Client{river: client, kinds: registry.Kinds(), settings: settings, works: works}, nil
+	return &Client{
+		river:         client,
+		kinds:         registry.Kinds(),
+		periodicKinds: registry.PeriodicKinds(),
+		settings:      settings,
+		works:         works,
+	}, nil
 }
 
 // Client is the production Enqueuer. The assertion is here rather than left
@@ -211,6 +239,9 @@ var _ Enqueuer = (*Client)(nil)
 // Kinds returns the job kinds this client works. It is empty when the
 // application has registered none.
 func (c *Client) Kinds() []string { return c.kinds }
+
+// PeriodicKinds returns the job kinds this client schedules on a timer.
+func (c *Client) PeriodicKinds() []string { return c.periodicKinds }
 
 // Works reports whether this client fetches and runs jobs, as opposed to
 // only inserting them.

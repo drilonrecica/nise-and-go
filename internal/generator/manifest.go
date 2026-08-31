@@ -343,6 +343,8 @@ var templateFiles = []templateFile{
 	{Template: "internal/platform/jobs/jobs.go.tmpl", Output: "internal/platform/jobs/jobs.go", Owner: OwnerApp},
 	{Template: "internal/platform/jobs/jobs_postgres_test.go.tmpl", Output: "internal/platform/jobs/jobs_postgres_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/jobs/jobs_test.go.tmpl", Output: "internal/platform/jobs/jobs_test.go", Owner: OwnerApp},
+	{Template: "internal/platform/jobs/periodic.go.tmpl", Output: "internal/platform/jobs/periodic.go", Owner: OwnerApp},
+	{Template: "internal/platform/jobs/periodic_test.go.tmpl", Output: "internal/platform/jobs/periodic_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/jobs/retry.go.tmpl", Output: "internal/platform/jobs/retry.go", Owner: OwnerApp},
 	{Template: "internal/platform/jobs/retry_test.go.tmpl", Output: "internal/platform/jobs/retry_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/passwords/passwords.go.tmpl", Output: "internal/platform/passwords/passwords.go", Owner: OwnerApp},

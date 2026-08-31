@@ -26,6 +26,19 @@ import (
 // path: renaming the Go type must not change it, or jobs already enqueued
 // stop matching a worker.
 //
+// A job that runs on a timer is scheduled as well as registered:
+
+//	jobs.Register(registry, &PruneSessionsWorker{sessions: sessions})
+//	if err := jobs.Periodic(registry, time.Hour, PruneSessionsArgs{}); err != nil {
+//	    return err
+//	}
+//
+// One insertion per interval across the whole deployment, enforced by a
+// database constraint rather than by whichever replica happens to be the
+// scheduler — see internal/platform/jobs/periodic.go for why the leader
+// election alone is not enough. Scheduling a kind whose worker is not
+// registered is refused at startup.
+//
 // Two rules apply to every job registered here.
 //
 // A job must be safe to run twice. A process killed mid-job leaves the row
@@ -37,7 +50,11 @@ import (
 // Jobs enqueued with [jobs.Client.InsertTx] become visible exactly when
 // their transaction commits, which is the guarantee to rely on; anything
 // finer is a race.
-func registerJobs(registry *jobs.Registry) {
+// It returns an error so that a scheduling mistake — an impossible interval,
+// a kind scheduled twice — stops the process at startup rather than being
+// discovered when the work quietly does not happen.
+func registerJobs(registry *jobs.Registry) error {
 	// Intentionally empty. See the doc comment above.
 	_ = registry
+	return nil
 }
