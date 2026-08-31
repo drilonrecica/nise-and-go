@@ -1,0 +1,358 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package storage
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+)
+
+// fakeS3 is an object service on a loopback listener. The adapter is tested
+// against real HTTP — the request it actually builds, the headers it actually
+// signs — rather than against an interface this package also wrote.
+type fakeS3 struct {
+	server *httptest.Server
+	mu     sync.Mutex
+	// objects holds what was stored, by request path.
+	objects map[string][]byte
+	// requests holds every request the adapter made, for assertions about
+	// method, path, and headers.
+	requests []*http.Request
+	// status, when non-zero, is returned instead of handling the request.
+	status int
+	// body is returned with status.
+	body string
+}
+
+func newFakeS3(t *testing.T) *fakeS3 {
+	t.Helper()
+
+	f := &fakeS3{objects: map[string][]byte{}}
+	f.server = httptest.NewServer(http.HandlerFunc(f.handle))
+	t.Cleanup(f.server.Close)
+	return f
+}
+
+func (f *fakeS3) handle(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	recorded := r.Clone(context.Background())
+	recorded.Body = io.NopCloser(bytes.NewReader(body))
+
+	f.mu.Lock()
+	f.requests = append(f.requests, recorded)
+	status, errorBody := f.status, f.body
+	f.mu.Unlock()
+
+	if status != 0 {
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, errorBody)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPut:
+		f.mu.Lock()
+		f.objects[r.URL.Path] = body
+		f.mu.Unlock()
+		w.Header().Set("ETag", `"deadbeef"`)
+		w.WriteHeader(http.StatusOK)
+	case http.MethodGet, http.MethodHead:
+		f.mu.Lock()
+		content, ok := f.objects[r.URL.Path]
+		f.mu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("ETag", `"deadbeef"`)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", itoa(len(content)))
+		if r.Method == http.MethodGet {
+			_, _ = w.Write(content)
+		}
+	case http.MethodDelete:
+		f.mu.Lock()
+		delete(f.objects, r.URL.Path)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var digits []byte
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
+}
+
+func (f *fakeS3) lastRequest(t *testing.T) *http.Request {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.requests) == 0 {
+		t.Fatal("the adapter made no request")
+	}
+	return f.requests[len(f.requests)-1]
+}
+
+func (f *fakeS3) fail(status int, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.status, f.body = status, body
+}
+
+func newFakeStore(t *testing.T, pathStyle bool) (*S3, *fakeS3) {
+	t.Helper()
+
+	fake := newFakeS3(t)
+	settings, err := NewS3Settings(fake.server.URL, "test-bucket", "us-east-1", "AKIDEXAMPLE", "secret", "", pathStyle)
+	if err != nil {
+		t.Fatalf("NewS3Settings: %v", err)
+	}
+	store, err := NewS3(settings, fake.server.Client())
+	if err != nil {
+		t.Fatalf("NewS3: %v", err)
+	}
+	return store, fake
+}
+
+func TestS3RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	store, fake := newFakeStore(t, true)
+	ctx := context.Background()
+	const key = "uploads/2026/report.bin"
+	content := []byte("the bytes")
+
+	object, err := store.Put(ctx, key, bytes.NewReader(content), PutOptions{
+		ContentType:   "application/octet-stream",
+		ContentLength: int64(len(content)),
+	})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if object.ETag != "deadbeef" {
+		t.Errorf("ETag = %q, want the quotes stripped", object.ETag)
+	}
+	if got := fake.objects["/test-bucket/"+key]; !bytes.Equal(got, content) {
+		t.Errorf("the service stored %q, want %q", got, content)
+	}
+
+	reader, err := store.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	got, _ := io.ReadAll(reader)
+	_ = reader.Close()
+	if !bytes.Equal(got, content) {
+		t.Errorf("Get = %q, want %q", got, content)
+	}
+
+	stat, err := store.Stat(ctx, key)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if stat.Size != int64(len(content)) {
+		t.Errorf("Stat size = %d, want %d", stat.Size, len(content))
+	}
+
+	if err := store.Delete(ctx, key); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := store.Stat(ctx, key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Stat after Delete = %v, want ErrNotFound", err)
+	}
+}
+
+// TestEveryRequestIsSigned is the check that would catch the whole signing
+// path being skipped.
+func TestEveryRequestIsSigned(t *testing.T) {
+	t.Parallel()
+
+	store, fake := newFakeStore(t, true)
+	ctx := context.Background()
+	if _, err := store.Put(ctx, "a.bin", strings.NewReader("x"), PutOptions{}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	request := fake.lastRequest(t)
+
+	authorization := request.Header.Get("Authorization")
+	if !strings.HasPrefix(authorization, sigV4Algorithm+" ") {
+		t.Fatalf("Authorization = %q", authorization)
+	}
+	if request.Header.Get("X-Amz-Date") == "" {
+		t.Error("the request carries no X-Amz-Date")
+	}
+	if request.Header.Get("X-Amz-Content-Sha256") != unsignedPayload {
+		t.Errorf("X-Amz-Content-Sha256 = %q, want the unsigned-payload marker", request.Header.Get("X-Amz-Content-Sha256"))
+	}
+	if strings.Contains(authorization, "secret") {
+		t.Fatal("the Authorization header contains the secret access key")
+	}
+}
+
+// TestPathStyleAndVirtualHostAddressing covers the setting that decides
+// whether a bucket is a path component or a subdomain. Every S3-compatible
+// service that is not AWS needs path style, which is why it defaults on.
+func TestPathStyleAndVirtualHostAddressing(t *testing.T) {
+	t.Parallel()
+
+	pathStyle, fake := newFakeStore(t, true)
+	if _, err := pathStyle.Put(context.Background(), "a.bin", strings.NewReader("x"), PutOptions{}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if got := fake.lastRequest(t).URL.Path; got != "/test-bucket/a.bin" {
+		t.Errorf("path-style path = %q, want /test-bucket/a.bin", got)
+	}
+
+	settings, err := NewS3Settings("https://example.com", "test-bucket", "us-east-1", "AKID", "secret", "", false)
+	if err != nil {
+		t.Fatalf("NewS3Settings: %v", err)
+	}
+	virtual, err := NewS3(settings, nil)
+	if err != nil {
+		t.Fatalf("NewS3: %v", err)
+	}
+	u := virtual.objectURL("a.bin")
+	if u.Host != "test-bucket.example.com" {
+		t.Errorf("virtual-host host = %q, want test-bucket.example.com", u.Host)
+	}
+	if u.Path != "/a.bin" {
+		t.Errorf("virtual-host path = %q, want /a.bin", u.Path)
+	}
+}
+
+// TestAFailureIncludesTheServicesOwnError matters because an S3-compatible
+// service's XML error code is frequently the only thing distinguishing "the
+// bucket does not exist" from "the signature did not match", and several
+// return 403 for both.
+func TestAFailureIncludesTheServicesOwnError(t *testing.T) {
+	t.Parallel()
+
+	store, fake := newFakeStore(t, true)
+	fake.fail(http.StatusForbidden, "<Error><Code>SignatureDoesNotMatch</Code></Error>")
+
+	_, err := store.Put(context.Background(), "a.bin", strings.NewReader("x"), PutOptions{})
+	if err == nil {
+		t.Fatal("Put succeeded against a 403")
+	}
+	if !strings.Contains(err.Error(), "SignatureDoesNotMatch") {
+		t.Errorf("the error does not carry the service's own code: %v", err)
+	}
+}
+
+// TestAnErrorBodyIsBounded keeps a service that answers with a very large
+// body from putting all of it into this application's logs.
+func TestAnErrorBodyIsBounded(t *testing.T) {
+	t.Parallel()
+
+	store, fake := newFakeStore(t, true)
+	fake.fail(http.StatusInternalServerError, strings.Repeat("x", MaxS3ErrorBytes*4))
+
+	_, err := store.Put(context.Background(), "a.bin", strings.NewReader("x"), PutOptions{})
+	if err == nil {
+		t.Fatal("Put succeeded against a 500")
+	}
+	if len(err.Error()) > MaxS3ErrorBytes*2 {
+		t.Errorf("the error is %d bytes; the service's body was not bounded", len(err.Error()))
+	}
+}
+
+func TestS3RefusesABadKeyBeforeConnecting(t *testing.T) {
+	t.Parallel()
+
+	store, fake := newFakeStore(t, true)
+	ctx := context.Background()
+	const escape = "../escaped"
+
+	if _, err := store.Put(ctx, escape, strings.NewReader("x"), PutOptions{}); !errors.Is(err, ErrKey) {
+		t.Errorf("Put = %v, want ErrKey", err)
+	}
+	if _, err := store.Get(ctx, escape); !errors.Is(err, ErrKey) {
+		t.Errorf("Get = %v, want ErrKey", err)
+	}
+	if _, err := store.Stat(ctx, escape); !errors.Is(err, ErrKey) {
+		t.Errorf("Stat = %v, want ErrKey", err)
+	}
+	if err := store.Delete(ctx, escape); !errors.Is(err, ErrKey) {
+		t.Errorf("Delete = %v, want ErrKey", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.requests) != 0 {
+		t.Errorf("a refused key still reached the service: %d requests", len(fake.requests))
+	}
+}
+
+// TestAContentTypeCannotInjectAHeader covers the one field a caller passes
+// through to the wire.
+func TestAContentTypeCannotInjectAHeader(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newFakeStore(t, true)
+	_, err := store.Put(context.Background(), "a.bin", strings.NewReader("x"), PutOptions{
+		ContentType: "text/plain\r\nX-Amz-Acl: public-read",
+	})
+	if err == nil {
+		t.Fatal("Put accepted a content type carrying a header break")
+	}
+}
+
+func TestNewS3SettingsRefusesTheIncoherent(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name                                                   string
+		endpoint, bucket, region, accessKeyID, secretKey string
+	}{
+		{"no endpoint", "", "bucket-name", "us-east-1", "AKID", "secret"},
+		{"unparseable endpoint", "://", "bucket-name", "us-east-1", "AKID", "secret"},
+		{"non-http scheme", "ftp://example.com", "bucket-name", "us-east-1", "AKID", "secret"},
+		{"no host", "https://", "bucket-name", "us-east-1", "AKID", "secret"},
+		{"short bucket", "https://example.com", "ab", "us-east-1", "AKID", "secret"},
+		{"uppercase bucket", "https://example.com", "Bucket", "us-east-1", "AKID", "secret"},
+		{"bucket with a slash", "https://example.com", "bucket/name", "us-east-1", "AKID", "secret"},
+		{"no region", "https://example.com", "bucket-name", "", "AKID", "secret"},
+		{"no credentials", "https://example.com", "bucket-name", "us-east-1", "", ""},
+		{"control character in the key id", "https://example.com", "bucket-name", "us-east-1", "AK\nID", "secret"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := NewS3Settings(c.endpoint, c.bucket, c.region, c.accessKeyID, c.secretKey, "", true); err == nil {
+				t.Fatal("NewS3Settings accepted it")
+			}
+		})
+	}
+}
+
+// TestSettingsNeverExposeTheSecret covers the accessor surface.
+func TestSettingsNeverExposeTheSecret(t *testing.T) {
+	t.Parallel()
+
+	settings, err := NewS3Settings("https://example.com", "bucket-name", "eu-west-1", "AKID", "topsecret", "", true)
+	if err != nil {
+		t.Fatalf("NewS3Settings: %v", err)
+	}
+	if settings.Bucket() != "bucket-name" || settings.Region() != "eu-west-1" || !settings.PathStyle() {
+		t.Error("the non-secret settings are not readable")
+	}
+	if strings.Contains(settings.secretKey.String(), "topsecret") {
+		t.Error("the secret key formats as its own value")
+	}
+}

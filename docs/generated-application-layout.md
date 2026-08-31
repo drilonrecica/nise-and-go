@@ -90,6 +90,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │   ├── database_runtime.go        [app]   pool and transaction-runner construction
     │   ├── jobs.go                    [app]   where background job kinds are declared; starts empty
     │   ├── mail.go                    [app]   chooses the outbound mail transport, once
+    │   ├── storage.go                 [app]   uploads module: chooses the object-storage backend, once
     │   ├── modes.go                   [app]   all, web, and worker process modes
     │   ├── modules.gen.go             [nise]  the selected compile-time modules, and nothing else
     │   └── secondfactor.go            [app]   the second-factor module's constructor call
@@ -139,6 +140,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
         │   ├── render.go              [app]   the embedded-template renderer
         │   ├── smtp.go                [app]   the SMTP and log transports
         │   └── templates/             [app]   embedded text/template and html/template messages
+        ├── storage/                   [app]   uploads module: the Store interface, key rules, and the local and S3 backends
         └── webui/
             ├── webui.go               [nise]  embeds the built frontend and serves the SPA
             └── embedded/

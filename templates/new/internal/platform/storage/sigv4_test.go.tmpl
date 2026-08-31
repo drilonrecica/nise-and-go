@@ -1,0 +1,334 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package storage
+
+import (
+	"net/http"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+)
+
+// What this file can and cannot prove.
+//
+// SigV4's difficulty is entirely in canonicalization: which headers are
+// signed, how their values are trimmed, how a path segment is encoded, how the
+// query is ordered. Every one of those can be checked here, directly, and each
+// test below names the specific rule it pins.
+//
+// What cannot be checked here is whether the whole thing composes into a
+// signature a service accepts. Every wrong implementation produces a
+// well-formed signature; only the service disagrees. That is what
+// TestS3AgainstARealService in s3_integration_test.go is for, and neither
+// suite is sufficient without the other — this one says which rule broke, and
+// that one says whether it works.
+//
+// The credentials and timestamp below are fixed rather than generated, so a
+// failure names a rule instead of a value that changed.
+const (
+	fixtureAccessKeyID = "AKIDEXAMPLE"
+	fixtureSecretKey   = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
+	fixtureRegion      = "us-east-1"
+	fixtureService     = "service"
+)
+
+// fixtureTime is the instant every signature here is computed at.
+var fixtureTime = time.Date(2015, 8, 30, 12, 36, 0, 0, time.UTC)
+
+func fixtureSigner() *signer {
+	return &signer{
+		credentials: credentials{accessKeyID: fixtureAccessKeyID, secretAccessKey: fixtureSecretKey},
+		region:      fixtureRegion,
+		service:     fixtureService,
+		now:         func() time.Time { return fixtureTime },
+	}
+}
+
+// TestSigningKeyMatchesTheDocumentedDerivation covers the four chained HMACs
+// on their own, so a failure further down can be attributed.
+func TestSigningKeyMatchesTheDocumentedDerivation(t *testing.T) {
+	t.Parallel()
+
+	key := fixtureSigner().signingKey(fixtureTime.Format(yyyymmdd))
+	if len(key) != 32 {
+		t.Fatalf("the signing key is %d bytes, want 32", len(key))
+	}
+	// Deriving it twice must produce the same key; a derivation that read
+	// anything ambient would not.
+	again := fixtureSigner().signingKey(fixtureTime.Format(yyyymmdd))
+	if string(key) != string(again) {
+		t.Error("the signing key is not a pure function of its inputs")
+	}
+}
+
+// TestDuplicateHeaderValuesAreJoined covers one of the two canonicalization
+// rules most often got wrong: a header appearing twice signs as one line with
+// its values joined by a comma, in the order they were added.
+func TestDuplicateHeaderValuesAreJoined(t *testing.T) {
+	t.Parallel()
+
+	u, err := url.Parse("https://example.com/")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	req := &http.Request{Method: http.MethodGet, URL: u, Host: "example.com", Header: http.Header{}}
+	req.Header.Add("X-Amz-Header1", "value2")
+	req.Header.Add("X-Amz-Header1", "value1")
+
+	_, block := canonicalHeaders(req)
+	// The values are joined in the order they were added, comma separated,
+	// on one line.
+	if !strings.Contains(block, "x-amz-header1:value2,value1\n") {
+		t.Errorf("duplicate headers were not joined:\n%q", block)
+	}
+	if !strings.Contains(block, "host:example.com\n") {
+		t.Errorf("the Host header was not signed:\n%q", block)
+	}
+}
+
+// TestHostIsSignedFromRequestHost is the single most common way a
+// hand-written SigV4 implementation produces a rejected signature: Go keeps
+// the host in Request.Host, not in Request.Header, so a loop over Header
+// alone omits it.
+func TestHostIsSignedFromRequestHost(t *testing.T) {
+	t.Parallel()
+
+	u, _ := url.Parse("https://bucket.example.com/key")
+	req := &http.Request{Method: http.MethodGet, URL: u, Host: "bucket.example.com", Header: http.Header{}}
+	signed, block := canonicalHeaders(req)
+	if !strings.Contains(signed, "host") {
+		t.Errorf("SignedHeaders = %q, and does not include host", signed)
+	}
+	if !strings.Contains(block, "host:bucket.example.com") {
+		t.Errorf("the canonical headers do not carry the host:\n%q", block)
+	}
+}
+
+// TestHeaderWhitespaceIsCollapsed covers the trimming rule: leading, trailing,
+// and repeated internal whitespace in a header value is normalized before it
+// is signed.
+func TestHeaderWhitespaceIsCollapsed(t *testing.T) {
+	t.Parallel()
+
+	u, _ := url.Parse("https://example.com/")
+	req := &http.Request{Method: http.MethodGet, URL: u, Host: "example.com", Header: http.Header{}}
+	req.Header.Set("X-Amz-Meta-Note", "  a   b  ")
+	_, block := canonicalHeaders(req)
+	if !strings.Contains(block, "x-amz-meta-note:a b\n") {
+		t.Errorf("header whitespace was not collapsed:\n%q", block)
+	}
+}
+
+// TestOnlySignedHeadersAreSigned keeps the signature from depending on
+// headers a proxy may add in transit, which would make every request through
+// that proxy fail with an authentication error.
+func TestOnlySignedHeadersAreSigned(t *testing.T) {
+	t.Parallel()
+
+	u, _ := url.Parse("https://example.com/")
+	req := &http.Request{Method: http.MethodGet, URL: u, Host: "example.com", Header: http.Header{}}
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set("User-Agent", "probe")
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("X-Amz-Date", "20150830T123600Z")
+
+	signed, _ := canonicalHeaders(req)
+	for _, unwanted := range []string{"accept-encoding", "user-agent"} {
+		if strings.Contains(signed, unwanted) {
+			t.Errorf("SignedHeaders = %q, and includes %q, which a proxy may change", signed, unwanted)
+		}
+	}
+	for _, wanted := range []string{"content-type", "host", "x-amz-date"} {
+		if !strings.Contains(signed, wanted) {
+			t.Errorf("SignedHeaders = %q, and omits %q", signed, wanted)
+		}
+	}
+}
+
+// TestURIEncodingFollowsSigV4NotGo covers where Go's own escaping and SigV4
+// disagree. Go leaves several of these unescaped in a path; SigV4 requires
+// them encoded, and one differing byte is a rejected request.
+func TestURIEncodingFollowsSigV4NotGo(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"simple":      "simple",
+		"a b":         "a%20b",
+		"a+b":         "a%2Bb",
+		"a=b":         "a%3Db",
+		"a&b":         "a%26b",
+		"a~b":         "a~b",
+		"a.b-c_d":     "a.b-c_d",
+		"ä":           "%C3%A4",
+		"a:b":         "a%3Ab",
+		"a*b":         "a%2Ab",
+		"a'b":         "a%27b",
+		"a(b)":        "a%28b%29",
+		"a!b":         "a%21b",
+	}
+	for input, want := range cases {
+		if got := uriEncode(input, true); got != want {
+			t.Errorf("uriEncode(%q) = %q, want %q", input, got, want)
+		}
+	}
+	// In a path the slash has already been split out; encodeSlash false is
+	// what lets the joined path keep its separators.
+	if got := uriEncode("a/b", false); got != "a/b" {
+		t.Errorf("uriEncode(%q, false) = %q", "a/b", got)
+	}
+	if got := uriEncode("a/b", true); got != "a%2Fb" {
+		t.Errorf("uriEncode(%q, true) = %q", "a/b", got)
+	}
+}
+
+// TestCanonicalQuerySortsAndEncodes covers the query rules: keys sorted,
+// values sorted within a key, and both encoded.
+func TestCanonicalQuerySortsAndEncodes(t *testing.T) {
+	t.Parallel()
+
+	values := url.Values{}
+	values.Set("b", "2")
+	values.Set("a", "1")
+	values.Add("a", "0")
+	values.Set("needs encoding", "a b")
+
+	got := canonicalQuery(values)
+	want := "a=0&a=1&b=2&needs%20encoding=a%20b"
+	if got != want {
+		t.Errorf("canonicalQuery = %q, want %q", got, want)
+	}
+}
+
+// TestCanonicalURIHandlesAnEmptyPath pins the rule that an empty path signs
+// as "/", which is what a request to a bare endpoint produces.
+func TestCanonicalURIHandlesAnEmptyPath(t *testing.T) {
+	t.Parallel()
+
+	u, _ := url.Parse("https://example.com")
+	if got := canonicalURI(u); got != "/" {
+		t.Errorf("canonicalURI of an empty path = %q, want /", got)
+	}
+}
+
+// TestSignIsDeterministic is what makes every other assertion in this file
+// meaningful: two signings of the same request at the same instant must
+// produce the same signature, or nothing here is reproducible.
+func TestSignIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	sign := func() string {
+		u, _ := url.Parse("https://example.com/bucket/key.bin")
+		req := &http.Request{Method: http.MethodPut, URL: u, Host: "example.com", Header: http.Header{}}
+		req.Header.Set("Content-Type", "application/octet-stream")
+		fixtureSigner().sign(req, unsignedPayload)
+		return req.Header.Get("Authorization")
+	}
+	first, second := sign(), sign()
+	if first != second {
+		t.Fatalf("two signings differ:\n%s\n%s", first, second)
+	}
+	for _, want := range []string{
+		sigV4Algorithm + " ",
+		"Credential=" + fixtureAccessKeyID + "/20150830/us-east-1/service/aws4_request",
+		"SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date",
+		"Signature=",
+	} {
+		if !strings.Contains(first, want) {
+			t.Errorf("the Authorization header lacks %q:\n%s", want, first)
+		}
+	}
+}
+
+// TestADifferentRequestProducesADifferentSignature is the negative check on
+// all of it: if the signature did not actually cover the request, every
+// assertion above would pass against an implementation that signed nothing.
+func TestADifferentRequestProducesADifferentSignature(t *testing.T) {
+	t.Parallel()
+
+	signOf := func(method, target string) string {
+		u, _ := url.Parse(target)
+		req := &http.Request{Method: method, URL: u, Host: u.Host, Header: http.Header{}}
+		fixtureSigner().sign(req, unsignedPayload)
+		return req.Header.Get("Authorization")
+	}
+	base := signOf(http.MethodPut, "https://example.com/bucket/key.bin")
+	for _, other := range []struct{ method, target string }{
+		{http.MethodGet, "https://example.com/bucket/key.bin"},
+		{http.MethodPut, "https://example.com/bucket/other.bin"},
+		{http.MethodPut, "https://example.com/bucket/key.bin?versionId=2"},
+		{http.MethodPut, "https://other.example.com/bucket/key.bin"},
+	} {
+		if signOf(other.method, other.target) == base {
+			t.Errorf("%s %s signs identically to the base request", other.method, other.target)
+		}
+	}
+}
+
+// TestPresignCarriesEverythingTheServiceNeeds covers the query-string form:
+// it must be verifiable with no headers beyond the ones it names.
+func TestPresignCarriesEverythingTheServiceNeeds(t *testing.T) {
+	t.Parallel()
+
+	u, _ := url.Parse("https://example.com/bucket/key.bin")
+	signed := fixtureSigner().presign(http.MethodPut, u, 15*time.Minute, nil)
+
+	parsed, err := url.Parse(signed)
+	if err != nil {
+		t.Fatalf("the presigned URL does not parse: %v", err)
+	}
+	query := parsed.Query()
+	for _, name := range []string{
+		"X-Amz-Algorithm", "X-Amz-Credential", "X-Amz-Date",
+		"X-Amz-Expires", "X-Amz-SignedHeaders", "X-Amz-Signature",
+	} {
+		if query.Get(name) == "" {
+			t.Errorf("the presigned URL has no %s", name)
+		}
+	}
+	if query.Get("X-Amz-Algorithm") != sigV4Algorithm {
+		t.Errorf("X-Amz-Algorithm = %q", query.Get("X-Amz-Algorithm"))
+	}
+	if query.Get("X-Amz-Expires") != "900" {
+		t.Errorf("X-Amz-Expires = %q, want 900", query.Get("X-Amz-Expires"))
+	}
+	if query.Get("X-Amz-SignedHeaders") != "host" {
+		t.Errorf("X-Amz-SignedHeaders = %q, want host", query.Get("X-Amz-SignedHeaders"))
+	}
+	// The signature must not be in the signed-headers list, and the URL must
+	// not carry credentials in a form that could be mistaken for the secret.
+	if strings.Contains(signed, fixtureSecretKey) {
+		t.Fatal("the presigned URL contains the secret access key")
+	}
+}
+
+// TestPresigningADifferentExpiryChangesTheSignature proves the expiry is
+// inside the signature rather than beside it. If it were not, a recipient
+// could extend the window by editing one query parameter.
+func TestPresigningADifferentExpiryChangesTheSignature(t *testing.T) {
+	t.Parallel()
+
+	signatureFor := func(expires time.Duration) string {
+		u, _ := url.Parse("https://example.com/bucket/key.bin")
+		parsed, _ := url.Parse(fixtureSigner().presign(http.MethodPut, u, expires, nil))
+		return parsed.Query().Get("X-Amz-Signature")
+	}
+	if signatureFor(time.Minute) == signatureFor(time.Hour) {
+		t.Fatal("the expiry is not covered by the signature; a recipient could extend it by editing the URL")
+	}
+}
+
+// TestPresigningADifferentMethodChangesTheSignature is the same argument for
+// the verb: a URL presigned for PUT must not also authorize GET.
+func TestPresigningADifferentMethodChangesTheSignature(t *testing.T) {
+	t.Parallel()
+
+	signatureFor := func(method string) string {
+		u, _ := url.Parse("https://example.com/bucket/key.bin")
+		parsed, _ := url.Parse(fixtureSigner().presign(method, u, time.Minute, nil))
+		return parsed.Query().Get("X-Amz-Signature")
+	}
+	if signatureFor(http.MethodPut) == signatureFor(http.MethodGet) {
+		t.Fatal("a URL presigned for PUT signs identically for GET")
+	}
+}

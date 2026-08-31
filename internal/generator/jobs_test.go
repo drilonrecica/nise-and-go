@@ -366,3 +366,87 @@ func TestGeneratedProjectSendsMailSafely(t *testing.T) {
 		}
 	}
 }
+
+// TestTheUploadsModuleShipsBothStorageBackends pins M8-006, including the two
+// properties that make the local backend safe and the one that makes the S3
+// signature verifiable.
+func TestTheUploadsModuleShipsBothStorageBackends(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, allModulesOptions())
+
+	wants := map[string][]string{
+		"internal/platform/storage/storage.go": {
+			"type Store interface {",
+			"func ValidateKey(key string) error",
+			"func SanitizeFilename(name string) string",
+			"if path.Clean(key) != key {",
+			"func allowedKeyRune(r rune) bool",
+		},
+		"internal/platform/storage/local.go": {
+			"os.OpenRoot(dir)",
+			"localFileMode fs.FileMode = 0o600",
+			"localDirMode  fs.FileMode = 0o700",
+			"file.Chmod(localFileMode)",
+			"l.root.Rename(temporary, key)",
+		},
+		"internal/platform/storage/sigv4.go": {
+			`sigV4Algorithm = "AWS4-HMAC-SHA256"`,
+			"func canonicalURI(u *url.URL) string",
+			"func uriEncode(s string, encodeSlash bool) string",
+			`values := map[string]string{"host": hostOf(req)}`,
+		},
+		"internal/platform/storage/s3.go": {
+			"func NewS3Settings(",
+			"func (s *S3) Put(ctx context.Context, key string, r io.Reader, opts PutOptions) (Object, error)",
+			"pathStyle",
+		},
+		"internal/app/storage.go": {
+			"func newStore(cfg config.Config) (storage.Store, func() error, error)",
+		},
+		"internal/platform/config/config.go": {
+			`l.String("STORAGE_BACKEND"`,
+			`l.Secret("S3_SECRET_ACCESS_KEY"`,
+		},
+		".env.example": {
+			"STORAGE_BACKEND=local",
+			"S3_PATH_STYLE=true",
+		},
+	}
+	for path, fragments := range wants {
+		for _, fragment := range fragments {
+			if !strings.Contains(content[path], fragment) {
+				t.Errorf("%s lacks %q", path, fragment)
+			}
+		}
+	}
+
+	// The local backend must reach the filesystem only through the confined
+	// root. A single os.OpenFile or os.Remove taken on the base path would
+	// undo the confinement for that one operation, which is all it takes.
+	local := content["internal/platform/storage/local.go"]
+	for _, escape := range []string{"os.OpenFile(", "os.Remove(", "os.Rename(", "os.Open("} {
+		if strings.Contains(local, escape) {
+			t.Errorf("the local backend calls %s directly, outside the confined root", escape)
+		}
+	}
+}
+
+// TestAProjectWithoutUploadsHasNoStorageAtAll is the module rule, applied to
+// this module: absent, not disabled.
+func TestAProjectWithoutUploadsHasNoStorageAtAll(t *testing.T) {
+	t.Parallel()
+
+	files, err := generator.Plan(defaultOptions())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	for _, f := range files {
+		if strings.HasPrefix(f.Path, "internal/platform/storage/") || f.Path == "internal/app/storage.go" {
+			t.Errorf("a project without the uploads module still contains %s", f.Path)
+		}
+		if strings.Contains(string(f.Content), "STORAGE_BACKEND") {
+			t.Errorf("%s mentions a storage variable in a project without the uploads module", f.Path)
+		}
+	}
+}

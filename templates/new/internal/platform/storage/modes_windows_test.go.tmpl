@@ -1,0 +1,18 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+//go:build windows
+
+package storage
+
+import (
+	"io/fs"
+	"testing"
+)
+
+// assertMode does nothing on Windows, where the POSIX permission bits it
+// would read do not describe who can open a file. Asserting them there would
+// be asserting against the platform rather than against this package.
+func assertMode(t *testing.T, _ string, _ fs.FileMode) {
+	t.Helper()
+	t.Skip("permission bits are not meaningful on windows")
+}

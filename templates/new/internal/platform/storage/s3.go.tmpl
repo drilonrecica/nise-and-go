@@ -1,0 +1,338 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package storage
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	rtconfig "github.com/drilonrecica/nise-and-go/runtime/config"
+)
+
+// MaxS3ErrorBytes bounds how much of an error response is read before it is
+// reported. A service that answers a failed PUT with a megabyte of XML should
+// not be able to put a megabyte into this application's logs.
+const MaxS3ErrorBytes = 4096
+
+// DefaultS3Timeout bounds one request to the object service.
+const DefaultS3Timeout = 60 * time.Second
+
+// S3Settings are the validated connection parameters for an S3-compatible
+// service. Build one with [NewS3Settings].
+type S3Settings struct {
+	endpoint     *url.URL
+	bucket       string
+	region       string
+	accessKeyID  string
+	secretKey    rtconfig.Secret
+	sessionToken rtconfig.Secret
+	pathStyle    bool
+	valid        bool
+}
+
+// Endpoint, Bucket, Region, and PathStyle expose the non-secret settings for
+// a startup log line.
+func (s S3Settings) Endpoint() string { return s.endpoint.String() }
+func (s S3Settings) Bucket() string   { return s.bucket }
+func (s S3Settings) Region() string   { return s.region }
+func (s S3Settings) PathStyle() bool  { return s.pathStyle }
+
+// NewS3Settings validates the connection parameters.
+//
+// pathStyle addresses the bucket as a path component (endpoint/bucket/key)
+// rather than as a subdomain (bucket.endpoint/key). Every S3-compatible
+// service that is not AWS needs it — MinIO, Garage, SeaweedFS, and a
+// local development container all serve one hostname — and its default here
+// is therefore true, which is the opposite of the AWS SDK's default and the
+// reason a hand-configured client usually fails on the first request.
+func NewS3Settings(endpoint, bucket, region, accessKeyID, secretKey, sessionToken string, pathStyle bool) (S3Settings, error) {
+	if strings.TrimSpace(endpoint) == "" {
+		return S3Settings{}, errors.New("storage: an S3 endpoint is required")
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return S3Settings{}, fmt.Errorf("storage: parsing the S3 endpoint: %w", err)
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return S3Settings{}, fmt.Errorf("storage: the S3 endpoint must be http or https, found %q", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return S3Settings{}, errors.New("storage: the S3 endpoint has no host")
+	}
+	if err := validateBucket(bucket); err != nil {
+		return S3Settings{}, err
+	}
+	if strings.TrimSpace(region) == "" {
+		return S3Settings{}, errors.New("storage: an S3 region is required; use us-east-1 for a service that has none")
+	}
+	if accessKeyID == "" || secretKey == "" {
+		return S3Settings{}, errors.New("storage: S3 credentials are required")
+	}
+	if strings.ContainsAny(accessKeyID+region+bucket, "\r\n\x00") {
+		return S3Settings{}, errors.New("storage: an S3 setting contains a control character")
+	}
+	return S3Settings{
+		endpoint:     parsed,
+		bucket:       bucket,
+		region:       region,
+		accessKeyID:  accessKeyID,
+		secretKey:    rtconfig.NewSecret(secretKey),
+		sessionToken: rtconfig.NewSecret(sessionToken),
+		pathStyle:    pathStyle,
+		valid:        true,
+	}, nil
+}
+
+// validateBucket applies the S3 bucket naming rules that matter for safety:
+// no separators, no control characters, a length bound, and a character set
+// that cannot change what part of a URL the name occupies.
+func validateBucket(bucket string) error {
+	if len(bucket) < 3 || len(bucket) > 63 {
+		return fmt.Errorf("storage: a bucket name is 3 to 63 characters, found %d", len(bucket))
+	}
+	for _, r := range bucket {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '.':
+		default:
+			return errors.New("storage: a bucket name may contain only lowercase letters, digits, hyphens, and dots")
+		}
+	}
+	if strings.HasPrefix(bucket, "-") || strings.HasSuffix(bucket, "-") {
+		return errors.New("storage: a bucket name may not begin or end with a hyphen")
+	}
+	return nil
+}
+
+// S3 stores objects in an S3-compatible service.
+//
+// It speaks the four verbs an object store needs and nothing else. There is
+// no multipart upload, no lifecycle configuration, no bucket creation, and no
+// listing — an application that needs to enumerate objects has a database
+// table describing them, and reconstructing that from a bucket listing is how
+// a storage backend becomes a second source of truth that disagrees with the
+// first.
+type S3 struct {
+	settings S3Settings
+	client   *http.Client
+	signer   *signer
+}
+
+// NewS3 builds the object-service transport.
+func NewS3(settings S3Settings, client *http.Client) (*S3, error) {
+	if !settings.valid {
+		return nil, errors.New("storage: settings must come from NewS3Settings")
+	}
+	if client == nil {
+		client = &http.Client{Timeout: DefaultS3Timeout}
+	}
+	return &S3{
+		settings: settings,
+		client:   client,
+		signer: &signer{
+			credentials: credentials{
+				accessKeyID:     settings.accessKeyID,
+				secretAccessKey: settings.secretKey.Reveal(),
+				sessionToken:    settings.sessionToken.Reveal(),
+			},
+			region:  settings.region,
+			service: "s3",
+		},
+	}, nil
+}
+
+// objectURL builds the URL for a key.
+func (s *S3) objectURL(key string) *url.URL {
+	u := *s.settings.endpoint
+	if s.settings.pathStyle {
+		u.Path = "/" + s.settings.bucket + "/" + key
+	} else {
+		u.Host = s.settings.bucket + "." + u.Host
+		u.Path = "/" + key
+	}
+	return &u
+}
+
+// Put implements [Store].
+//
+// The body is sent with an unsigned payload hash rather than a signed one.
+// Signing it would require the whole object in memory, or on disk, to hash it
+// before sending — which turns an upload of any size into a buffer of that
+// size. The connection is TLS in every deployment that is not talking to
+// localhost, and the request itself is still authenticated: the signature
+// covers the method, the path, the headers, and the credential scope.
+func (s *S3) Put(ctx context.Context, key string, r io.Reader, opts PutOptions) (Object, error) {
+	if err := ValidateKey(key); err != nil {
+		return Object{}, err
+	}
+	if r == nil {
+		return Object{}, errors.New("storage: Put needs a reader")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, s.objectURL(key).String(), r)
+	if err != nil {
+		return Object{}, fmt.Errorf("storage: building the PUT for %s: %w", key, err)
+	}
+	if opts.ContentType != "" {
+		if strings.ContainsAny(opts.ContentType, "\r\n\x00") {
+			return Object{}, errors.New("storage: the content type contains a control character")
+		}
+		req.Header.Set("Content-Type", opts.ContentType)
+	}
+	if opts.ContentLength > 0 {
+		req.ContentLength = opts.ContentLength
+	}
+	s.signer.sign(req, unsignedPayload)
+
+	response, err := s.client.Do(req)
+	if err != nil {
+		return Object{}, fmt.Errorf("storage: PUT %s: %w", key, err)
+	}
+	defer drainAndClose(response)
+	if err := s.checkStatus(response, key); err != nil {
+		return Object{}, err
+	}
+	return Object{
+		Key:         key,
+		Size:        opts.ContentLength,
+		ContentType: opts.ContentType,
+		ETag:        strings.Trim(response.Header.Get("ETag"), `"`),
+		ModTime:     time.Now().UTC(),
+	}, nil
+}
+
+// Get implements [Store]. The caller closes the returned reader, which is the
+// live response body.
+func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	if err := ValidateKey(key); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.objectURL(key).String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("storage: building the GET for %s: %w", key, err)
+	}
+	s.signer.sign(req, emptyPayloadHash)
+
+	response, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("storage: GET %s: %w", key, err)
+	}
+	if response.StatusCode != http.StatusOK {
+		defer drainAndClose(response)
+		return nil, s.statusError(response, key)
+	}
+	return response.Body, nil
+}
+
+// Stat implements [Store].
+func (s *S3) Stat(ctx context.Context, key string) (Object, error) {
+	if err := ValidateKey(key); err != nil {
+		return Object{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, s.objectURL(key).String(), nil)
+	if err != nil {
+		return Object{}, fmt.Errorf("storage: building the HEAD for %s: %w", key, err)
+	}
+	s.signer.sign(req, emptyPayloadHash)
+
+	response, err := s.client.Do(req)
+	if err != nil {
+		return Object{}, fmt.Errorf("storage: HEAD %s: %w", key, err)
+	}
+	defer drainAndClose(response)
+	if err := s.checkStatus(response, key); err != nil {
+		return Object{}, err
+	}
+
+	object := Object{
+		Key:         key,
+		ContentType: response.Header.Get("Content-Type"),
+		ETag:        strings.Trim(response.Header.Get("ETag"), `"`),
+	}
+	if size, err := strconv.ParseInt(response.Header.Get("Content-Length"), 10, 64); err == nil {
+		object.Size = size
+	}
+	if modified, err := http.ParseTime(response.Header.Get("Last-Modified")); err == nil {
+		object.ModTime = modified
+	}
+	return object, nil
+}
+
+// Delete implements [Store]. A key that is not there is not an error: S3
+// answers 204 either way, which is the behaviour this interface wants.
+func (s *S3) Delete(ctx context.Context, key string) error {
+	if err := ValidateKey(key); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.objectURL(key).String(), nil)
+	if err != nil {
+		return fmt.Errorf("storage: building the DELETE for %s: %w", key, err)
+	}
+	s.signer.sign(req, emptyPayloadHash)
+
+	response, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("storage: DELETE %s: %w", key, err)
+	}
+	defer drainAndClose(response)
+	if response.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return s.checkStatus(response, key)
+}
+
+// checkStatus turns a non-2xx response into an error.
+func (s *S3) checkStatus(response *http.Response, key string) error {
+	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		return nil
+	}
+	return s.statusError(response, key)
+}
+
+// statusError builds the error for a failed request.
+//
+// The body is read to a bound and included, because an S3-compatible
+// service's XML error code is frequently the only thing that distinguishes
+// "the bucket does not exist" from "the signature did not match" — and both
+// arrive as 403 from some implementations. It is never logged with the
+// request's headers, which carry the Authorization line.
+func (s *S3) statusError(response *http.Response, key string) error {
+	if response.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
+	body, _ := io.ReadAll(io.LimitReader(response.Body, MaxS3ErrorBytes))
+	detail := strings.TrimSpace(string(body))
+	if detail == "" {
+		detail = response.Status
+	}
+	return fmt.Errorf("storage: %s %s: %s", response.Request.Method, key, detail)
+}
+
+// drainAndClose consumes the remainder of a response so the connection can be
+// reused, and closes it. The drain is bounded: a service answering with an
+// unbounded body should not be able to hold this goroutine.
+func drainAndClose(response *http.Response) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, MaxS3ErrorBytes))
+	_ = response.Body.Close()
+}
+
+// randomSuffix returns a short random string for a temporary name.
+func randomSuffix() string {
+	raw := make([]byte, 12)
+	if _, err := rand.Read(raw); err != nil {
+		// crypto/rand.Read does not fail on any supported platform; a
+		// failure here means the system's randomness is unavailable, and
+		// continuing with a predictable temporary name would be worse than
+		// stopping.
+		panic("storage: the system random source is unavailable: " + err.Error())
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}

@@ -1,0 +1,254 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package storage
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func newLocal(t *testing.T) *Local {
+	t.Helper()
+
+	store, err := NewLocal(filepath.Join(t.TempDir(), "objects"))
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	return store
+}
+
+func TestLocalRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	store := newLocal(t)
+	ctx := context.Background()
+	const key = "uploads/2026/report.bin"
+	content := []byte("the bytes")
+
+	object, err := store.Put(ctx, key, bytes.NewReader(content), PutOptions{ContentType: "application/octet-stream"})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if object.Size != int64(len(content)) {
+		t.Errorf("Size = %d, want %d", object.Size, len(content))
+	}
+
+	reader, err := store.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("Get returned %q, want %q", got, content)
+	}
+
+	stat, err := store.Stat(ctx, key)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if stat.Size != int64(len(content)) {
+		t.Errorf("Stat size = %d, want %d", stat.Size, len(content))
+	}
+
+	if err := store.Delete(ctx, key); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := store.Get(ctx, key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get after Delete = %v, want ErrNotFound", err)
+	}
+}
+
+// TestDeletingWhatIsNotThereIsNotAnError pins the interface's contract: the
+// caller wanted the object gone, and it is.
+func TestDeletingWhatIsNotThereIsNotAnError(t *testing.T) {
+	t.Parallel()
+
+	if err := newLocal(t).Delete(context.Background(), "never/written"); err != nil {
+		t.Fatalf("Delete of a missing object = %v, want nil", err)
+	}
+}
+
+// TestEveryOperationRefusesABadKey covers the whole surface rather than one
+// method: a key check that four methods perform and a fifth does not is worse
+// than no check at all, because the exception is the one nobody tests.
+func TestEveryOperationRefusesABadKey(t *testing.T) {
+	t.Parallel()
+
+	store := newLocal(t)
+	ctx := context.Background()
+	const escape = "../escaped"
+
+	if _, err := store.Put(ctx, escape, strings.NewReader("x"), PutOptions{}); !errors.Is(err, ErrKey) {
+		t.Errorf("Put = %v, want ErrKey", err)
+	}
+	if _, err := store.Get(ctx, escape); !errors.Is(err, ErrKey) {
+		t.Errorf("Get = %v, want ErrKey", err)
+	}
+	if _, err := store.Stat(ctx, escape); !errors.Is(err, ErrKey) {
+		t.Errorf("Stat = %v, want ErrKey", err)
+	}
+	if err := store.Delete(ctx, escape); !errors.Is(err, ErrKey) {
+		t.Errorf("Delete = %v, want ErrKey", err)
+	}
+}
+
+// TestNothingIsWrittenOutsideTheDirectory is the assertion that matters most
+// in this file, and it checks the filesystem rather than the error.
+func TestNothingIsWrittenOutsideTheDirectory(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	dir := filepath.Join(base, "objects")
+	store, err := NewLocal(dir)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	sentinel := filepath.Join(base, "escaped")
+	// The absolute case deliberately does not name the machine's temporary
+	// directory. A generated tree must contain no environment-derived
+	// string, and on Linux the conventional temporary path is exactly one —
+	// including inside a comment, which is why this one describes it rather
+	// than spelling it.
+	for _, key := range []string{"../escaped", "a/../../escaped", "/absolute/escaped"} {
+		_, _ = store.Put(context.Background(), key, strings.NewReader("x"), PutOptions{})
+	}
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatal("a key escaped the storage directory and wrote a file beside it")
+	}
+}
+
+// TestASymlinkCannotRedirectAWrite is why the local store uses os.Root rather
+// than filepath.Join and care. Validation cannot see a symlink: the key is
+// well-formed, and the escape happens in the filesystem after the check.
+func TestASymlinkCannotRedirectAWrite(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	dir := filepath.Join(base, "objects")
+	store, err := NewLocal(dir)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "uploads")); err != nil {
+		t.Skipf("this platform does not allow creating a symlink: %v", err)
+	}
+
+	_, err = store.Put(context.Background(), "uploads/planted.bin", strings.NewReader("x"), PutOptions{})
+	if err == nil {
+		t.Fatal("a write followed a symlink out of the storage directory")
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "planted.bin")); statErr == nil {
+		t.Fatal("the object landed outside the storage directory")
+	}
+}
+
+// TestAPutIsAtomic covers the property a partially-written object would
+// break: a reader arriving mid-write must see the previous object or the new
+// one, never half of either. The temporary name is what provides it, so this
+// asserts none is left behind.
+func TestAPutIsAtomic(t *testing.T) {
+	t.Parallel()
+
+	store := newLocal(t)
+	ctx := context.Background()
+	const key = "uploads/a.bin"
+
+	if _, err := store.Put(ctx, key, strings.NewReader("first"), PutOptions{}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, err := store.Put(ctx, key, strings.NewReader("second"), PutOptions{}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	reader, err := store.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	got, _ := io.ReadAll(reader)
+	_ = reader.Close()
+	if string(got) != "second" {
+		t.Errorf("Get = %q, want the second write", got)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(store.Dir(), "uploads"))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp-") {
+			t.Errorf("a temporary file was left behind: %s", entry.Name())
+		}
+	}
+}
+
+// TestAFailedPutLeavesNothing covers the other half: a reader that fails
+// partway must not publish a truncated object, and must not leave the
+// temporary file either.
+func TestAFailedPutLeavesNothing(t *testing.T) {
+	t.Parallel()
+
+	store := newLocal(t)
+	ctx := context.Background()
+	const key = "uploads/a.bin"
+
+	_, err := store.Put(ctx, key, iotest(errors.New("the source failed")), PutOptions{})
+	if err == nil {
+		t.Fatal("Put succeeded with a failing reader")
+	}
+	if _, err := store.Stat(ctx, key); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a truncated object was published: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(store.Dir(), "uploads"))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("a failed Put left %d files behind", len(entries))
+	}
+}
+
+// TestModesAreExplicitNotUmaskDependent covers the difference between a store
+// written under `umask 022` and one written under `umask 077`. On a shared
+// host, an object readable by every account is a data leak nothing reports.
+func TestModesAreExplicitNotUmaskDependent(t *testing.T) {
+	t.Parallel()
+
+	store := newLocal(t)
+	if _, err := store.Put(context.Background(), "uploads/a.bin", strings.NewReader("x"), PutOptions{}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	assertMode(t, store.localPath("uploads/a.bin"), localFileMode)
+	assertMode(t, store.localPath("uploads"), localDirMode)
+}
+
+// iotest returns a reader that fails immediately.
+func iotest(err error) io.Reader { return &failingReader{err: err} }
+
+type failingReader struct{ err error }
+
+func (r *failingReader) Read([]byte) (int, error) { return 0, r.err }

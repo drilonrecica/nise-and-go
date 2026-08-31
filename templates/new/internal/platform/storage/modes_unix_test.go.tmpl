@@ -1,0 +1,27 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+//go:build unix
+
+package storage
+
+import (
+	"io/fs"
+	"os"
+	"testing"
+)
+
+// assertMode checks a file's permission bits. It is Unix-only because Windows
+// does not carry them, and the same test binary must still compile there —
+// an unresolvable symbol fails a whole package's tests on that platform, not
+// only the test that needs it.
+func assertMode(t *testing.T, path string, want fs.FileMode) {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Errorf("%s has mode %v, want %v", path, got, want)
+	}
+}

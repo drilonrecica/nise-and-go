@@ -1,0 +1,215 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package storage
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// Local file modes. Objects are readable by their owner only, and so are the
+// directories holding them: a store on a shared host should not be readable
+// by every account on it, and a umask is not a security control because the
+// process that set it is not the process that will read the file.
+const (
+	localFileMode fs.FileMode = 0o600
+	localDirMode  fs.FileMode = 0o700
+)
+
+// Local stores objects as files under one directory.
+//
+// It is the development default and a legitimate production choice for a
+// single-node deployment with a real volume behind it. What it is not is a
+// way to run more than one replica: two processes on different machines
+// writing to different disks will disagree, and nothing here will tell them.
+//
+// Every operation goes through an os.Root opened on the base directory, so a
+// key that somehow passed [ValidateKey] still cannot escape it. The
+// confinement is the operating system's rather than this package's care,
+// which matters because path validation is exactly the kind of code that is
+// correct until somebody adds a case to it.
+type Local struct {
+	root *os.Root
+	dir  string
+}
+
+// NewLocal opens a store rooted at dir, creating it if it does not exist.
+func NewLocal(dir string) (*Local, error) {
+	if strings.TrimSpace(dir) == "" {
+		return nil, errors.New("storage: a local storage directory is required")
+	}
+	if err := os.MkdirAll(dir, localDirMode); err != nil {
+		return nil, fmt.Errorf("storage: creating the local storage directory: %w", err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("storage: opening the local storage directory: %w", err)
+	}
+	return &Local{root: root, dir: dir}, nil
+}
+
+// Dir returns the base directory, for a startup log line.
+func (l *Local) Dir() string { return l.dir }
+
+// Close releases the confined root.
+func (l *Local) Close() error { return l.root.Close() }
+
+// Put implements [Store].
+//
+// The write is not in place. Content goes to a temporary name in the same
+// directory and is renamed over the target once it is complete, so a reader
+// arriving mid-write sees either the previous object or the new one, never a
+// half-written file. A failed write leaves the temporary file, which is
+// removed on the way out.
+func (l *Local) Put(ctx context.Context, key string, r io.Reader, opts PutOptions) (Object, error) {
+	if err := ValidateKey(key); err != nil {
+		return Object{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return Object{}, err
+	}
+	if r == nil {
+		return Object{}, errors.New("storage: Put needs a reader")
+	}
+
+	if err := l.mkdirAll(objectDir(key)); err != nil {
+		return Object{}, err
+	}
+
+	temporary := key + ".tmp-" + randomSuffix()
+	file, err := l.root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, localFileMode)
+	if err != nil {
+		return Object{}, fmt.Errorf("storage: creating %s: %w", key, err)
+	}
+	// A umask can only take permission bits away, and OpenFile's mode is
+	// subject to it. Setting the mode explicitly is what makes a store
+	// written under `umask 022` identical to one written under `umask 077`.
+	if err := file.Chmod(localFileMode); err != nil {
+		_ = file.Close()
+		_ = l.root.Remove(temporary)
+		return Object{}, fmt.Errorf("storage: setting the mode of %s: %w", key, err)
+	}
+
+	written, copyErr := io.Copy(file, r)
+	closeErr := file.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = l.root.Remove(temporary)
+		return Object{}, fmt.Errorf("storage: writing %s: %w", key, errors.Join(copyErr, closeErr))
+	}
+
+	if err := l.root.Rename(temporary, key); err != nil {
+		_ = l.root.Remove(temporary)
+		return Object{}, fmt.Errorf("storage: publishing %s: %w", key, err)
+	}
+
+	object, err := l.Stat(ctx, key)
+	if err != nil {
+		return Object{}, err
+	}
+	object.ContentType = opts.ContentType
+	object.Size = written
+	return object, nil
+}
+
+// Get implements [Store].
+func (l *Local) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	if err := ValidateKey(key); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	file, err := l.root.Open(key)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
+		}
+		return nil, fmt.Errorf("storage: opening %s: %w", key, err)
+	}
+	return file, nil
+}
+
+// Stat implements [Store].
+//
+// The local store records no content type. A caller that needs one reads it
+// from the database row describing the object, which is where it belongs:
+// the type was decided by the application's own validation of the content,
+// and a filesystem has nowhere to keep that decision.
+func (l *Local) Stat(ctx context.Context, key string) (Object, error) {
+	if err := ValidateKey(key); err != nil {
+		return Object{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return Object{}, err
+	}
+	info, err := l.root.Stat(key)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return Object{}, fmt.Errorf("%w: %s", ErrNotFound, key)
+		}
+		return Object{}, fmt.Errorf("storage: stat %s: %w", key, err)
+	}
+	if info.IsDir() {
+		return Object{}, fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
+	return Object{Key: key, Size: info.Size(), ModTime: info.ModTime()}, nil
+}
+
+// Delete implements [Store]. A key that is not there is not an error.
+func (l *Local) Delete(ctx context.Context, key string) error {
+	if err := ValidateKey(key); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := l.root.Remove(key); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("storage: removing %s: %w", key, err)
+	}
+	return nil
+}
+
+// mkdirAll creates every directory in dir, inside the confined root.
+//
+// os.Root has no MkdirAll, deliberately: each level is created separately so
+// that a symlink appearing partway through cannot redirect the rest. That is
+// the property being paid for here, so the loop is the point rather than a
+// workaround.
+func (l *Local) mkdirAll(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	var built string
+	for _, component := range strings.Split(dir, "/") {
+		if built == "" {
+			built = component
+		} else {
+			built += "/" + component
+		}
+		if err := l.root.Mkdir(built, localDirMode); err != nil && !errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("storage: creating %s: %w", built, err)
+		}
+	}
+	return nil
+}
+
+// objectDir returns the directory part of a key, or "" when it has none.
+func objectDir(key string) string {
+	index := strings.LastIndex(key, "/")
+	if index < 0 {
+		return ""
+	}
+	return key[:index]
+}
+
+// localPath returns the on-disk path for a key. It is used only by tests and
+// by error messages; every real operation goes through the confined root.
+func (l *Local) localPath(key string) string {
+	return filepath.Join(l.dir, filepath.FromSlash(key))
+}

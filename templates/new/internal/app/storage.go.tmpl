@@ -1,0 +1,45 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package app
+
+import (
+	"fmt"
+	"net/http"
+	"time"
+
+	"{{.ModulePath}}/internal/platform/config"
+	"{{.ModulePath}}/internal/platform/storage"
+)
+
+// storageHTTPTimeout bounds one request to the object service.
+//
+// It is generous compared with an API request because it covers an upload:
+// a large object over a slow connection is a legitimate minute-long request,
+// and a bound tight enough for a metadata call would fail it.
+const storageHTTPTimeout = 60 * time.Second
+
+// newStore builds the object store this process uses.
+//
+// The choice is made once, here, and everything downstream takes a
+// storage.Store — so no use case, job, or test branches on which backend is
+// configured. The returned closer is non-nil only for a backend that holds an
+// operating-system resource; the local store holds a confined directory
+// handle, and closing it is how that handle is released.
+func newStore(cfg config.Config) (storage.Store, func() error, error) {
+	switch cfg.StorageBackend {
+	case "local":
+		local, err := storage.NewLocal(cfg.StorageLocalDir)
+		if err != nil {
+			return nil, nil, err
+		}
+		return local, local.Close, nil
+	case "s3":
+		s3, err := storage.NewS3(cfg.StorageS3, &http.Client{Timeout: storageHTTPTimeout})
+		if err != nil {
+			return nil, nil, err
+		}
+		return s3, func() error { return nil }, nil
+	default:
+		return nil, nil, fmt.Errorf("unknown storage backend %q", cfg.StorageBackend)
+	}
+}

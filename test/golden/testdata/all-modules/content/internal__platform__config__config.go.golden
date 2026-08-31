@@ -26,6 +26,7 @@ import (
 	"github.com/example/myapp/internal/platform/database"
 	"github.com/example/myapp/internal/platform/jobs"
 	"github.com/example/myapp/internal/platform/mail"
+	"github.com/example/myapp/internal/platform/storage"
 	"github.com/example/myapp/internal/platform/throttle"
 )
 
@@ -111,6 +112,14 @@ type Config struct {
 	MailTransport string
 	// MailFrom is the default sender address.
 	MailFrom string
+	// StorageBackend is "local" or "s3".
+	StorageBackend string
+	// StorageLocalDir is the directory the local backend writes under. It
+	// is empty when the backend is "s3".
+	StorageLocalDir string
+	// StorageS3 holds the validated object-service connection parameters.
+	// It is the zero value when the backend is "local".
+	StorageS3 storage.S3Settings
 	// Jobs holds the validated background-worker limits. They apply only to
 	// a process running in "all" or "worker" mode; a web replica never
 	// fetches a job, so the numbers here are per worker process rather than
@@ -164,6 +173,15 @@ func Load() (Config, []string, error) {
 	loginAttemptsPerAddress := l.Int("LOGIN_ATTEMPTS_PER_ADDRESS", rtconfig.Default("10"))
 	loginAttemptsPerClient := l.Int("LOGIN_ATTEMPTS_PER_CLIENT", rtconfig.Default("60"))
 	loginThrottleWindow := l.Duration("LOGIN_THROTTLE_WINDOW", rtconfig.Default("15m"))
+	storageBackend := l.String("STORAGE_BACKEND", rtconfig.Default("local"))
+	storageLocalDir := l.String("STORAGE_LOCAL_DIR", rtconfig.Default("./storage"))
+	s3Endpoint := l.String("S3_ENDPOINT", rtconfig.Default(""))
+	s3Bucket := l.String("S3_BUCKET", rtconfig.Default(""))
+	s3Region := l.String("S3_REGION", rtconfig.Default("us-east-1"))
+	s3AccessKeyID := l.String("S3_ACCESS_KEY_ID", rtconfig.Default(""))
+	s3PathStyle := l.Bool("S3_PATH_STYLE", rtconfig.Default("true"))
+	s3SecretKey := l.Secret("S3_SECRET_ACCESS_KEY", rtconfig.Default(""))
+	s3SessionToken := l.Secret("S3_SESSION_TOKEN", rtconfig.Default(""))
 	mailTransport := l.String("MAIL_TRANSPORT", rtconfig.Default("log"))
 	mailFrom := l.String("MAIL_FROM", rtconfig.Default("noreply@localhost"))
 	smtpHost := l.String("SMTP_HOST", rtconfig.Default(""))
@@ -233,6 +251,23 @@ func Load() (Config, []string, error) {
 		return Config{}, warnings, err
 	}
 	cfg.Jobs = jobSettings
+	switch storageBackend {
+	case "local":
+		cfg.StorageBackend = storageBackend
+		if strings.TrimSpace(storageLocalDir) == "" {
+			return Config{}, warnings, errors.New("STORAGE_LOCAL_DIR: a directory is required for the local storage backend")
+		}
+		cfg.StorageLocalDir = storageLocalDir
+	case "s3":
+		cfg.StorageBackend = storageBackend
+		s3Settings, err := storage.NewS3Settings(s3Endpoint, s3Bucket, s3Region, s3AccessKeyID, s3SecretKey.Reveal(), s3SessionToken.Reveal(), s3PathStyle)
+		if err != nil {
+			return Config{}, warnings, err
+		}
+		cfg.StorageS3 = s3Settings
+	default:
+		return Config{}, warnings, fmt.Errorf("STORAGE_BACKEND: unknown backend %q, expected \"local\" or \"s3\"", storageBackend)
+	}
 
 	switch mailTransport {
 	case "log", "smtp":
