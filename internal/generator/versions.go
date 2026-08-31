@@ -103,6 +103,14 @@ const (
 	// so what ships is the messages the application actually imports.
 	ParaglideVersion = "2.25.0"
 
+	// MessageFormatPluginVersion pins the inlang plugin that reads
+	// messages/*.json. It is an ordinary devDependency, resolved from
+	// node_modules by the settings file, rather than the CDN URL inlang's
+	// own documentation uses: a build step that fetches an unpinned script
+	// from a content delivery network is a supply-chain surface, and a
+	// lockfile entry is not.
+	MessageFormatPluginVersion = "4.1.0"
+
 	// TableCoreVersion pins the framework-agnostic table primitive the
 	// generated DataTable wraps. It is the 8.x line rather than the newer
 	// 9.x: 9's core delegates reactivity to a per-framework adapter feature,
@@ -147,6 +155,7 @@ var frontendDependencies = []Dependency{
 	{Name: "@sveltejs/vite-plugin-svelte", Version: "7.3.0"},
 	{Name: "@tailwindcss/vite", Version: "4.3.3"},
 	{Name: "@inlang/paraglide-js", Version: ParaglideVersion},
+	{Name: "@inlang/plugin-message-format", Version: MessageFormatPluginVersion},
 	{Name: "openapi-typescript", Version: OpenAPITypescriptVersion},
 	{Name: "svelte", Version: "5.56.10"},
 	{Name: "svelte-check", Version: "4.7.6"},

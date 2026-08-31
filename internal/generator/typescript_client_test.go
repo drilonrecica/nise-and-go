@@ -48,7 +48,7 @@ func TestGeneratedProjectDefinesTypedFrontendClient(t *testing.T) {
 		"frontend/package.json": {
 			`"api:generate": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts"`,
 			`"api:check": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts --check"`,
-			`"test:unit": "svelte-kit sync && vitest run"`,
+			`"test:unit": "pnpm run messages:compile && svelte-kit sync && vitest run"`,
 			`"openapi-typescript": "7.13.0"`,
 			`"vitest": "4.1.11"`,
 		},

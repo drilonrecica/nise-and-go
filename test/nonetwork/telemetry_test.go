@@ -73,6 +73,7 @@ var httpsHostAllowlist = map[string]string{
 	// every generated application, never fetched by nise itself.
 	"svelte.dev": "a doc-comment link in the generated app.d.ts, pointing a reader at SvelteKit's own type docs",
 	"www.w3.org": "the SVG xmlns namespace URI in the generated placeholder favicon — an XML namespace identifier, not a network destination",
+	"inlang.com": "the $schema identifiers in the generated inlang settings and message files — an editor hint naming a schema, never fetched by any build step; the message-format plugin itself is an ordinary pinned devDependency resolved from node_modules, deliberately not the CDN URL inlang's documentation uses",
 }
 
 // httpsHostPattern captures the host component of a hard-coded
