@@ -62,6 +62,8 @@ var timestampPattern = regexp.MustCompile(`\b(19|20)\d\d-\d\d-\d\d(?:[T ]\d\d:\d
 // to carve out so many exceptions that it stopped meaning anything. What
 // must never appear is a path that came from whoever ran the generator.
 func TestGeneratedTreeCarriesNoEnvironmentTraces(t *testing.T) {
+	adoptSyntheticIdentity(t)
+
 	for _, v := range variants() {
 		t.Run(v.Name, func(t *testing.T) {
 			root := generate(t, v)
@@ -88,14 +90,7 @@ func TestGeneratedTreeCarriesNoEnvironmentTraces(t *testing.T) {
 				}
 
 				if username := currentUsername(); username != "" {
-					// The framework's own module path contains its owner's
-					// account name, which is a fixed literal in every
-					// generated project and is not a leak of whoever ran
-					// the generator. Removing it first is what lets this
-					// check run at all on the maintainer's own machine,
-					// where the two strings coincide.
-					stripped := strings.ReplaceAll(body, generator.NiseModulePath, "")
-					if strings.Contains(stripped, username) {
+					if strings.Contains(body, username) {
 						t.Errorf("%s contains the current user's name %q", rel, username)
 					}
 				}
@@ -124,21 +119,69 @@ func environmentStrings(t *testing.T, root string) []string {
 	return out
 }
 
-// currentUsername returns the account name to search for, or "" when it
-// cannot be determined or is too short to search for without matching
-// ordinary words. os/user is deliberately not used: it can require cgo, and
-// the home directory's base name is the same answer on every platform this
-// suite runs on.
+// syntheticUsername is the account name this test runs under. It is a
+// string no template, dependency name, or piece of English prose will ever
+// contain, which is the entire reason it exists.
+const syntheticUsername = "nise-golden-identity-probe"
+
+// adoptSyntheticIdentity points every environment variable that names the
+// current account at a directory called syntheticUsername, for the duration
+// of the test.
+//
+// Searching a generated tree for the *real* account name only works while
+// that name is not also an ordinary word, and it is not a safe assumption:
+// GitHub's hosted runners execute as an account literally named "runner",
+// which appears legitimately and unavoidably in generated content — a test
+// runner, a migration runner, a job runner. The check reported a leak on
+// thirteen files on every hosted platform, none of them a leak.
+//
+// Lengthening the minimum name, or excluding a list of English words, only
+// moves the collision. Choosing the identity instead removes it: generation
+// runs under a name that cannot occur by coincidence, so any occurrence is
+// a leak and every occurrence is reported. It is also the stronger test,
+// because it holds identically on the maintainer's machine, on a hosted
+// runner, and in a container running as "root" — three environments where
+// the previous check was respectively meaningful, wrong, and silently
+// disabled by the four-character floor.
+//
+// What this cannot see is an identity read by a route that ignores the
+// environment entirely: os/user compiled with cgo consults the passwd
+// database directly. That is a deliberate limit, and the same one the
+// previous implementation had — it read the environment too, via
+// os.UserHomeDir.
+func adoptSyntheticIdentity(t *testing.T) {
+	t.Helper()
+
+	home := filepath.Join(t.TempDir(), syntheticUsername)
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatalf("creating the synthetic home directory: %v", err)
+	}
+	// HOME is what os.UserHomeDir reads on Unix, USERPROFILE on Windows.
+	// USER, LOGNAME, and USERNAME are the three spellings a template or a
+	// dependency would reach for to name the account without asking for a
+	// home directory at all.
+	for _, name := range []string{"HOME", "USERPROFILE"} {
+		t.Setenv(name, home)
+	}
+	for _, name := range []string{"USER", "LOGNAME", "USERNAME"} {
+		t.Setenv(name, syntheticUsername)
+	}
+}
+
+// currentUsername returns the account name to search for. os/user is
+// deliberately not used: it can require cgo, and the home directory's base
+// name is the same answer on every platform this suite runs on.
+//
+// It returns "" rather than a name when the environment has not been
+// adopted — see adoptSyntheticIdentity — because a real account name is
+// exactly what this check cannot search for.
 func currentUsername() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
 	name := filepath.Base(home)
-	// Below four characters an account name ("go", "app", "ci") collides
-	// with ordinary text in generated source, and the check would report a
-	// permanent false positive rather than a leak.
-	if len(name) < 4 {
+	if name != syntheticUsername {
 		return ""
 	}
 	return name
