@@ -202,7 +202,12 @@ ORDER BY id;
 	}
 }
 
-func TestGeneratedSQLCTargetsAreHonestBeforeFirstFeature(t *testing.T) {
+// TestGeneratedSQLCTargetsAreHonestWithNoFeatures keeps the Makefile's
+// empty-tree behavior tested now that a generated project ships the auth
+// feature. The property belongs to the Makefile, not to the templates: an
+// application that removes or has not yet added a query-owning feature must
+// still get an explicit message rather than a confusing success or failure.
+func TestGeneratedSQLCTargetsAreHonestWithNoFeatures(t *testing.T) {
 	makeBin, err := exec.LookPath("make")
 	if err != nil {
 		t.Skipf("skipping: make is unavailable: %v", err)
@@ -214,6 +219,9 @@ func TestGeneratedSQLCTargetsAreHonestBeforeFirstFeature(t *testing.T) {
 		CLIVersion: fixedVersion,
 	}); err != nil {
 		t.Fatalf("Write: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "internal", "features", "auth")); err != nil {
+		t.Fatalf("remove the shipped feature: %v", err)
 	}
 	for _, target := range []string{"sqlc-compile", "sqlc-vet", "sqlc-generate"} {
 		cmd := exec.Command(makeBin, "--no-print-directory", target) // #nosec G204 -- makeBin is resolved and args are fixed literals.

@@ -136,6 +136,11 @@ func TestEveryGeneratedFileDeclaresItsOwnership(t *testing.T) {
 		if jsonExempt[f.Path] {
 			continue
 		}
+		// A feature's hand-written SQL declares ownership by path, because
+		// sqlc copies its comments into the generated Go doc comments.
+		if generator.IsFeatureQueryPath(f.Path) {
+			continue
+		}
 		want := generator.AppOwnedHeader
 		if f.Owner == generator.OwnerNise {
 			want = generator.NiseOwnedHeader
@@ -148,6 +153,9 @@ func TestEveryGeneratedFileDeclaresItsOwnership(t *testing.T) {
 		}
 		if f.Path == generator.OpenAPITypescriptGeneratedPath {
 			want = generator.OpenAPITypescriptGeneratedHeader
+		}
+		if generator.IsSQLCGeneratedPath(f.Path) {
+			want = generator.SQLCGeneratedHeader
 		}
 		head := string(f.Content)
 		if len(head) > 400 {

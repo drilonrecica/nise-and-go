@@ -1,0 +1,422 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package auth owns this application's identity: accounts, their credentials,
+// and the sessions that authenticate them.
+package auth
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/drilonrecica/nise-and-go/runtime/session"
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/features/auth/store"
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// MaxListedSessions bounds the account's own view of its sessions. A person
+// with more live sessions than this has a problem the list will not solve.
+const MaxListedSessions = 100
+
+// MaxRevocationReason bounds the recorded reason, matching the column check.
+const MaxRevocationReason = 64
+
+// Errors this feature reports.
+//
+// The distinction between "no such token" and "the session is not usable" is
+// for the server's own records. A transport layer maps every one of them to
+// the same response: telling a caller which of its guesses was structurally
+// valid is a free lesson.
+var (
+	// ErrNoSession reports a token that matches no stored session.
+	ErrNoSession = errors.New("no session matches the presented credential")
+	// ErrUserDisabled reports a session whose account has been disabled.
+	ErrUserDisabled = errors.New("the session's account is disabled")
+	// ErrRevocationReason reports a missing or oversized revocation reason.
+	ErrRevocationReason = errors.New("revocation reason is outside the permitted bounds")
+	// ErrSessionNotFound reports a revocation naming a session that does not
+	// exist or was already revoked.
+	ErrSessionNotFound = errors.New("no active session with that identifier")
+)
+
+// InactiveError reports a session that was found but may not be used. Its
+// State is what an audit record should say happened.
+type InactiveError struct {
+	// State is the strongest reason the session is unusable.
+	State session.State
+}
+
+func (e *InactiveError) Error() string {
+	return fmt.Sprintf("session is %s", e.State)
+}
+
+// Issued is one newly created session: the token to hand the client exactly
+// once, and the record the server keeps.
+type Issued struct {
+	// Token is the credential. It exists in this value and nowhere else;
+	// after the response is written there is no way to recover it.
+	Token session.Token
+	// Record is the stored session.
+	Record session.Record
+}
+
+// Summary is one row of the account's own session list.
+type Summary struct {
+	ID         string
+	CreatedAt  time.Time
+	LastSeenAt time.Time
+	ExpiresAt  time.Time
+	RevokedAt  time.Time
+	Current    bool
+}
+
+// Sessions is the use case that issues, authenticates, and revokes sessions.
+//
+// It owns its transaction boundary, as every use case does: the store never
+// begins one, and a caller already inside a transaction is refused by the
+// runner rather than silently nested.
+type Sessions struct {
+	transactor *database.Transactor
+	lifetime   session.Lifetime
+	now        func() time.Time
+}
+
+// SessionsOption configures Sessions.
+type SessionsOption func(*Sessions)
+
+// WithClock replaces the clock the use case reads. It exists for tests;
+// production leaves the default time.Now in place.
+func WithClock(now func() time.Time) SessionsOption {
+	return func(s *Sessions) {
+		if now != nil {
+			s.now = now
+		}
+	}
+}
+
+// NewSessions constructs the session use case.
+func NewSessions(transactor *database.Transactor, lifetime session.Lifetime, options ...SessionsOption) (*Sessions, error) {
+	if transactor == nil {
+		return nil, errors.New("auth: a transactor is required")
+	}
+	if lifetime.IsZero() {
+		return nil, errors.New("auth: a constructed session lifetime is required")
+	}
+	sessions := &Sessions{transactor: transactor, lifetime: lifetime, now: time.Now}
+	for _, option := range options {
+		option(sessions)
+	}
+	return sessions, nil
+}
+
+// Lifetime returns the policy this use case applies.
+func (s *Sessions) Lifetime() session.Lifetime { return s.lifetime }
+
+// Issue creates a session for a user.
+//
+// The token is minted here and returned once. Nothing writes it to storage,
+// to a log, or to an error: only its digest leaves this function.
+func (s *Sessions) Issue(ctx context.Context, userID string) (Issued, error) {
+	id, err := parseUUID(userID)
+	if err != nil {
+		return Issued{}, err
+	}
+	token, err := session.New()
+	if err != nil {
+		return Issued{}, err
+	}
+	now := s.now().UTC()
+
+	var record session.Record
+	err = s.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := store.New(tx).CreateSession(ctx, store.CreateSessionParams{
+			UserID:      id,
+			TokenDigest: token.Digest(),
+			CreatedAt:   timestamp(now),
+			ExpiresAt:   timestamp(s.lifetime.ExpiresAt(now)),
+		})
+		if err != nil {
+			return fmt.Errorf("creating the session: %w", err)
+		}
+		record = recordFrom(row.ID, row.UserID, row.CreatedAt, row.LastSeenAt, row.ExpiresAt, row.RevokedAt)
+		return nil
+	})
+	if err != nil {
+		return Issued{}, err
+	}
+	return Issued{Token: token, Record: record}, nil
+}
+
+// Authenticate resolves a presented token to an active session.
+//
+// It slides the idle window when the recorded activity is stale enough to be
+// worth a write, which is what keeps an authenticated GET from being a
+// database write every time. The touch happens in the same transaction as the
+// lookup, so a session revoked concurrently cannot be revived by it.
+func (s *Sessions) Authenticate(ctx context.Context, presented string) (session.Record, error) {
+	digest, err := session.Digest(presented)
+	if err != nil {
+		return session.Record{}, ErrNoSession
+	}
+	now := s.now().UTC()
+
+	var record session.Record
+	err = s.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := store.New(tx)
+		row, err := queries.FindSessionByTokenDigest(ctx, store.FindSessionByTokenDigestParams{TokenDigest: digest})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNoSession
+		}
+		if err != nil {
+			return fmt.Errorf("looking up the session: %w", err)
+		}
+
+		found := recordFrom(row.ID, row.UserID, row.CreatedAt, row.LastSeenAt, row.ExpiresAt, row.RevokedAt)
+		if state := found.Evaluate(now, s.lifetime); state != session.Active {
+			return &InactiveError{State: state}
+		}
+		// The account check is after the session check but before the touch:
+		// a disabled account must not have its session's idle window slid.
+		if row.UserStatus != "active" {
+			return ErrUserDisabled
+		}
+
+		if s.lifetime.NeedsTouch(found.LastSeenAt, now) {
+			touched, err := queries.TouchSession(ctx, store.TouchSessionParams{ID: row.ID, LastSeenAt: timestamp(now)})
+			if err != nil {
+				return fmt.Errorf("recording session activity: %w", err)
+			}
+			if touched == 0 {
+				// The row was revoked between the read and the write.
+				return &InactiveError{State: session.Revoked}
+			}
+			found.LastSeenAt = now
+		}
+		record = found
+		return nil
+	})
+	if err != nil {
+		return session.Record{}, err
+	}
+	return record, nil
+}
+
+// Revoke ends one session. Revoking an already-revoked session reports
+// ErrSessionNotFound rather than overwriting the first revocation's reason.
+func (s *Sessions) Revoke(ctx context.Context, sessionID, reason string) error {
+	id, err := parseUUID(sessionID)
+	if err != nil {
+		return ErrSessionNotFound
+	}
+	if err := checkReason(reason); err != nil {
+		return err
+	}
+	now := s.now().UTC()
+
+	return s.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		revoked, err := store.New(tx).RevokeSession(ctx, store.RevokeSessionParams{
+			ID:            id,
+			RevokedAt:     timestamp(now),
+			RevokedReason: text(reason),
+		})
+		if err != nil {
+			return fmt.Errorf("revoking the session: %w", err)
+		}
+		if revoked == 0 {
+			return ErrSessionNotFound
+		}
+		return nil
+	})
+}
+
+// RevokeAllForUser ends every session an account holds and reports how many it
+// ended. It is what a password change and a compromise response both need.
+func (s *Sessions) RevokeAllForUser(ctx context.Context, userID, reason string) (int64, error) {
+	return s.revokeForUser(ctx, userID, "", reason)
+}
+
+// RevokeOtherSessions ends every session an account holds except the one named,
+// which is the "sign out everywhere else" action.
+func (s *Sessions) RevokeOtherSessions(ctx context.Context, userID, keepSessionID, reason string) (int64, error) {
+	if keepSessionID == "" {
+		return 0, ErrSessionNotFound
+	}
+	return s.revokeForUser(ctx, userID, keepSessionID, reason)
+}
+
+func (s *Sessions) revokeForUser(ctx context.Context, userID, keepSessionID, reason string) (int64, error) {
+	user, err := parseUUID(userID)
+	if err != nil {
+		return 0, err
+	}
+	var keep pgtype.UUID
+	if keepSessionID != "" {
+		keep, err = parseUUID(keepSessionID)
+		if err != nil {
+			return 0, ErrSessionNotFound
+		}
+	}
+	if err := checkReason(reason); err != nil {
+		return 0, err
+	}
+	now := s.now().UTC()
+
+	var revoked int64
+	err = s.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := store.New(tx)
+		var err error
+		if keepSessionID == "" {
+			revoked, err = queries.RevokeUserSessions(ctx, store.RevokeUserSessionsParams{
+				UserID:        user,
+				RevokedAt:     timestamp(now),
+				RevokedReason: text(reason),
+			})
+		} else {
+			revoked, err = queries.RevokeOtherUserSessions(ctx, store.RevokeOtherUserSessionsParams{
+				UserID:        user,
+				ID:            keep,
+				RevokedAt:     timestamp(now),
+				RevokedReason: text(reason),
+			})
+		}
+		if err != nil {
+			return fmt.Errorf("revoking sessions: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return revoked, nil
+}
+
+// List returns the account's own view of its sessions, newest first, marking
+// the one making the request.
+func (s *Sessions) List(ctx context.Context, userID, currentSessionID string, limit int) ([]Summary, error) {
+	user, err := parseUUID(userID)
+	if err != nil {
+		return nil, err
+	}
+	if limit < 1 || limit > MaxListedSessions {
+		limit = MaxListedSessions
+	}
+
+	var summaries []Summary
+	err = s.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := store.New(tx).ListUserSessions(ctx, store.ListUserSessionsParams{
+			UserID: user,
+			Limit:  int32(limit),
+		})
+		if err != nil {
+			return fmt.Errorf("listing sessions: %w", err)
+		}
+		summaries = make([]Summary, 0, len(rows))
+		for _, row := range rows {
+			id := uuidString(row.ID)
+			summaries = append(summaries, Summary{
+				ID:         id,
+				CreatedAt:  row.CreatedAt.Time.UTC(),
+				LastSeenAt: row.LastSeenAt.Time.UTC(),
+				ExpiresAt:  row.ExpiresAt.Time.UTC(),
+				RevokedAt:  revokedTime(row.RevokedAt),
+				Current:    id == currentSessionID,
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return summaries, nil
+}
+
+// DeleteExpired removes at most limit sessions whose absolute deadline has
+// passed, and reports how many it removed. Call it in a loop until it returns
+// zero; the bound keeps one sweep a predictable amount of work.
+func (s *Sessions) DeleteExpired(ctx context.Context, limit int) (int64, error) {
+	if limit < 1 || limit > MaxListedSessions*10 {
+		return 0, fmt.Errorf("session sweep limit %d is outside 1..%d", limit, MaxListedSessions*10)
+	}
+	now := s.now().UTC()
+
+	var removed int64
+	err := s.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		removed, err = store.New(tx).DeleteExpiredSessions(ctx, store.DeleteExpiredSessionsParams{
+			ExpiresAt: timestamp(now),
+			Limit:     int32(limit),
+		})
+		if err != nil {
+			return fmt.Errorf("sweeping expired sessions: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+func checkReason(reason string) error {
+	if reason == "" || len(reason) > MaxRevocationReason {
+		return fmt.Errorf("%w: %d bytes, want 1..%d", ErrRevocationReason, len(reason), MaxRevocationReason)
+	}
+	return nil
+}
+
+func recordFrom(id, userID pgtype.UUID, createdAt, lastSeenAt, expiresAt, revokedAt pgtype.Timestamptz) session.Record {
+	return session.Record{
+		ID:         uuidString(id),
+		UserID:     uuidString(userID),
+		CreatedAt:  createdAt.Time.UTC(),
+		LastSeenAt: lastSeenAt.Time.UTC(),
+		ExpiresAt:  expiresAt.Time.UTC(),
+		RevokedAt:  revokedTime(revokedAt),
+	}
+}
+
+func revokedTime(value pgtype.Timestamptz) time.Time {
+	if !value.Valid {
+		return time.Time{}
+	}
+	return value.Time.UTC()
+}
+
+func timestamp(at time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: at, Valid: true}
+}
+
+func text(value string) pgtype.Text {
+	return pgtype.Text{String: value, Valid: true}
+}
+
+// parseUUID converts an identifier that arrived as a string. A malformed one
+// is a caller error, not a database round trip.
+func parseUUID(value string) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	if err := id.Scan(value); err != nil || !id.Valid {
+		return pgtype.UUID{}, fmt.Errorf("%q is not a valid identifier", value)
+	}
+	return id, nil
+}
+
+func uuidString(id pgtype.UUID) string {
+	if !id.Valid {
+		return ""
+	}
+	value, err := id.Value()
+	if err != nil {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
+}

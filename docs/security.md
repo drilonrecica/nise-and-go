@@ -4,7 +4,7 @@ This document records the planned baseline, not an audit or guarantee.
 
 ## Authentication
 
-- Opaque sessions stored in PostgreSQL.
+- Opaque sessions stored in PostgreSQL. Implemented; see [sessions](sessions.md). Only the token digest is stored, the absolute deadline is fixed at issue, and revocation is immediate.
 - Browser identifier in a `__Host-` prefixed Secure, HttpOnly, SameSite=Lax cookie.
 - Session-bound CSRF token plus Origin and Fetch Metadata checks.
 - Future native clients use opaque, hashed, revocable bearer device tokens—not JWTs.

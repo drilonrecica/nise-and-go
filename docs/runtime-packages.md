@@ -20,6 +20,7 @@ Import path prefix: `github.com/drilonrecica/nise-and-go/runtime/…` ([ADR 0007
 | `runtime/transaction` | Driver-independent use-case transaction lifecycle, rollback bounds, and closed isolation/access options. | implemented | M3-005 |
 | `runtime/pagination` | Authenticated versioned cursor tokens, key rotation, cursor parsing, and the separate offset reporting contract. | implemented | M4-007, M4-008 |
 | `runtime/password` | Argon2id hashing, versioned parameter sets, rehash detection, constant-cost dummy verification, and parameter benchmarking. | implemented | M5-004 |
+| `runtime/session` | Opaque session tokens, their stored digests, and the idle/absolute/revoked lifecycle rules. | implemented | M5-001 |
 
 `runtime/internal/…` is reserved for shared implementation. No such package exists yet. Every `runtime/` package compiles against the standard library alone, except `runtime/password`, which uses `golang.org/x/crypto/argon2` because Argon2id is not in the standard library and a hand-written password KDF is exactly the thing this project must not contain. If one is added, the Go toolchain makes it invisible to applications, and it will carry no compatibility promise.
 

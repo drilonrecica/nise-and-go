@@ -84,11 +84,17 @@ func checkOwnershipHeaders(root string, plan []generator.File) Check {
 		}
 		present++
 
+		if generator.IsFeatureQueryPath(f.Path) {
+			// Declared by path: see generator.IsFeatureQueryPath.
+			continue
+		}
+
 		expectedMarker := ownershipMarker(f)
 		marked := strings.Contains(head, expectedMarker)
 		generated := strings.Contains(head, generator.NiseOwnedHeader) ||
 			strings.Contains(head, generator.OAPICodegenGeneratedHeader) ||
-			strings.Contains(head, generator.OpenAPITypescriptGeneratedHeader)
+			strings.Contains(head, generator.OpenAPITypescriptGeneratedHeader) ||
+			strings.Contains(head, generator.SQLCGeneratedHeader)
 		switch {
 		case f.Owner == generator.OwnerNise && !marked:
 			violations = append(violations, f.Path)
@@ -123,6 +129,9 @@ func ownershipMarker(f generator.File) string {
 	}
 	if f.Path == generator.OpenAPITypescriptGeneratedPath {
 		return generator.OpenAPITypescriptGeneratedHeader
+	}
+	if generator.IsSQLCGeneratedPath(f.Path) {
+		return generator.SQLCGeneratedHeader
 	}
 	return generator.NiseOwnedHeader
 }

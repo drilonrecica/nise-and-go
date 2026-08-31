@@ -35,6 +35,12 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   `<app> password benchmark` command. Adds `golang.org/x/crypto` as the first
   and only `runtime/` dependency outside the standard library.
 
+- Add the public `runtime/session` package and the generated `auth` feature:
+  opaque 32-byte session tokens stored only as SHA-256 digests, an absolute
+  deadline fixed at issue, a bounded idle-window touch, revocation with a
+  recorded reason, and a bounded expiry sweep. Adds the `users` and `sessions`
+  migration and the first feature-colocated sqlc store.
+
 ### Fixed
 
 - Generated applications answered a request whose HTTP method is outside chi's
