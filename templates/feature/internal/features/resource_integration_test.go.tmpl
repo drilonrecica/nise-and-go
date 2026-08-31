@@ -1,0 +1,183 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package {{.Singular}}_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	rtauthz "github.com/drilonrecica/nise-and-go/runtime/authz"
+
+	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/features/{{.Singular}}"
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+)
+
+// The database-backed starting point.
+//
+// It runs against real PostgreSQL through dbtest, which is the only place
+// several of this feature's rules exist at all: the CHECK constraint on the
+// name, what `RETURNING *` actually returns, and whether the list's index is
+// the one the planner uses. A test that mocked the store would prove the mock.
+//
+// It skips when no test database is configured, which is what keeps
+// `go test ./...` usable on a machine with no PostgreSQL; CI does not skip.
+
+const {{.Singular}}TestTimeout = 30 * time.Second
+
+func TestCreateAndReadBack(t *testing.T) {
+	t.Parallel()
+
+	use, ctx := new{{.TitlePlural}}(t)
+
+	created, err := use.Create(ctx, "  Acme  ")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// The name was normalized on the way in, and the database assigned the
+	// identifier and both timestamps.
+	if created.Name != "Acme" {
+		t.Errorf("Name = %q, want %q", created.Name, "Acme")
+	}
+	if created.ID == "" || created.CreatedAt.IsZero() || created.UpdatedAt.IsZero() {
+		t.Errorf("the database did not assign the identifier and timestamps: %#v", created)
+	}
+
+	found, err := use.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if found.ID != created.ID || found.Name != created.Name {
+		t.Errorf("Get returned %#v, want %#v", found, created)
+	}
+}
+
+func TestGetAndDeleteReportMissingRatherThanGuessing(t *testing.T) {
+	t.Parallel()
+
+	use, ctx := new{{.TitlePlural}}(t)
+
+	// A well-formed identifier that is not there, and a malformed one, are the
+	// same answer: telling a caller which of the two they sent is telling them
+	// about records they may not read.
+	for _, id := range []string{"00000000-0000-0000-0000-000000000000", "not-an-identifier"} {
+		if _, err := use.Get(ctx, id); !errors.Is(err, {{.Singular}}.ErrNotFound) {
+			t.Errorf("Get(%q) = %v, want ErrNotFound", id, err)
+		}
+		if err := use.Delete(ctx, id); !errors.Is(err, {{.Singular}}.ErrNotFound) {
+			t.Errorf("Delete(%q) = %v, want ErrNotFound", id, err)
+		}
+	}
+}
+
+func TestListPagesWithoutSkippingOrRepeating(t *testing.T) {
+	t.Parallel()
+
+	use, ctx := new{{.TitlePlural}}(t)
+
+	// Created in one loop, so several share a created_at down to the
+	// microsecond — which is exactly the case a cursor comparing only the
+	// timestamp gets wrong.
+	const total = 5
+	for i := range total {
+		if _, err := use.Create(ctx, string(rune('a'+i))+" record"); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	}
+
+	seen := map[string]int{}
+	after := {{.Singular}}.{{.Type}}{}
+	for range total {
+		page, err := use.List(ctx, "", after, 2)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		for _, item := range page.Items {
+			seen[item.ID]++
+		}
+		if !page.HasMore || len(page.Items) == 0 {
+			break
+		}
+		after = page.Items[len(page.Items)-1]
+	}
+
+	if len(seen) != total {
+		t.Errorf("saw %d distinct records over the pages, want %d", len(seen), total)
+	}
+	for id, count := range seen {
+		if count != 1 {
+			t.Errorf("%s appeared %d times across pages, want once", id, count)
+		}
+	}
+}
+
+func TestCreateRefusesANameTheColumnWouldRefuse(t *testing.T) {
+	t.Parallel()
+
+	use, ctx := new{{.TitlePlural}}(t)
+
+	// Refused in Go before it reaches the constraint, so the caller gets a
+	// domain error rather than a constraint violation to read backwards.
+	for _, name := range []string{"", "   "} {
+		if _, err := use.Create(ctx, name); !errors.Is(err, {{.Singular}}.ErrName) {
+			t.Errorf("Create(%q) = %v, want ErrName", name, err)
+		}
+	}
+}
+
+// new{{.TitlePlural}} builds the use case against a disposable database, and a
+// context holding every permission it checks.
+func new{{.TitlePlural}}(t *testing.T) (*{{.Singular}}.{{.TitlePlural}}, context.Context) {
+	t.Helper()
+
+	testDatabase := dbtest.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), {{.Singular}}TestTimeout)
+	t.Cleanup(cancel)
+
+	settings, err := database.NewSettings(4, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	url := testDatabase.URL().Reveal()
+	password := testDatabase.Password().Reveal()
+	pool, err := database.Open(ctx, url, password, settings, database.OpenOptions{})
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	migrator, err := database.OpenMigrator(ctx, url, password, 5*time.Second, migrationdb.Migrations())
+	if err != nil {
+		t.Fatalf("OpenMigrator: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := migrator.Close(); err != nil {
+			t.Errorf("close migrator: %v", err)
+		}
+	})
+	if _, err := migrator.Up(ctx); err != nil {
+		t.Fatalf("migrate test database: %v", err)
+	}
+
+	transactor, err := database.NewTransactor(pool)
+	if err != nil {
+		t.Fatalf("NewTransactor: %v", err)
+	}
+	use, err := {{.Singular}}.New{{.TitlePlural}}(transactor)
+	if err != nil {
+		t.Fatalf("New{{.TitlePlural}}: %v", err)
+	}
+
+	held, err := rtauthz.NewSet(authorization.{{.PermissionRead}}, authorization.{{.PermissionManage}})
+	if err != nil {
+		t.Fatalf("NewSet: %v", err)
+	}
+	return use, authorization.WithGrants(ctx, authorization.Grants{
+		UserID:      "00000000-0000-0000-0000-000000000001",
+		Permissions: held,
+	})
+}

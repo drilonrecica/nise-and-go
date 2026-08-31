@@ -1,0 +1,63 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { render } from 'vitest-browser-svelte';
+import { userEvent } from 'vitest/browser';
+import { describe, expect, it, vi } from 'vitest';
+
+import { expectNoViolations } from '$lib/a11y';
+
+import {{.Component}}Form from './{{.Component}}Form.svelte';
+
+// The component starting point. It runs in a real browser, because what a form
+// is for — a label a screen reader reads, an error announced when it appears,
+// a submit that does not fire when the form is invalid — is what a browser
+// does with it.
+
+describe('{{.Component}}Form', () => {
+	it('labels its control and has no accessibility violations', async () => {
+		render({{.Component}}Form, {
+			initial: { name: '' },
+			submitLabel: 'Create {{.Singular}}',
+			cancelHref: '/{{.Plural}}',
+			onsubmit: async () => {}
+		});
+
+		const input = document.querySelector<HTMLInputElement>('#{{.Singular}}-name');
+		expect(input).not.toBeNull();
+		expect(document.querySelector('label[for="{{.Singular}}-name"]')?.textContent).toContain('Name');
+
+		await expectNoViolations();
+	});
+
+	it('does not submit an empty form, and says why', async () => {
+		const onsubmit = vi.fn();
+		render({{.Component}}Form, {
+			initial: { name: '' },
+			submitLabel: 'Create {{.Singular}}',
+			cancelHref: '/{{.Plural}}',
+			onsubmit
+		});
+
+		await userEvent.click(document.querySelector('button[type="submit"]')!);
+
+		// Nothing is sent: the server would refuse it too, and a round trip to
+		// be told what the schema already knew is a round trip somebody waits
+		// for.
+		expect(onsubmit).not.toHaveBeenCalled();
+		expect(document.body.textContent).toContain('Enter a name.');
+	});
+
+	it('submits the trimmed value', async () => {
+		const onsubmit = vi.fn(async () => {});
+		render({{.Component}}Form, {
+			initial: { name: '  Acme  ' },
+			submitLabel: 'Create {{.Singular}}',
+			cancelHref: '/{{.Plural}}',
+			onsubmit
+		});
+
+		await userEvent.click(document.querySelector('button[type="submit"]')!);
+
+		expect(onsubmit).toHaveBeenCalledWith({ name: 'Acme' });
+	});
+});

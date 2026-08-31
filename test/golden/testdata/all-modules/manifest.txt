@@ -58,6 +58,7 @@ frontend/src dir 0755
 frontend/src/app.css file 0644 1bf683dcbcd9795546cfd69d83bcbd8011a6f84d629a6e19b8bdf54c4cc2fe82
 frontend/src/app.d.ts file 0644 d231593a748a2379dc8248d2a06d2d8ef723c8e8f8a4a3b18291444dac38f861
 frontend/src/app.html file 0644 2d34de7c7e3337aa7fe687bd9c6450da3dea0731fe0222b969be642a5e088b2e
+frontend/src/browser-setup.ts file 0644 19410888e4a6f2843a040d534c6e5ed72423ad94b871a349318a2f82151d7936
 frontend/src/lib dir 0755
 frontend/src/lib/a11y.ts file 0644 1e7c2f11d72cb2c526740a006d32740cd5b6639e7e05a3843ef5a14acdfdd32e
 frontend/src/lib/api dir 0755
@@ -149,7 +150,7 @@ frontend/static/favicon.svg file 0644 eb78958ea23231a46ef84123653ecbeb7eda847b77
 frontend/svelte.config.js file 0644 d290c5b3e673ab33a1b79e093db8acd30dac7cc3b56c90bd5452f1da0e2d3af1
 frontend/tsconfig.json file 0644 d8a3f998af73617b07026a41adfbf33f7004647bc4a6759c00d7cc8b06c29e2a
 frontend/vite.config.ts file 0644 fa607392dd5733209992684aef317e8bff614bcd3bf18ab8513b80e6fc1e158a
-frontend/vitest.config.ts file 0644 2c2c3c6fb967d63ceca6a9573b493cb49eb8f000fd5789515b184414a8d6d97c
+frontend/vitest.config.ts file 0644 09ff76d469e6352fb3a25ae737f6e977a988f8cdd4dac74cc3915b1ec65ed93b
 go.mod file 0644 b79a68cf369fcca7aef313df1c98499bb2b1568207193aeef6dd31aefb440ede
 internal dir 0755
 internal/app dir 0755

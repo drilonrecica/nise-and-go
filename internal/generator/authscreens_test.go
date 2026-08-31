@@ -388,6 +388,10 @@ func TestGeneratedComponentTestFoundations(t *testing.T) {
 		"name: 'browser'",
 		"provider: playwright()",
 		"include: ['src/**/*.browser.test.ts']",
+		// A component rendered without the stylesheet has every size,
+		// spacing, and colour class inert, so an accessibility assertion
+		// about a target's size measures unstyled markup.
+		"setupFiles: ['./src/browser-setup.ts']",
 		// The Node suite must not pick up a browser test, or it fails on the
 		// first thing that needs a real browser.
 		"exclude: ['src/**/*.browser.test.ts']",

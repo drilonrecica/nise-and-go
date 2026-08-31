@@ -586,3 +586,48 @@ func TestGeneratedActionsArePermissionAwareAndConfirmDestruction(t *testing.T) {
 		}
 	}
 }
+
+// TestResourceShipsAllFourKindsOfTest pins M7-008: a generated resource
+// arrives with a starting point at every layer, because the layer nobody
+// writes a first test for is the layer that never gets one.
+func TestResourceShipsAllFourKindsOfTest(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, resourceOptions())
+
+	for kind, path := range map[string]string{
+		"unit":        "internal/features/order/order_test.go",
+		"integration": "internal/features/order/order_integration_test.go",
+		"contract":    "internal/platform/httpapi/order_test.go",
+		"component":   "frontend/src/lib/features/order/OrderForm.browser.test.ts",
+	} {
+		if _, exists := content[path]; !exists {
+			t.Errorf("the resource plan has no %s test (%s)", kind, path)
+		}
+	}
+
+	// The integration test uses a real database rather than a mock of the
+	// store: several of this feature's rules exist only there — the CHECK
+	// constraint, what RETURNING gives back, whether the index is the one the
+	// planner uses — and a mocked store proves the mock.
+	integration := content["internal/features/order/order_integration_test.go"]
+	for _, fragment := range []string{
+		"dbtest.New(t)",
+		"migrator.Up(ctx)",
+		// The one that catches a cursor comparing only the timestamp.
+		"TestListPagesWithoutSkippingOrRepeating",
+	} {
+		if !strings.Contains(integration, fragment) {
+			t.Errorf("the integration test lacks %q", fragment)
+		}
+	}
+
+	// The component test runs in a browser and checks accessibility, because
+	// what a form is for is what a browser does with it.
+	component := content["frontend/src/lib/features/order/OrderForm.browser.test.ts"]
+	for _, fragment := range []string{"expectNoViolations()", "userEvent.click"} {
+		if !strings.Contains(component, fragment) {
+			t.Errorf("the component test lacks %q", fragment)
+		}
+	}
+}
