@@ -1,0 +1,77 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package app
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+
+	"{{.ModulePath}}/internal/features/notifications"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/mail"
+)
+
+// The two refusals this file can produce.
+var (
+	errNotificationsNeedMail = errors.New("the email notification channel needs a mailer")
+	// errEmailChannelNotWired is returned until this application decides how
+	// a notification becomes an email. It is a refusal rather than a silent
+	// success on purpose: a channel that reports delivery without delivering
+	// is worse than one that does not exist, because the delivery row would
+	// say "sent".
+	errEmailChannelNotWired = errors.New(
+		"the email notification channel is not wired yet: resolve the recipient's address and render a message in internal/app/notifications.go")
+)
+
+// newNotifications builds the notification use case with the delivery
+// channels this application offers.
+//
+// Channels are registered here, once, in ordinary code — there is no registry
+// and no discovery. A channel that is not in this call cannot be named by a
+// notification: Notify refuses an unknown channel name before it writes
+// anything, so a typo is a refusal rather than a notification nothing will
+// ever deliver.
+func newNotifications(transactor *database.Transactor, mailer mail.Mailer, renderer *mail.Renderer, from string, logger *slog.Logger) (*notifications.Notifications, error) {
+	email, err := newEmailChannel(mailer, renderer, from)
+	if err != nil {
+		return nil, err
+	}
+	_ = logger
+	return notifications.NewNotifications(transactor, email)
+}
+
+// emailChannel delivers a notification as an email.
+//
+// It is deliberately thin: the notification's title and body are already
+// rendered and already localized, so there is nothing left for this to decide
+// except how to address the message. An application that wants a designed
+// email per notification kind renders it here, from the kind and the data.
+type emailChannel struct {
+	mailer   mail.Mailer
+	renderer *mail.Renderer
+	from     string
+}
+
+func newEmailChannel(mailer mail.Mailer, renderer *mail.Renderer, from string) (*emailChannel, error) {
+	if mailer == nil {
+		return nil, errNotificationsNeedMail
+	}
+	return &emailChannel{mailer: mailer, renderer: renderer, from: from}, nil
+}
+
+// Name implements notifications.Channel.
+func (c *emailChannel) Name() string { return "email" }
+
+// Deliver implements notifications.Channel.
+//
+// The recipient's address is not on the notification, because a notification
+// is addressed to a user and not to a mailbox: the address is looked up when
+// delivery is attempted, so a person who changed it since gets the message at
+// the current one. Resolving it is left to the application, which owns the
+// user record — this is where that lookup goes.
+func (c *emailChannel) Deliver(ctx context.Context, notification notifications.Notification) error {
+	_ = ctx
+	_ = notification
+	return errEmailChannelNotWired
+}

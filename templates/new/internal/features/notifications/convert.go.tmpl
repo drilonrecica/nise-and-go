@@ -1,0 +1,80 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package notifications
+
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"{{.ModulePath}}/internal/features/notifications/store"
+)
+
+// toNotification converts one stored row into the shape callers see. The
+// conversion is explicit because the store package's types are sqlc's and
+// change when the schema does, while Notification is a contract this feature
+// offers.
+func toNotification(row store.Notification) Notification {
+	return Notification{
+		ID:          uuidString(row.ID),
+		RecipientID: uuidString(row.RecipientID),
+		Kind:        row.Kind,
+		Title:       row.Title,
+		Body:        row.Body,
+		Data:        json.RawMessage(row.Data),
+		CreatedAt:   timeOf(row.CreatedAt),
+		ReadAt:      timeOf(row.ReadAt),
+	}
+}
+
+func toDelivery(row store.NotificationDelivery) Delivery {
+	return Delivery{
+		NotificationID: uuidString(row.NotificationID),
+		Channel:        row.Channel,
+		State:          string(row.State),
+		Attempts:       row.Attempts,
+		LastError:      row.LastError.String,
+		UpdatedAt:      timeOf(row.UpdatedAt),
+	}
+}
+
+// parseUUID converts an identifier that arrived as a string. A malformed one
+// is a caller error, not a database round trip.
+func parseUUID(value string) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	if err := id.Scan(value); err != nil || !id.Valid {
+		return pgtype.UUID{}, fmt.Errorf("%q is not a valid identifier", value)
+	}
+	return id, nil
+}
+
+func uuidString(id pgtype.UUID) string {
+	if !id.Valid {
+		return ""
+	}
+	value, err := id.Value()
+	if err != nil {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
+}
+
+func optionalText(value string) pgtype.Text {
+	if value == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: value, Valid: true}
+}
+
+func timeOf(value pgtype.Timestamptz) time.Time {
+	if !value.Valid {
+		return time.Time{}
+	}
+	return value.Time.UTC()
+}

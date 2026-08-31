@@ -49,12 +49,13 @@ func TestGeneratedProjectRunsJobsOnPostgreSQL(t *testing.T) {
 		},
 		"internal/app/app.go": {
 			"jobs.NewRegistry()",
-			"registerJobs(jobRegistry)",
+			"registerJobs(jobRegistry",
 			"jobs.New(pool, jobRegistry, cfg.Jobs, logger)",
 			"newWorker(jobClient, logger)",
 		},
 		"internal/app/jobs.go": {
-			"func registerJobs(registry *jobs.Registry)",
+			"func registerJobs(",
+			"registry *jobs.Registry,",
 		},
 		"internal/app/modes.go": {
 			"client.Start(ctx)",
@@ -122,8 +123,11 @@ func TestJobMigrationIsNumberedAfterTheCoreHistory(t *testing.T) {
 	if content["db/migrations/00009_jobs.sql"] == "" {
 		t.Fatal("the job migration is not numbered 00009")
 	}
-	if content["db/migrations/00010_totp.sql"] == "" {
-		t.Error("the TOTP module migration does not follow the core history at 00010")
+	if content["db/migrations/00010_notifications.sql"] == "" {
+		t.Error("the notifications module migration does not follow the core history at 00010")
+	}
+	if content["db/migrations/00011_totp.sql"] == "" {
+		t.Error("the TOTP module migration does not follow the notifications one at 00011")
 	}
 }
 
@@ -280,7 +284,8 @@ func TestPeriodicSchedulingIsUniqueInTheDatabase(t *testing.T) {
 
 	// A scheduling mistake must stop the process, which means the hook has
 	// to be able to report one.
-	if !strings.Contains(content["internal/app/jobs.go"], "func registerJobs(registry *jobs.Registry) error") {
+	if !strings.Contains(content["internal/app/jobs.go"], "func registerJobs(") ||
+		!strings.Contains(content["internal/app/jobs.go"], ") error {") {
 		t.Error("registerJobs cannot report a scheduling mistake")
 	}
 }
@@ -494,9 +499,11 @@ func TestTheUploadLifecycleTrustsNothingTheClientSent(t *testing.T) {
 
 	// The declared values are recorded beside the measured ones, so a lie
 	// is visible rather than merely refused.
-	migration := content["db/migrations/00011_uploads.sql"]
+	// Module migrations are numbered contiguously after the core history in
+	// module order: notifications, then TOTP, then uploads.
+	migration := content["db/migrations/00012_uploads.sql"]
 	if migration == "" {
-		t.Fatal("the uploads migration is not numbered after TOTP's")
+		t.Fatal("the uploads migration is not numbered after the notifications and TOTP ones")
 	}
 	for _, column := range []string{"declared_type", "declared_size", "content_type", "size", "checksum"} {
 		if !strings.Contains(migration, column) {
@@ -517,5 +524,71 @@ func TestTheUploadLifecycleTrustsNothingTheClientSent(t *testing.T) {
 	}
 	if !strings.Contains(content["internal/app/jobs.go"], "uploads.RegisterSweep(registry, uploadSweep, logger)") {
 		t.Error("the application does not register the sweep")
+	}
+}
+
+// TestNotificationsPersistIndependentlyOfDelivery pins M8-008's central
+// decision: a notification and the attempts to deliver it are separate rows,
+// so a channel that is down cannot erase what somebody should have been told.
+func TestNotificationsPersistIndependentlyOfDelivery(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, allModulesOptions())
+
+	migration := content["db/migrations/00010_notifications.sql"]
+	if migration == "" {
+		t.Fatal("the notifications migration is not the first module migration")
+	}
+	for _, fragment := range []string{
+		"CREATE TABLE notifications (",
+		"CREATE TABLE notification_deliveries (",
+		"CONSTRAINT notification_deliveries_unique UNIQUE (notification_id, channel)",
+		"CONSTRAINT notification_deliveries_failed_has_reason",
+		"CREATE INDEX notifications_unread_idx",
+	} {
+		if !strings.Contains(migration, fragment) {
+			t.Errorf("the notifications migration lacks %q", fragment)
+		}
+	}
+
+	feature := content["internal/features/notifications/notifications.go"]
+	// Notify takes the transaction. A notification for a change that rolled
+	// back is a lie told to a person.
+	if !strings.Contains(feature, "func (n *Notifications) Notify(ctx context.Context, tx pgx.Tx, content New) (Notification, error)") {
+		t.Error("Notify does not take the transaction that made the change it describes")
+	}
+	if !strings.Contains(feature, `ErrNotFound = errors.New("notifications: no such notification")`) {
+		t.Error("a notification addressed to somebody else is distinguishable from one that does not exist")
+	}
+
+	// The delivery worker must never touch the notification.
+	deliver := content["internal/features/notifications/deliver.go"]
+	for _, forbidden := range []string{"MarkNotificationRead", "DeleteNotification"} {
+		if strings.Contains(deliver, forbidden) {
+			t.Errorf("the delivery worker calls %s; a delivery outcome must not change the notification", forbidden)
+		}
+	}
+	// One job per channel, so two channels' failures stay independent.
+	if !strings.Contains(deliver, "Channel        string `json:\"channel\"`") {
+		t.Error("the delivery job does not carry a single channel")
+	}
+
+	if !strings.Contains(content["internal/app/jobs.go"], "notifications.RegisterDelivery(registry, appNotifications, logger)") {
+		t.Error("the application does not register the delivery worker")
+	}
+}
+
+// TestAProjectWithoutNotificationsHasNoneAtAll is the module rule again.
+func TestAProjectWithoutNotificationsHasNoneAtAll(t *testing.T) {
+	t.Parallel()
+
+	files, err := generator.Plan(defaultOptions())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	for _, f := range files {
+		if strings.HasPrefix(f.Path, "internal/features/notifications/") || f.Path == "internal/app/notifications.go" {
+			t.Errorf("a project without the notifications module still contains %s", f.Path)
+		}
 	}
 }

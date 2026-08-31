@@ -90,6 +90,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │   ├── database_runtime.go        [app]   pool and transaction-runner construction
     │   ├── jobs.go                    [app]   where background job kinds are declared; starts empty
     │   ├── mail.go                    [app]   chooses the outbound mail transport, once
+    │   ├── notifications.go           [app]   notifications module: registers the delivery channels
     │   ├── storage.go                 [app]   uploads module: chooses the object-storage backend, once
     │   ├── modes.go                   [app]   all, web, and worker process modes
     │   ├── modules.gen.go             [nise]  the selected compile-time modules, and nothing else
@@ -111,6 +112,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │       └── <feature>_test.go      [app]
     │   audit/                         [app]   the append-only audit log and its query API
     │   auth/                          [app]   accounts, sessions, roles, login, invitations, and their SQL
+    │   notifications/                 [app]   notifications module: persistent notifications and their delivery jobs
     │   uploads/                       [app]   uploads module: the staged upload lifecycle and its sweep job
     │
     └── platform/

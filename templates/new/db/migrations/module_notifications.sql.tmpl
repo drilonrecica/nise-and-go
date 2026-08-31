@@ -1,0 +1,94 @@
+-- Generated once by nise; owned by this application. Nise will not overwrite it.
+--
+-- The notifications module's storage.
+--
+-- Two tables, and the split between them is the whole design. `notifications`
+-- is what happened: one row per thing a person should know about, written by
+-- the transaction that made it true. `notification_deliveries` is what was
+-- attempted about it: one row per channel per notification, each with its own
+-- outcome.
+--
+-- Keeping them apart is what makes "delivery failure does not erase the
+-- underlying notification" a property of the schema rather than a rule
+-- somebody has to remember. An SMTP server that is down produces a failed
+-- delivery row; the notification is still there, still unread, and still
+-- shown in the application the next time its recipient looks.
+
+-- +goose Up
+CREATE TABLE notifications (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- Who should see it. Cascade, because a notification about a deleted
+    -- account is addressed to nobody.
+    recipient_id uuid        NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    -- A stable machine name for what happened: "invitation.accepted",
+    -- "report.ready". It is what a frontend switches on to choose an icon or
+    -- a link, so it is a name the application owns and not a Go type path.
+    kind         text        NOT NULL,
+    -- Already-rendered, already-localized text. The alternative — storing a
+    -- template name and its arguments — means every past notification
+    -- re-renders when a template changes, so the record of what somebody was
+    -- told stops matching what they were actually told.
+    title        text        NOT NULL,
+    body         text        NOT NULL,
+    -- Structured payload for the frontend: the identifier a link needs, and
+    -- nothing that would be a second copy of the text above.
+    data         jsonb       NOT NULL DEFAULT '{}',
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    read_at      timestamptz,
+
+    CONSTRAINT notifications_kind_shape CHECK (kind ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$' AND char_length(kind) <= 64),
+    CONSTRAINT notifications_title_length CHECK (char_length(title) BETWEEN 1 AND 200),
+    CONSTRAINT notifications_body_length CHECK (char_length(body) BETWEEN 1 AND 2000),
+    CONSTRAINT notifications_read_after_created CHECK (read_at IS NULL OR read_at >= created_at)
+);
+
+-- The unread badge and the notification list are the same query with a
+-- different limit, and this is the index both read. Descending, because a
+-- notification list is always newest first.
+CREATE INDEX notifications_recipient_idx ON notifications (recipient_id, created_at DESC);
+
+-- The unread count is a partial index rather than a filter over the one
+-- above: it is read on every page load by every signed-in person, and it
+-- should not have to walk read notifications to find out there are none.
+CREATE INDEX notifications_unread_idx ON notifications (recipient_id) WHERE read_at IS NULL;
+
+CREATE TYPE notification_delivery_state AS ENUM (
+    -- Queued, not yet attempted.
+    'pending',
+    -- The channel accepted it.
+    'sent',
+    -- The channel refused it, permanently. A retryable failure stays
+    -- 'pending' and is retried by the job that owns it, so this state means
+    -- the attempt is over.
+    'failed'
+);
+
+CREATE TABLE notification_deliveries (
+    id              uuid                        PRIMARY KEY DEFAULT gen_random_uuid(),
+    notification_id uuid                        NOT NULL REFERENCES notifications (id) ON DELETE CASCADE,
+    -- The channel name, e.g. "email". In-app delivery has no row here: the
+    -- notification row is the in-app delivery, and inventing a row that is
+    -- always 'sent' the instant it is written would be bookkeeping about
+    -- nothing.
+    channel         text                        NOT NULL,
+    state           notification_delivery_state NOT NULL DEFAULT 'pending',
+    attempts        integer                     NOT NULL DEFAULT 0,
+    -- Why it failed, for an operator. Never shown to the recipient, who
+    -- cannot act on it.
+    last_error      text,
+    created_at      timestamptz                 NOT NULL DEFAULT now(),
+    updated_at      timestamptz                 NOT NULL DEFAULT now(),
+
+    CONSTRAINT notification_deliveries_unique UNIQUE (notification_id, channel),
+    CONSTRAINT notification_deliveries_channel_shape CHECK (channel ~ '^[a-z][a-z0-9_]*$' AND char_length(channel) <= 32),
+    CONSTRAINT notification_deliveries_attempts CHECK (attempts >= 0),
+    CONSTRAINT notification_deliveries_error_length CHECK (last_error IS NULL OR char_length(last_error) <= 1000),
+    CONSTRAINT notification_deliveries_failed_has_reason CHECK (state <> 'failed' OR last_error IS NOT NULL)
+);
+
+CREATE INDEX notification_deliveries_notification_idx ON notification_deliveries (notification_id);
+
+-- +goose Down
+DROP TABLE notification_deliveries;
+DROP TYPE notification_delivery_state;
+DROP TABLE notifications;

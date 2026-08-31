@@ -1,0 +1,226 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package notifications
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/features/notifications/store"
+	"{{.ModulePath}}/internal/platform/jobs"
+)
+
+// DeliverArgs is the job that attempts one channel's delivery of one
+// notification.
+//
+// One job per channel per notification, rather than one job that walks every
+// channel. Two channels have unrelated failure modes and unrelated retry
+// schedules, and a single job would either retry a channel that succeeded or
+// give up on one that would have worked. The delivery table's unique
+// constraint on (notification, channel) is what makes the split safe: a
+// duplicate job finds the row already sent and does nothing.
+type DeliverArgs struct {
+	NotificationID string `json:"notification_id"`
+	Channel        string `json:"channel"`
+}
+
+// Kind implements river.JobArgs. It is a literal, so renaming this Go type
+// cannot orphan jobs already in the queue.
+func (DeliverArgs) Kind() string { return "notification_deliver" }
+
+// DeliverWorker runs one delivery attempt.
+type DeliverWorker struct {
+	river.WorkerDefaults[DeliverArgs]
+
+	notifications *Notifications
+	logger        *slog.Logger
+}
+
+// NewDeliverWorker builds the worker.
+func NewDeliverWorker(notifications *Notifications, logger *slog.Logger) (*DeliverWorker, error) {
+	if notifications == nil {
+		return nil, errors.New("notifications: a use case is required")
+	}
+	if logger == nil {
+		return nil, errors.New("notifications: a logger is required")
+	}
+	return &DeliverWorker{notifications: notifications, logger: logger}, nil
+}
+
+// Work implements river.Worker.
+//
+// The notification is never modified here, in either direction. A delivery
+// that succeeds does not mark it read, and a delivery that fails does not
+// remove it — which is the whole reason the two are separate tables.
+func (w *DeliverWorker) Work(ctx context.Context, job *river.Job[DeliverArgs]) error {
+	notification, delivery, err := w.notifications.claim(ctx, job.Args.NotificationID, job.Args.Channel)
+	if err != nil {
+		// A notification that no longer exists is not a failure to retry:
+		// its recipient's account was deleted, and the cascade took the
+		// delivery row with it.
+		if errors.Is(err, ErrNotFound) {
+			return jobs.Terminal(err)
+		}
+		return err
+	}
+	if delivery.State == string(store.NotificationDeliveryStateSent) {
+		// Already delivered. This is the duplicate-job path, and it is a
+		// success: the work the job describes has been done.
+		return nil
+	}
+
+	channel, known := w.notifications.channels[job.Args.Channel]
+	if !known {
+		// A channel that was configured when the job was enqueued and is
+		// not configured now. Retrying cannot fix a deployment that no
+		// longer has it, so the attempt is recorded and abandoned.
+		reason := fmt.Sprintf("the channel %q is not configured in this deployment", job.Args.Channel)
+		if failErr := w.notifications.markFailed(ctx, notification.ID, job.Args.Channel, reason); failErr != nil {
+			return failErr
+		}
+		return jobs.Terminal(errors.New(reason))
+	}
+
+	if deliverErr := channel.Deliver(ctx, notification); deliverErr != nil {
+		// The attempt is recorded and the error returned, so River's retry
+		// schedule decides what happens next. The delivery stays 'pending':
+		// 'failed' means the attempt is over, and only the last attempt
+		// knows that.
+		if job.Attempt >= job.MaxAttempts {
+			if failErr := w.notifications.markFailed(ctx, notification.ID, job.Args.Channel, deliverErr.Error()); failErr != nil {
+				return failErr
+			}
+			w.logger.Warn("gave up delivering a notification",
+				slog.String("notification_id", notification.ID),
+				slog.String("channel", job.Args.Channel),
+				slog.String("detail", deliverErr.Error()))
+			// The notification itself is untouched and still unread. The
+			// person will see it in the application.
+			return jobs.Terminal(deliverErr)
+		}
+		if recordErr := w.notifications.recordAttempt(ctx, notification.ID, job.Args.Channel, deliverErr.Error()); recordErr != nil {
+			return recordErr
+		}
+		return deliverErr
+	}
+
+	return w.notifications.markSent(ctx, notification.ID, job.Args.Channel)
+}
+
+// RegisterDelivery registers the delivery worker.
+func RegisterDelivery(registry *jobs.Registry, notifications *Notifications, logger *slog.Logger) error {
+	worker, err := NewDeliverWorker(notifications, logger)
+	if err != nil {
+		return err
+	}
+	jobs.Register(registry, worker)
+	return nil
+}
+
+// Enqueue queues delivery jobs for the channels a notification named.
+//
+// It takes the transaction that wrote the notification, so the jobs become
+// visible exactly when the notification does — no job for a notification that
+// rolled back, and no notification with nothing queued to deliver it.
+func Enqueue(ctx context.Context, tx pgx.Tx, enqueuer jobs.Enqueuer, notification Notification, channels []string) error {
+	for _, channel := range channels {
+		if err := enqueuer.InsertTx(ctx, tx, DeliverArgs{
+			NotificationID: notification.ID,
+			Channel:        channel,
+		}, nil); err != nil {
+			return fmt.Errorf("notifications: queueing %s delivery: %w", channel, err)
+		}
+	}
+	return nil
+}
+
+// claim reads the notification and its delivery row for one channel.
+func (n *Notifications) claim(ctx context.Context, id, channel string) (Notification, Delivery, error) {
+	notificationID, err := parseUUID(id)
+	if err != nil {
+		return Notification{}, Delivery{}, ErrNotFound
+	}
+
+	var (
+		notification store.Notification
+		delivery     store.NotificationDelivery
+	)
+	err = n.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := store.New(tx)
+		var txErr error
+		notification, txErr = queries.GetNotification(ctx, store.GetNotificationParams{ID: notificationID})
+		if txErr != nil {
+			return txErr
+		}
+		delivery, txErr = queries.GetDelivery(ctx, store.GetDeliveryParams{
+			NotificationID: notificationID,
+			Channel:        channel,
+		})
+		return txErr
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Notification{}, Delivery{}, ErrNotFound
+		}
+		return Notification{}, Delivery{}, fmt.Errorf("notifications: reading a delivery: %w", err)
+	}
+	return toNotification(notification), toDelivery(delivery), nil
+}
+
+func (n *Notifications) markSent(ctx context.Context, id, channel string) error {
+	notificationID, err := parseUUID(id)
+	if err != nil {
+		return ErrNotFound
+	}
+	return n.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		return store.New(tx).MarkDeliverySent(ctx, store.MarkDeliverySentParams{
+			NotificationID: notificationID,
+			Channel:        channel,
+		})
+	})
+}
+
+func (n *Notifications) markFailed(ctx context.Context, id, channel, reason string) error {
+	notificationID, err := parseUUID(id)
+	if err != nil {
+		return ErrNotFound
+	}
+	return n.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		return store.New(tx).MarkDeliveryFailed(ctx, store.MarkDeliveryFailedParams{
+			NotificationID: notificationID,
+			Channel:        channel,
+			LastError:      optionalText(truncate(reason, 1000)),
+		})
+	})
+}
+
+func (n *Notifications) recordAttempt(ctx context.Context, id, channel, reason string) error {
+	notificationID, err := parseUUID(id)
+	if err != nil {
+		return ErrNotFound
+	}
+	return n.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		return store.New(tx).RecordDeliveryAttempt(ctx, store.RecordDeliveryAttemptParams{
+			NotificationID: notificationID,
+			Channel:        channel,
+			LastError:      optionalText(truncate(reason, 1000)),
+		})
+	})
+}
+
+// truncate bounds an error message to what the column accepts. A channel that
+// returns a megabyte of provider XML should not fail the write that records
+// it.
+func truncate(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit]
+}

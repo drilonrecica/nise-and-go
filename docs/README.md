@@ -25,6 +25,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Outbound email](mail.md)
 - [Object storage](storage.md)
 - [The upload lifecycle](uploads.md)
+- [In-app notifications](notifications.md)
 - [Observability](observability.md)
 - [Metrics and tracing](metrics.md)
 - [Operations: runtime HTTP lifecycle](operations-runtime.md)

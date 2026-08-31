@@ -1,0 +1,487 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package notifications
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+)
+
+const notificationsTestTimeout = 30 * time.Second
+
+// recordingChannel is a delivery channel a test controls: it records what it
+// was asked to deliver and fails on demand.
+type recordingChannel struct {
+	name string
+
+	mu       sync.Mutex
+	received []Notification
+	err      error
+}
+
+func (c *recordingChannel) Name() string { return c.name }
+
+func (c *recordingChannel) Deliver(_ context.Context, notification Notification) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err != nil {
+		return c.err
+	}
+	c.received = append(c.received, notification)
+	return nil
+}
+
+func (c *recordingChannel) delivered() []Notification {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]Notification, len(c.received))
+	copy(out, c.received)
+	return out
+}
+
+func (c *recordingChannel) fail(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.err = err
+}
+
+type harness struct {
+	ctx           context.Context
+	pool          *pgxpool.Pool
+	transactor    *database.Transactor
+	notifications *Notifications
+	email         *recordingChannel
+	recipient     string
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+
+	testDatabase := dbtest.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), notificationsTestTimeout)
+	t.Cleanup(cancel)
+
+	settings, err := database.NewSettings(6, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	databaseURL := testDatabase.URL().Reveal()
+	databasePassword := testDatabase.Password().Reveal()
+	pool, err := database.Open(ctx, databaseURL, databasePassword, settings, database.OpenOptions{})
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	migrator, err := database.OpenMigrator(ctx, databaseURL, databasePassword, 5*time.Second, migrationdb.Migrations())
+	if err != nil {
+		t.Fatalf("OpenMigrator: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := migrator.Close(); err != nil {
+			t.Errorf("close migrator: %v", err)
+		}
+	})
+	if _, err := migrator.Up(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	transactor, err := database.NewTransactor(pool)
+	if err != nil {
+		t.Fatalf("NewTransactor: %v", err)
+	}
+	email := &recordingChannel{name: "email"}
+	notifications, err := NewNotifications(transactor, email)
+	if err != nil {
+		t.Fatalf("NewNotifications: %v", err)
+	}
+
+	h := &harness{ctx: ctx, pool: pool, transactor: transactor, notifications: notifications, email: email}
+	h.recipient = h.createUser(t, "recipient@example.com")
+	return h
+}
+
+func (h *harness) createUser(t *testing.T, email string) string {
+	t.Helper()
+
+	var id string
+	if err := h.pool.QueryRow(h.ctx,
+		`INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id::text`,
+		email, strings.Repeat("x", 32)).Scan(&id); err != nil {
+		t.Fatalf("creating a user: %v", err)
+	}
+	return id
+}
+
+// notify writes one notification in its own transaction, which is what a use
+// case would do inside the transaction that made the change.
+func (h *harness) notify(t *testing.T, content New) Notification {
+	t.Helper()
+
+	var notification Notification
+	err := h.transactor.Within(h.ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		notification, txErr = h.notifications.Notify(ctx, tx, content)
+		return txErr
+	})
+	if err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+	return notification
+}
+
+func (h *harness) content() New {
+	return New{
+		RecipientID: h.recipient,
+		Kind:        "report.ready",
+		Title:       "Your report is ready",
+		Body:        "The report you asked for has finished generating.",
+		Data:        json.RawMessage(`{"report_id":"abc"}`),
+	}
+}
+
+func (h *harness) count(t *testing.T, query string, args ...any) int64 {
+	t.Helper()
+	var total int64
+	if err := h.pool.QueryRow(h.ctx, query, args...).Scan(&total); err != nil {
+		t.Fatalf("counting: %v", err)
+	}
+	return total
+}
+
+// TestANotificationBelongsToTheTransactionThatMadeItTrue is the property
+// Notify's signature exists to force. A notification for a change that rolled
+// back is a lie told to a person.
+func TestANotificationBelongsToTheTransactionThatMadeItTrue(t *testing.T) {
+	h := newHarness(t)
+
+	sentinel := errors.New("the change failed")
+	err := h.transactor.Within(h.ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		if _, notifyErr := h.notifications.Notify(ctx, tx, h.content()); notifyErr != nil {
+			return notifyErr
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Within = %v, want the work error", err)
+	}
+	if got := h.count(t, `SELECT count(*) FROM notifications`); got != 0 {
+		t.Fatalf("a rolled-back change left %d notifications", got)
+	}
+
+	notification := h.notify(t, h.content())
+	if got := h.count(t, `SELECT count(*) FROM notifications`); got != 1 {
+		t.Fatalf("a committed change left %d notifications, want 1", got)
+	}
+	if notification.Kind != "report.ready" {
+		t.Errorf("Kind = %q", notification.Kind)
+	}
+}
+
+// TestNotifyRefusesToRunWithoutATransaction pins the signature's whole point.
+func TestNotifyRefusesToRunWithoutATransaction(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := h.notifications.Notify(h.ctx, nil, h.content()); err == nil {
+		t.Fatal("Notify accepted a nil transaction")
+	}
+}
+
+// TestADeliveryFailureDoesNotEraseTheNotification is the requirement this
+// whole feature is shaped around.
+func TestADeliveryFailureDoesNotEraseTheNotification(t *testing.T) {
+	h := newHarness(t)
+
+	content := h.content()
+	content.Channels = []string{"email"}
+	notification := h.notify(t, content)
+
+	// The channel is down.
+	h.email.fail(errors.New("the SMTP server refused the connection"))
+	if err := h.notifications.markFailed(h.ctx, notification.ID, "email", "the SMTP server refused the connection"); err != nil {
+		t.Fatalf("markFailed: %v", err)
+	}
+
+	// The notification is untouched: still there, still unread.
+	stored, err := h.notifications.List(h.ctx, h.recipient, 10, time.Time{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("List returned %d notifications, want 1", len(stored))
+	}
+	if stored[0].Read() {
+		t.Error("a failed delivery marked the notification read")
+	}
+	unread, err := h.notifications.Unread(h.ctx, h.recipient)
+	if err != nil {
+		t.Fatalf("Unread: %v", err)
+	}
+	if unread != 1 {
+		t.Errorf("Unread = %d, want 1", unread)
+	}
+
+	// And the failure is recorded, with its reason, where an operator can
+	// find it.
+	deliveries, err := h.notifications.Deliveries(h.ctx, notification.ID)
+	if err != nil {
+		t.Fatalf("Deliveries: %v", err)
+	}
+	if len(deliveries) != 1 {
+		t.Fatalf("Deliveries returned %d rows, want 1", len(deliveries))
+	}
+	if deliveries[0].State != "failed" {
+		t.Errorf("State = %q, want failed", deliveries[0].State)
+	}
+	if !strings.Contains(deliveries[0].LastError, "SMTP") {
+		t.Errorf("LastError = %q, and does not say what went wrong", deliveries[0].LastError)
+	}
+}
+
+// TestDeliveryRowsAreWrittenInTheSameTransaction keeps a delivery job from
+// finding a notification that does not exist yet.
+func TestDeliveryRowsAreWrittenInTheSameTransaction(t *testing.T) {
+	h := newHarness(t)
+
+	content := h.content()
+	content.Channels = []string{"email"}
+	notification := h.notify(t, content)
+
+	deliveries, err := h.notifications.Deliveries(h.ctx, notification.ID)
+	if err != nil {
+		t.Fatalf("Deliveries: %v", err)
+	}
+	if len(deliveries) != 1 || deliveries[0].Channel != "email" {
+		t.Fatalf("Deliveries = %v, want one pending email delivery", deliveries)
+	}
+	if deliveries[0].State != "pending" {
+		t.Errorf("State = %q, want pending", deliveries[0].State)
+	}
+}
+
+// TestNamingAChannelTwiceIsNotTwoDeliveries covers the unique constraint,
+// which is what makes a duplicate delivery job harmless.
+func TestNamingAChannelTwiceIsNotTwoDeliveries(t *testing.T) {
+	h := newHarness(t)
+
+	content := h.content()
+	content.Channels = []string{"email", "email"}
+	notification := h.notify(t, content)
+
+	deliveries, err := h.notifications.Deliveries(h.ctx, notification.ID)
+	if err != nil {
+		t.Fatalf("Deliveries: %v", err)
+	}
+	if len(deliveries) != 1 {
+		t.Fatalf("naming a channel twice produced %d deliveries, want 1", len(deliveries))
+	}
+}
+
+// TestAnUnknownChannelIsRefusedBeforeAnythingIsWritten keeps a typo from
+// becoming a notification nothing will ever deliver.
+func TestAnUnknownChannelIsRefusedBeforeAnythingIsWritten(t *testing.T) {
+	h := newHarness(t)
+
+	content := h.content()
+	content.Channels = []string{"smoke_signal"}
+	err := h.transactor.Within(h.ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		_, notifyErr := h.notifications.Notify(ctx, tx, content)
+		return notifyErr
+	})
+	if !errors.Is(err, ErrUnknownChannel) {
+		t.Fatalf("Notify = %v, want ErrUnknownChannel", err)
+	}
+	if got := h.count(t, `SELECT count(*) FROM notifications`); got != 0 {
+		t.Errorf("a refused Notify wrote %d rows", got)
+	}
+}
+
+// TestAnotherUserCannotReadOrMarkMyNotifications is the ownership boundary.
+func TestAnotherUserCannotReadOrMarkMyNotifications(t *testing.T) {
+	h := newHarness(t)
+	notification := h.notify(t, h.content())
+	other := h.createUser(t, "other@example.com")
+
+	if _, err := h.notifications.MarkRead(h.ctx, notification.ID, other); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("MarkRead by another user = %v, want ErrNotFound", err)
+	}
+	stored, err := h.notifications.List(h.ctx, other, 10, time.Time{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(stored) != 0 {
+		t.Errorf("another user's list contains %d of my notifications", len(stored))
+	}
+	unread, err := h.notifications.Unread(h.ctx, other)
+	if err != nil {
+		t.Fatalf("Unread: %v", err)
+	}
+	if unread != 0 {
+		t.Errorf("another user's unread count is %d", unread)
+	}
+
+	// And mine is untouched.
+	mine, err := h.notifications.List(h.ctx, h.recipient, 10, time.Time{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(mine) != 1 || mine[0].Read() {
+		t.Error("the notification was changed by another user's attempt")
+	}
+}
+
+// TestMarkingReadTwiceKeepsTheFirstTime is the more useful fact: when
+// somebody first saw it.
+func TestMarkingReadTwiceKeepsTheFirstTime(t *testing.T) {
+	h := newHarness(t)
+	notification := h.notify(t, h.content())
+
+	first, err := h.notifications.MarkRead(h.ctx, notification.ID, h.recipient)
+	if err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+	if !first.Read() {
+		t.Fatal("MarkRead did not mark it read")
+	}
+	second, err := h.notifications.MarkRead(h.ctx, notification.ID, h.recipient)
+	if err != nil {
+		t.Fatalf("the second MarkRead: %v", err)
+	}
+	if !second.ReadAt.Equal(first.ReadAt) {
+		t.Errorf("the second MarkRead moved read_at from %s to %s", first.ReadAt, second.ReadAt)
+	}
+}
+
+func TestMarkAllReadReportsWhatItChanged(t *testing.T) {
+	h := newHarness(t)
+	for range 3 {
+		h.notify(t, h.content())
+	}
+
+	changed, err := h.notifications.MarkAllRead(h.ctx, h.recipient)
+	if err != nil {
+		t.Fatalf("MarkAllRead: %v", err)
+	}
+	if changed != 3 {
+		t.Errorf("MarkAllRead changed %d, want 3", changed)
+	}
+	again, err := h.notifications.MarkAllRead(h.ctx, h.recipient)
+	if err != nil {
+		t.Fatalf("MarkAllRead: %v", err)
+	}
+	if again != 0 {
+		t.Errorf("the second MarkAllRead changed %d, want 0", again)
+	}
+	unread, err := h.notifications.Unread(h.ctx, h.recipient)
+	if err != nil {
+		t.Fatalf("Unread: %v", err)
+	}
+	if unread != 0 {
+		t.Errorf("Unread = %d after marking all read", unread)
+	}
+}
+
+// TestListingIsNewestFirstAndPagesByTimestamp covers the cursor. An offset
+// would skip or repeat rows when a new notification arrives between two
+// pages, which for a notification list is the most likely thing to happen.
+func TestListingIsNewestFirstAndPagesByTimestamp(t *testing.T) {
+	h := newHarness(t)
+	for i := range 5 {
+		content := h.content()
+		content.Title = "Notification " + string(rune('A'+i))
+		h.notify(t, content)
+	}
+
+	first, err := h.notifications.List(h.ctx, h.recipient, 2, time.Time{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(first) != 2 {
+		t.Fatalf("the first page has %d, want 2", len(first))
+	}
+	if first[0].CreatedAt.Before(first[1].CreatedAt) {
+		t.Error("the list is not newest first")
+	}
+
+	second, err := h.notifications.List(h.ctx, h.recipient, 2, first[1].CreatedAt)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, seen := range first {
+		for _, next := range second {
+			if seen.ID == next.ID {
+				t.Errorf("%s appears on both pages", seen.ID)
+			}
+		}
+	}
+}
+
+// TestContentIsValidatedBeforeItReachesTheDatabase keeps a constraint
+// violation from being how an application learns its notification was
+// malformed.
+func TestContentIsValidatedBeforeItReachesTheDatabase(t *testing.T) {
+	h := newHarness(t)
+
+	base := h.content()
+	cases := map[string]func(New) New{
+		"no recipient": func(c New) New { c.RecipientID = ""; return c },
+		"no kind":      func(c New) New { c.Kind = ""; return c },
+		"kind with a capital": func(c New) New { c.Kind = "Report.Ready"; return c },
+		"kind with a space":   func(c New) New { c.Kind = "report ready"; return c },
+		"kind starting with a digit": func(c New) New { c.Kind = "1report"; return c },
+		"no title":     func(c New) New { c.Title = ""; return c },
+		"no body":      func(c New) New { c.Body = ""; return c },
+		"long title":   func(c New) New { c.Title = strings.Repeat("t", MaxTitleBytes+1); return c },
+		"long body":    func(c New) New { c.Body = strings.Repeat("b", MaxBodyBytes+1); return c },
+		"invalid JSON": func(c New) New { c.Data = json.RawMessage("{not json"); return c },
+		"huge payload": func(c New) New { c.Data = json.RawMessage(`{"x":"` + strings.Repeat("y", MaxDataBytes) + `"}`); return c },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := h.transactor.Within(h.ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+				_, notifyErr := h.notifications.Notify(ctx, tx, mutate(base))
+				return notifyErr
+			})
+			if err == nil {
+				t.Fatal("Notify accepted it")
+			}
+		})
+	}
+	if got := h.count(t, `SELECT count(*) FROM notifications`); got != 0 {
+		t.Errorf("refused content wrote %d rows", got)
+	}
+}
+
+func TestChannelRegistrationIsValidated(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := NewNotifications(h.transactor, &recordingChannel{name: "Email"}); err == nil {
+		t.Error("a channel name with a capital was accepted")
+	}
+	if _, err := NewNotifications(h.transactor, &recordingChannel{name: ""}); err == nil {
+		t.Error("an unnamed channel was accepted")
+	}
+	if _, err := NewNotifications(h.transactor, &recordingChannel{name: "email"}, &recordingChannel{name: "email"}); err == nil {
+		t.Error("a channel registered twice was accepted")
+	}
+	if _, err := NewNotifications(h.transactor, nil); err == nil {
+		t.Error("a nil channel was accepted")
+	}
+	if got := h.notifications.Channels(); len(got) != 1 || got[0] != "email" {
+		t.Errorf("Channels() = %v, want [email]", got)
+	}
+}

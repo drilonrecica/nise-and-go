@@ -50,6 +50,10 @@ func TestAnUnselectedModuleContributesNothing(t *testing.T) {
 		"internal/features/mfa/queries/mfa.sql",
 		"internal/features/mfa/sqlc.yaml",
 		"internal/features/mfa/store/mfa.sql.go",
+		// Numbered 00010 because this project selected only TOTP: module
+		// migrations are numbered contiguously after the core history, in
+		// module order, so the number depends on which other modules were
+		// selected. The all-modules case is pinned in jobs_test.go.
 		"db/migrations/00010_totp.sql",
 	} {
 		if _, ok := with[path]; !ok {
