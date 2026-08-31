@@ -171,3 +171,65 @@ func TestEnqueuingOutsideTheTransactionIsRefusedNotDocumented(t *testing.T) {
 		t.Error("the suite does not count job rows on its own connection; reading through River would prove only that River agrees with itself")
 	}
 }
+
+// TestTheRetryContractIsExplicitAndJittered pins M8-003's decisions: the
+// generated client does not inherit River's retry defaults, and the schedule
+// it does use is jittered.
+func TestTheRetryContractIsExplicitAndJittered(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, defaultOptions())
+
+	retry := content["internal/platform/jobs/retry.go"]
+	for _, fragment := range []string{
+		"DefaultMaxAttempts = 12",
+		"RetryBaseDelay = 2 * time.Second",
+		"RetryFactor = 3",
+		"RetryMaxDelay = 30 * time.Minute",
+		"DefaultJobTimeout = time.Minute",
+		"func (p *RetryPolicy) NextRetry(job *rivertype.JobRow) time.Time",
+		"func Terminal(err error) error",
+		"func Snooze(d time.Duration) error",
+		"func IsTerminal(err error) bool",
+	} {
+		if !strings.Contains(retry, fragment) {
+			t.Errorf("internal/platform/jobs/retry.go lacks %q", fragment)
+		}
+	}
+
+	// The delay must be randomized. A schedule without this is the crowd
+	// that turns a recovery into a second outage.
+	if !strings.Contains(retry, "p.randomFloat()") {
+		t.Error("the retry delay is not jittered")
+	}
+	// And it must keep a floor: a retry landing immediately after an outage
+	// is the worst possible moment for it to arrive.
+	if !strings.Contains(retry, "half := time.Duration(delay / 2)") {
+		t.Error("the jitter has no floor; a retry could be scheduled for right now")
+	}
+
+	// The client has to actually adopt the policy, or every constant above
+	// is documentation.
+	jobs := content["internal/platform/jobs/jobs.go"]
+	for _, fragment := range []string{
+		"JobTimeout:  DefaultJobTimeout,",
+		"MaxAttempts: DefaultMaxAttempts,",
+		"RetryPolicy: NewRetryPolicy(),",
+	} {
+		if !strings.Contains(jobs, fragment) {
+			t.Errorf("the generated client does not adopt the retry contract: missing %q", fragment)
+		}
+	}
+
+	// The schedule's own test must freeze the clock. Read from the real
+	// one, a spread assertion passes against a policy with no jitter at all
+	// — which is how it was first written here.
+	retryTest := content["internal/platform/jobs/retry_test.go"]
+	if !strings.Contains(retryTest, "TestJitterSpreadsARetryCrowd") {
+		t.Fatal("the generated project does not test that retries are spread")
+	}
+	spread := retryTest[strings.Index(retryTest, "func TestJitterSpreadsARetryCrowd"):]
+	if !strings.Contains(spread[:min(len(spread), 900)], "now: func() time.Time { return fixedRetryNow }") {
+		t.Error("the spread test does not freeze the clock, so it would pass with the jitter removed")
+	}
+}
