@@ -1,0 +1,14 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import Menu from '$lib/components/ui/Menu.svelte';
+
+	// A test fixture: Menu takes two snippets, which a test file cannot pass.
+</script>
+
+<Menu id="probe-menu" label="Probe">
+	{#snippet trigger()}
+		Open
+	{/snippet}
+	<button role="menuitem" type="button">First</button>
+	<button role="menuitem" type="button">Second</button>
+</Menu>

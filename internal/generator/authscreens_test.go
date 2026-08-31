@@ -374,3 +374,50 @@ func TestGeneratedAboutPageIsPermissionedAndRemovable(t *testing.T) {
 		t.Errorf("the framework is mentioned in %d generated frontend files, want exactly 1", mentions)
 	}
 }
+
+// TestGeneratedComponentTestFoundations pins the two-suite split and what the
+// browser half is for (Nise task M6-014).
+func TestGeneratedComponentTestFoundations(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, defaultOptions())
+
+	config := content["frontend/vitest.config.ts"]
+	for _, fragment := range []string{
+		"name: 'unit'",
+		"name: 'browser'",
+		"provider: playwright()",
+		"include: ['src/**/*.browser.test.ts']",
+		// The Node suite must not pick up a browser test, or it fails on the
+		// first thing that needs a real browser.
+		"exclude: ['src/**/*.browser.test.ts']",
+	} {
+		if !strings.Contains(config, fragment) {
+			t.Errorf("vitest.config.ts lacks %q", fragment)
+		}
+	}
+
+	a11y := content["frontend/src/lib/a11y.ts"]
+	for _, tag := range []string{"wcag2aa", "wcag21aa", "wcag22aa"} {
+		if !strings.Contains(a11y, tag) {
+			t.Errorf("a11y.ts does not check the %s rule set", tag)
+		}
+	}
+	// A clean axe run is a floor, and the file has to say so: roughly a third
+	// of WCAG is not machine-checkable at all.
+	if !strings.Contains(a11y, "floor, never a certificate") {
+		t.Error("a11y.ts does not state that a clean automated run is not a certificate")
+	}
+
+	pkg := content["frontend/package.json"]
+	for _, fragment := range []string{
+		`"test:unit": "pnpm run messages:compile && svelte-kit sync && vitest run --project unit"`,
+		`"test:browser": "pnpm run messages:compile && svelte-kit sync && vitest run --project browser"`,
+		`"test:component": "pnpm run messages:compile && svelte-kit sync && vitest run"`,
+		`"test:browser:install": "playwright install chromium"`,
+	} {
+		if !strings.Contains(pkg, fragment) {
+			t.Errorf("frontend/package.json lacks %q", fragment)
+		}
+	}
+}

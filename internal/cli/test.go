@@ -37,14 +37,17 @@ var suiteOrder = []string{suiteGo, suiteComponent, suiteE2E}
 // script names nise test looks for, in priority order, to decide whether
 // the browser-component and end-to-end suites are present at all. Neither
 // name is invented by nise test itself: both are read from the project's
-// own package.json, exactly as the project declared them. There is no
-// single established convention yet (the Vitest and Playwright
-// integrations are milestone M6, not built as of this task), so this list
-// is this task's own documented seam: an M6 frontend scaffold that wants
-// nise test to find its suite should name its package.json script one of
-// these.
+// own package.json, exactly as the project declared them, so a project that
+// renames or removes one is reporting its own shape rather than fighting
+// this command.
+//
+// `test:component` comes first because a generated project defines it as
+// "every component suite there is" — the Node modules and the real-browser
+// components together. `test:unit` remains a fallback for a project that has
+// only the fast half, which is the shape M6 shipped before browser mode
+// existed and the shape an application may deliberately keep.
 var (
-	componentScriptNames = []string{"test:unit", "test:component"}
+	componentScriptNames = []string{"test:component", "test:unit"}
 	e2eScriptNames       = []string{"test:e2e", "e2e"}
 )
 

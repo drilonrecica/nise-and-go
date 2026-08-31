@@ -12,7 +12,7 @@ OAPI_SPEC := api/openapi.yaml
 OAPI_CONFIG := api/oapi-codegen.yaml
 OAPI_GENERATED := internal/platform/httpapi/openapigen/openapi.gen.go
 
-.PHONY: help build dist run test migration-test fmt lint sqlc-generate sqlc-compile sqlc-vet api-generate api-check api-types-generate api-types-check web-install web-check web-test web-build web-clean all
+.PHONY: help build dist run test migration-test fmt lint sqlc-generate sqlc-compile sqlc-vet api-generate api-check api-types-generate api-types-check web-install web-check web-test web-test-install web-build web-clean all
 
 help: ## List the available targets.
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*?## ' $(MAKEFILE_LIST) \
@@ -100,8 +100,11 @@ web-install: ## Install the frontend's dependencies.
 web-check: api-types-check ## Type-check the frontend and its generated API contract.
 	pnpm --dir frontend run check
 
-web-test: web-check ## Run the frontend unit contract tests after type checking.
-	pnpm --dir frontend run test:unit
+web-test: web-check ## Type-check, then run the Node and browser component suites.
+	pnpm --dir frontend run test:component
+
+web-test-install: ## Download the browser the component suite drives. Run once.
+	pnpm --dir frontend run test:browser:install
 
 web-build: ## Build the frontend into internal/platform/webui/embedded/client/.
 	pnpm --dir frontend build

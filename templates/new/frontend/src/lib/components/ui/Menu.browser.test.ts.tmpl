@@ -1,0 +1,71 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { render } from 'vitest-browser-svelte';
+import { userEvent } from 'vitest/browser';
+import { describe, expect, it } from 'vitest';
+
+import { expectNoViolations } from '$lib/a11y';
+
+import MenuProbe from './MenuProbe.svelte';
+
+// The menu is the one component with a keyboard model written by hand, so it
+// is the one whose model has to be exercised by a real browser rather than
+// asserted from its source.
+
+describe('Menu', () => {
+	it('announces itself as a menu button and stays closed until asked', async () => {
+		render(MenuProbe, {});
+		const trigger = document.querySelector<HTMLButtonElement>('#probe-menu-trigger')!;
+
+		expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
+		expect(trigger.getAttribute('aria-expanded')).toBe('false');
+		expect(document.querySelector('[role="menu"]')).toBeNull();
+
+		await expectNoViolations();
+	});
+
+	it('opens on ArrowDown with the first item focused', async () => {
+		render(MenuProbe, {});
+		const trigger = document.querySelector<HTMLButtonElement>('#probe-menu-trigger')!;
+		trigger.focus();
+
+		await userEvent.keyboard('{ArrowDown}');
+
+		expect(trigger.getAttribute('aria-expanded')).toBe('true');
+		expect(document.activeElement?.textContent?.trim()).toBe('First');
+	});
+
+	it('wraps with the arrow keys and reaches the ends with Home and End', async () => {
+		render(MenuProbe, {});
+		document.querySelector<HTMLButtonElement>('#probe-menu-trigger')!.focus();
+		await userEvent.keyboard('{ArrowDown}');
+
+		await userEvent.keyboard('{ArrowDown}');
+		expect(document.activeElement?.textContent?.trim()).toBe('Second');
+
+		// Wrapping is what the authoring practices specify, and what a person
+		// expects after pressing Down on the last item.
+		await userEvent.keyboard('{ArrowDown}');
+		expect(document.activeElement?.textContent?.trim()).toBe('First');
+
+		await userEvent.keyboard('{End}');
+		expect(document.activeElement?.textContent?.trim()).toBe('Second');
+
+		await userEvent.keyboard('{Home}');
+		expect(document.activeElement?.textContent?.trim()).toBe('First');
+	});
+
+	it('closes on Escape and puts focus back on the trigger', async () => {
+		render(MenuProbe, {});
+		const trigger = document.querySelector<HTMLButtonElement>('#probe-menu-trigger')!;
+		trigger.focus();
+		await userEvent.keyboard('{ArrowDown}');
+
+		await userEvent.keyboard('{Escape}');
+
+		// Without the focus return, dismissing a menu drops a keyboard user at
+		// the top of the document.
+		expect(trigger.getAttribute('aria-expanded')).toBe('false');
+		expect(document.activeElement).toBe(trigger);
+	});
+});

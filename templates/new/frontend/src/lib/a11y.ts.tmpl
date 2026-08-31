@@ -1,0 +1,58 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Accessibility assertions for the component suite.
+//
+// axe-core finds the defects that are mechanical and invisible: an input with
+// no label, a control with no accessible name, a contrast pair the palette
+// broke. It does not find the ones that need a person — whether the focus
+// order makes sense, whether an error message says what to do — so the
+// component tests assert those directly and use this for the rest.
+//
+// A clean axe run is a floor, never a certificate. Roughly a third of WCAG is
+// not machine-checkable at all.
+
+import axe, { type AxeResults, type Result, type RunOptions } from 'axe-core';
+
+/** The rule sets this application holds itself to. */
+export const wcagTags = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
+
+/**
+ * Run axe over an element and return every violation.
+ *
+ * It defaults to the document body, which in a component test contains the one
+ * mounted component and the harness's own empty container. Pass an element to
+ * narrow it further — for a component rendered into a portal or the top layer,
+ * for instance, where the body is the only place it can be found at all.
+ */
+export async function findViolations(
+	element: Element = document.body,
+	options: RunOptions = {}
+): Promise<Result[]> {
+	const results: AxeResults = await axe.run(element, {
+		runOnly: { type: 'tag', values: wcagTags },
+		...options
+	});
+	return results.violations;
+}
+
+/**
+ * Fail with a readable report when an element has any violation.
+ *
+ * The message names the rule, what it means, and the offending markup,
+ * because "expected 0 to be 1" is a test failure nobody can act on.
+ */
+export async function expectNoViolations(
+	element: Element = document.body,
+	options?: RunOptions
+): Promise<void> {
+	const violations = await findViolations(element, options);
+	if (violations.length === 0) return;
+
+	const report = violations
+		.map((violation) => {
+			const nodes = violation.nodes.map((node) => `      ${node.html}`).join('\n');
+			return `  ${violation.id} (${violation.impact ?? 'unknown'}): ${violation.help}\n${nodes}`;
+		})
+		.join('\n');
+	throw new Error(`${violations.length} accessibility violation(s):\n${report}`);
+}

@@ -114,7 +114,9 @@ clean install; the remaining planned packages are named without one.
 | openapi-typescript (`7.13.0`) | Generates checked-in frontend path/operation types from the same authoritative OpenAPI document as the Go server. Its own non-mutating `--check` gate prevents drift. The client is application-owned and adds no runtime client framework. |
 | TypeScript (`5.9.3`) | Type-checks the generated frontend and client. Version 5.9.3 is the newest compatible 5.x patch for openapi-typescript 7.13.0's declared `^5.x` peer; the unsupported 6.0.3 pairing was rejected after a clean pnpm install reported it. |
 | Vitest (`4.1.11`) | Runs the initial Node-only typed-client unit contract on Node 22. Browser component coverage remains a separate M6 addition. |
-| Playwright | A deliberately small end-to-end suite for critical user journeys — end-to-end tests are the slowest and most brittle layer, so they cover journeys, not coverage. |
+| `playwright` (`1.62.1`) | The browser driver behind both the component suite's browser mode and the end-to-end suite. One pin for both, so a project cannot end up driving two different browsers. End-to-end tests are the slowest and most brittle layer, so they cover journeys, not coverage. |
+| `@vitest/browser` (`4.1.11`), `@vitest/browser-playwright` (`4.1.11`), `vitest-browser-svelte` (`3.0.0`) | Vitest's browser mode and the renderer that mounts a Svelte 5 component inside it. Components are tested in a real browser because a component's contract is what a browser does with it — focus order, the top layer, the accessibility tree — and a simulated DOM answers several of those differently from every real browser. |
+| `axe-core` (`4.13.0`) | The accessibility rule engine the component suite asserts against, over the WCAG 2.0/2.1/2.2 A and AA rule sets. A test dependency: nothing from it ships. |
 
 The generated `package.json` separates the two, and the `dependencies` block —
 what actually ships in the bundle — is deliberately short. A Nise test pins it

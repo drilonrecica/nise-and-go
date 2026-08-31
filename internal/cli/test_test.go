@@ -154,8 +154,8 @@ func TestPlanPackageScriptSuitePrefersFirstCandidateInOrder(t *testing.T) {
 	writePackageJSON(t, dir, map[string]string{"test:unit": "vitest run", "test:component": "other"})
 
 	plan := planPackageScriptSuite(suiteComponent, dir, componentScriptNames)
-	if plan.Argv[len(plan.Argv)-1] != "test:unit" {
-		t.Errorf("chose script %q, want the first candidate, test:unit", plan.Argv[len(plan.Argv)-1])
+	if plan.Argv[len(plan.Argv)-1] != "test:component" {
+		t.Errorf("chose script %q, want the first candidate, test:component", plan.Argv[len(plan.Argv)-1])
 	}
 }
 

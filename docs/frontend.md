@@ -104,6 +104,21 @@ Branch on `code`, not on the status. The server has one catalog of problems and 
 
 Field-level validation errors are not in the contract: the `Problem` schema is `additionalProperties: false` and carries no per-field member. Client-side field validation is Valibot's job, and the server remains authoritative.
 
+### Two test suites
+
+| Suite | Where it runs | What belongs in it |
+|---|---|---|
+| `pnpm test:unit` | Node | The `.svelte.ts` modules and the plain TypeScript around them: schemas, URL state, the API client, the session module. Fast enough to run on every save. |
+| `pnpm test:browser` | A real Chromium | Components (`*.browser.test.ts`). |
+
+`pnpm test:component` runs both, and is what `nise test` and `make web-test` invoke. The browser needs downloading once: `pnpm test:browser:install`.
+
+Components are tested in a real browser rather than a simulated DOM because a component's contract *is* what a browser does with it: the focus order, what `<dialog>` puts in the top layer, what a screen reader would be handed. A simulated DOM answers several of those questions differently from every real browser, which is worse than not answering them.
+
+`src/lib/a11y.ts` wraps axe-core against the WCAG 2.0, 2.1, and 2.2 A and AA rule sets, and reports each violation with its rule, its meaning, and the offending markup — "expected 0 to be 1" is a failure nobody can act on. A clean run is a floor and never a certificate: roughly a third of WCAG is not machine-checkable, so the component tests assert the human-judgement parts directly. The starter's two suites show both halves — that `Field` wires its label, description, error, and `aria-invalid` to the control by id, and that `Menu` implements its whole keyboard model including the focus return on Escape.
+
+A component that takes a snippet needs a small `*Probe.svelte` fixture, because a snippet cannot be passed from a test file's props. The probes double as the shape a real form uses.
+
 ### The five states
 
 Every surface that reads from the API can be in five states, and each has one answer in the starter:

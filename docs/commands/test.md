@@ -57,13 +57,15 @@ and not treated as a failure:
   `frontend/node_modules/`. The `db` package's source/embed parity test is
   therefore part of every standard Go suite.
 - **Frontend/component**: runs when `frontend/package.json` exists and its
-  `scripts` object declares one of `test:unit` or `test:component` (the
+  `scripts` object declares one of `test:component` or `test:unit` (the
   first one found, in that order), as `pnpm --dir frontend run <script>`.
 - **End-to-end**: runs when `frontend/package.json` declares one of
   `test:e2e` or `e2e`, as `pnpm --dir frontend run <script>`.
 
-`test:unit` is present in current generated projects and runs the Node-only
-typed-client contract. `test:component`, `test:e2e`, and `e2e` remain the
+`test:component` is what a generated project declares for "every component
+suite there is" — the Node-only module contracts and the real-browser component
+suite together — and is therefore preferred. `test:unit` remains a fallback for
+a project that keeps only the fast half. `test:e2e` and `e2e` remain the
 documented seams M6 uses when browser component and Playwright suites land.
 
 ## Passing arguments through to a suite (`--`)
@@ -95,7 +97,7 @@ per selected suite:
 ```
 go test: ok  	fixture/internal/x	0.002s
 [PASSED] go (go test ./cmd/... ./db/... ./internal/..., 0.31s)
-[PASSED] component (pnpm --dir frontend run test:unit, 0.42s)
+[PASSED] component (pnpm --dir frontend run test:component, 0.42s)
 ```
 
 **`--json` mode** never interleaves a suite's raw output into the JSON
@@ -104,7 +106,7 @@ printing — not itself valid JSON). It emits exactly one structured
 summary document instead:
 
 ```json
-{"suites":[{"name":"go","status":"passed","command":"go test ./cmd/... ./db/... ./internal/...","durationSeconds":0.31,"exitCode":0},{"name":"component","status":"passed","command":"pnpm --dir frontend run test:unit","durationSeconds":0.42,"exitCode":0}]}
+{"suites":[{"name":"go","status":"passed","command":"go test ./cmd/... ./db/... ./internal/...","durationSeconds":0.31,"exitCode":0},{"name":"component","status":"passed","command":"pnpm --dir frontend run test:component","durationSeconds":0.42,"exitCode":0}]}
 ```
 
 `status` is one of `passed`, `failed`, or `skipped`. `reason` is present
