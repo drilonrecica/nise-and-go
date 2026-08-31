@@ -255,14 +255,26 @@ tell them. Which check failed is in the server's log.
 
 ## Not yet here
 
-Login and enrollment are the tasks that follow. Resolving a session says who is
-asking; nothing here decides what they may do, and there is no login endpoint to
-obtain a session from yet.
+There is no login endpoint yet: resolving a session says who is asking, and the
+HTTP surface that issues one arrives with the authentication screens.
+
+**Device tokens for native clients are designed and deliberately not built.** A
+generated application has exactly one API credential — the session cookie — and
+a reader of the code finds one. [ADR
+0024](adr/0024-device-token-design.md) records the design: an opaque, hashed,
+rotating bearer token that *exchanges itself for an ordinary session* rather
+than authenticating requests itself, so every rule already built here applies to
+a native client without a second code path. It also records the three things
+about today's design that keep that additive — a prefixed token shape, an
+anti-forgery guard that reads the resolved credential rather than sniffing
+headers, and identity resolved once into one context value — so that a change
+which would break one of them is recognised as breaking it.
 
 ## Related
 
 - [Password hashing](passwords.md)
 - [Reauthentication](reauthentication.md)
+- [ADR 0024: Native device tokens, designed and not yet exposed](adr/0024-device-token-design.md)
 - [Security model](security.md)
 - [Database queries and sqlc](database-queries.md)
 - [Runtime packages](runtime-packages.md)
