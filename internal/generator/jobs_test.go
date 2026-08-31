@@ -34,6 +34,9 @@ func TestGeneratedProjectRunsJobsOnPostgreSQL(t *testing.T) {
 			"-- +goose Down",
 		},
 		"internal/platform/jobs/jobs.go": {
+			"var _ Enqueuer = (*Client)(nil)",
+			"transaction.IsActive(ctx)",
+			"ErrInsertInsideTransaction",
 			"func New(pool *pgxpool.Pool, registry *Registry, settings Settings, logger *slog.Logger) (*Client, error)",
 			"func Register[T river.JobArgs](r *Registry, worker river.Worker[T])",
 			"func (c *Client) InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) error",
@@ -121,5 +124,50 @@ func TestJobMigrationIsNumberedAfterTheCoreHistory(t *testing.T) {
 	}
 	if content["db/migrations/00010_totp.sql"] == "" {
 		t.Error("the TOTP module migration does not follow the core history at 00010")
+	}
+}
+
+// TestEnqueuingOutsideTheTransactionIsRefusedNotDocumented is the decision
+// M8-002 made, stated where a future change would trip over it.
+//
+// The failure this prevents — a job enqueued for a change that then rolled
+// back, or a change that committed with no job — is invisible in review and
+// intermittent in production. Making it a comment would leave it to be
+// noticed; making it a refusal makes the safe call the only one available.
+func TestEnqueuingOutsideTheTransactionIsRefusedNotDocumented(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, defaultOptions())
+
+	jobs := content["internal/platform/jobs/jobs.go"]
+	insert := strings.Index(jobs, "func (c *Client) Insert(")
+	if insert < 0 {
+		t.Fatal("the generated job client has no Insert method")
+	}
+	body := jobs[insert:]
+	guard := strings.Index(body, "transaction.IsActive(ctx)")
+	enqueue := strings.Index(body, "c.river.Insert(")
+	if guard < 0 || enqueue < 0 {
+		t.Fatal("Insert does not both guard and enqueue")
+	}
+	if guard > enqueue {
+		t.Error("Insert enqueues before checking whether it is inside a transaction; the refusal must write nothing")
+	}
+
+	// The PostgreSQL proof is what makes the claim more than an assertion
+	// about this project's own code.
+	pg := content["internal/platform/jobs/jobs_postgres_test.go"]
+	for _, name := range []string{
+		"TestACommittedTransactionPublishesItsJob",
+		"TestARolledBackTransactionTakesItsJobWithIt",
+		"TestInsertOutsideATransactionIsImmediatelyVisible",
+		"TestInsertIsRefusedInsideATransaction",
+	} {
+		if !strings.Contains(pg, name) {
+			t.Errorf("the generated PostgreSQL job suite lacks %s", name)
+		}
+	}
+	if !strings.Contains(pg, "SELECT count(*) FROM river_job WHERE kind = $1") {
+		t.Error("the suite does not count job rows on its own connection; reading through River would prove only that River agrees with itself")
 	}
 }

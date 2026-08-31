@@ -7,10 +7,13 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/riverqueue/river"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
 )
 
 // probeArgs is a job kind that exists only so a registry has something in
@@ -142,16 +145,59 @@ func TestStopWithoutStartIsSafe(t *testing.T) {
 	}
 }
 
-// TestErrorsAreWrapped keeps the package's errors identifiable by the caller
-// that has to report them, rather than flattened into strings.
-func TestErrorsAreWrapped(t *testing.T) {
+// TestInsertRefusesInsideATransactionWithoutTouchingTheDatabase is the
+// hermetic half of the refusal: it holds with a nil River client, which
+// proves the check runs before anything is enqueued rather than after. The
+// PostgreSQL suite proves the other half — that nothing reached the database
+// either.
+func TestInsertRefusesInsideATransactionWithoutTouchingTheDatabase(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(nil, nil, Settings{}, discardLogger())
-	if err == nil {
-		t.Fatal("New with no registry = nil error")
+	// A client with no River behind it: reaching the insert would panic,
+	// which is a louder failure than the assertion below and is the point.
+	c := &Client{}
+	ctx := transactionContext(t)
+
+	err := c.Insert(ctx, probeArgs{}, nil)
+	if !errors.Is(err, ErrInsertInsideTransaction) {
+		t.Fatalf("Insert inside a transaction = %v, want ErrInsertInsideTransaction", err)
 	}
-	if errors.Unwrap(err) != nil {
-		t.Log("note: the refusal is a leaf error, which is correct for a precondition")
+	if !strings.Contains(err.Error(), "InsertTx") {
+		t.Errorf("the refusal does not name the alternative: %s", err)
+	}
+	if !strings.Contains(err.Error(), probeArgs{}.Kind()) {
+		t.Errorf("the refusal does not name the job kind: %s", err)
 	}
 }
+
+// transactionContext returns a context marked as being inside a transaction
+// callback, using the real runner rather than a hand-forged context value —
+// so this test would notice if the marker ever stopped being set.
+func transactionContext(t *testing.T) context.Context {
+	t.Helper()
+
+	runner, err := transaction.New(func(context.Context, transaction.Options) (*noopTx, error) {
+		return &noopTx{}, nil
+	})
+	if err != nil {
+		t.Fatalf("transaction.New: %v", err)
+	}
+	var inside context.Context
+	if err := runner.Within(context.Background(), transaction.Options{}, func(ctx context.Context, _ *noopTx) error {
+		inside = ctx
+		return nil
+	}); err != nil {
+		t.Fatalf("Within: %v", err)
+	}
+	if !transaction.IsActive(inside) {
+		t.Fatal("the runner did not mark its callback context")
+	}
+	return inside
+}
+
+// noopTx satisfies transaction.Transaction for the marker above. It is never
+// asked to do anything: the callback returns immediately.
+type noopTx struct{}
+
+func (*noopTx) Commit(context.Context) error   { return nil }
+func (*noopTx) Rollback(context.Context) error { return nil }

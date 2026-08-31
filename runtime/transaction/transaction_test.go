@@ -229,3 +229,41 @@ func mustRunner(t *testing.T, tx *fakeTx) *Runner[*fakeTx] {
 	}
 	return runner
 }
+
+// TestIsActive covers the predicate a package outside this one uses to refuse
+// an operation that would escape the caller's transaction.
+func TestIsActive(t *testing.T) {
+	t.Parallel()
+
+	if IsActive(context.Background()) {
+		t.Error("IsActive(Background) = true, want false")
+	}
+	//nolint:staticcheck // SA1012: a nil context is exactly what this checks.
+	if IsActive(nil) {
+		t.Error("IsActive(nil) = true, want false")
+	}
+
+	runner, err := New(func(context.Context, Options) (*fakeTx, error) {
+		return &fakeTx{}, nil
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var insideCallback bool
+	if err := runner.Within(context.Background(), Options{}, func(ctx context.Context, _ *fakeTx) error {
+		insideCallback = IsActive(ctx)
+		// The parent context is not inside the transaction; only the one
+		// the callback was handed is. A caller that propagated the wrong
+		// one would defeat every check built on this.
+		if IsActive(context.Background()) {
+			t.Error("IsActive reports true for a context the callback did not derive from")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Within: %v", err)
+	}
+	if !insideCallback {
+		t.Error("IsActive = false inside a Within callback")
+	}
+}

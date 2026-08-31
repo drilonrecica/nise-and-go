@@ -1,0 +1,198 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package jobs
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+)
+
+// These tests are the reason the queue is this application's own database.
+// Nothing about transactional enqueue can be proved without a real one: the
+// whole claim is about what another connection can see after a COMMIT and
+// after a ROLLBACK, which is a property of PostgreSQL and not of any code
+// here. They use the same isolated-database harness as every other
+// PostgreSQL-backed suite; without TEST_DATABASE_URL they skip locally and
+// fail under CI.
+
+const jobsTestTimeout = 30 * time.Second
+
+// receiptArgs is a job kind these tests enqueue. Its Kind is a literal, so
+// renaming the Go type cannot orphan jobs already in the queue.
+type receiptArgs struct {
+	InvoiceID string `json:"invoice_id"`
+}
+
+func (receiptArgs) Kind() string { return "test_receipt" }
+
+type receiptWorker struct {
+	river.WorkerDefaults[receiptArgs]
+}
+
+func (receiptWorker) Work(context.Context, *river.Job[receiptArgs]) error { return nil }
+
+// jobsHarness is one migrated, isolated database with a job client over it.
+// The client is never started: these tests are about what reaches the queue,
+// not about what runs, and a running worker would consume the rows they
+// count.
+type jobsHarness struct {
+	ctx        context.Context
+	pool       *pgxpool.Pool
+	client     *Client
+	transactor *database.Transactor
+}
+
+func newJobsHarness(t *testing.T) *jobsHarness {
+	t.Helper()
+
+	testDatabase := dbtest.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), jobsTestTimeout)
+	t.Cleanup(cancel)
+
+	settings, err := database.NewSettings(6, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	databaseURL := testDatabase.URL().Reveal()
+	databasePassword := testDatabase.Password().Reveal()
+	pool, err := database.Open(ctx, databaseURL, databasePassword, settings, database.OpenOptions{})
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	migrator, err := database.OpenMigrator(ctx, databaseURL, databasePassword, 5*time.Second, migrationdb.Migrations())
+	if err != nil {
+		t.Fatalf("OpenMigrator: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := migrator.Close(); err != nil {
+			t.Errorf("close migrator: %v", err)
+		}
+	})
+	if _, err := migrator.Up(ctx); err != nil {
+		t.Fatalf("migrate test database: %v", err)
+	}
+
+	transactor, err := database.NewTransactor(pool)
+	if err != nil {
+		t.Fatalf("NewTransactor: %v", err)
+	}
+
+	registry := NewRegistry()
+	Register(registry, &receiptWorker{})
+	jobSettings, err := NewSettings(1, time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	client, err := New(pool, registry, jobSettings, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	return &jobsHarness{ctx: ctx, pool: pool, client: client, transactor: transactor}
+}
+
+// queued counts rows in River's table directly, on a connection that is not
+// the one under test. Reading through River's own API would prove only that
+// River agrees with itself.
+func (h *jobsHarness) queued(t *testing.T, kind string) int64 {
+	t.Helper()
+
+	var total int64
+	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM river_job WHERE kind = $1`, kind).Scan(&total); err != nil {
+		t.Fatalf("counting queued jobs: %v", err)
+	}
+	return total
+}
+
+// TestACommittedTransactionPublishesItsJob is the guarantee in the direction
+// that is easy to believe and still has to be checked: the job is there
+// afterwards, and it was not there during.
+func TestACommittedTransactionPublishesItsJob(t *testing.T) {
+	h := newJobsHarness(t)
+
+	err := h.transactor.Within(h.ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		if err := h.client.InsertTx(ctx, tx, receiptArgs{InvoiceID: "inv-1"}, nil); err != nil {
+			return err
+		}
+		// Another connection cannot see an uncommitted row. If it could,
+		// a worker could start the job for a change that had not happened.
+		if got := h.queued(t, "test_receipt"); got != 0 {
+			t.Errorf("a job enqueued inside an open transaction is already visible to another connection: count = %d", got)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Within: %v", err)
+	}
+
+	if got := h.queued(t, "test_receipt"); got != 1 {
+		t.Fatalf("after commit: queued %d jobs, want 1", got)
+	}
+}
+
+// TestARolledBackTransactionTakesItsJobWithIt is the direction that actually
+// costs money when it is wrong: an email sent for an order that was never
+// placed, a receipt for a payment that failed.
+func TestARolledBackTransactionTakesItsJobWithIt(t *testing.T) {
+	h := newJobsHarness(t)
+
+	sentinel := errors.New("the business change failed")
+	err := h.transactor.Within(h.ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		if err := h.client.InsertTx(ctx, tx, receiptArgs{InvoiceID: "inv-2"}, nil); err != nil {
+			return err
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Within = %v, want the work error", err)
+	}
+
+	if got := h.queued(t, "test_receipt"); got != 0 {
+		t.Fatalf("after rollback: queued %d jobs, want 0 — the job outlived the change that needed it", got)
+	}
+}
+
+// TestInsertOutsideATransactionIsImmediatelyVisible pins the other half of
+// the contract, so that the refusal below reads as a rule about where Insert
+// may be called rather than a suggestion that it does not work.
+func TestInsertOutsideATransactionIsImmediatelyVisible(t *testing.T) {
+	h := newJobsHarness(t)
+
+	if err := h.client.Insert(h.ctx, receiptArgs{InvoiceID: "inv-3"}, nil); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if got := h.queued(t, "test_receipt"); got != 1 {
+		t.Fatalf("after Insert: queued %d jobs, want 1", got)
+	}
+}
+
+// TestInsertIsRefusedInsideATransaction proves the refusal reaches the
+// database as well as the caller: nothing is written, so the mistake cannot
+// half-happen.
+func TestInsertIsRefusedInsideATransaction(t *testing.T) {
+	h := newJobsHarness(t)
+
+	err := h.transactor.Within(h.ctx, transaction.Options{}, func(ctx context.Context, _ pgx.Tx) error {
+		return h.client.Insert(ctx, receiptArgs{InvoiceID: "inv-4"}, nil)
+	})
+	if !errors.Is(err, ErrInsertInsideTransaction) {
+		t.Fatalf("Within = %v, want ErrInsertInsideTransaction", err)
+	}
+	if got := h.queued(t, "test_receipt"); got != 0 {
+		t.Fatalf("the refused Insert still wrote %d rows", got)
+	}
+}

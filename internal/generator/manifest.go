@@ -341,6 +341,7 @@ var templateFiles = []templateFile{
 	{Template: "internal/platform/idempotency/idempotency.go.tmpl", Output: "internal/platform/idempotency/idempotency.go", Owner: OwnerApp},
 	{Template: "internal/platform/idempotency/idempotency_test.go.tmpl", Output: "internal/platform/idempotency/idempotency_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/jobs/jobs.go.tmpl", Output: "internal/platform/jobs/jobs.go", Owner: OwnerApp},
+	{Template: "internal/platform/jobs/jobs_postgres_test.go.tmpl", Output: "internal/platform/jobs/jobs_postgres_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/jobs/jobs_test.go.tmpl", Output: "internal/platform/jobs/jobs_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/passwords/passwords.go.tmpl", Output: "internal/platform/passwords/passwords.go", Owner: OwnerApp},
 	{Template: "internal/platform/reauth/matrix.go.tmpl", Output: "internal/platform/reauth/matrix.go", Owner: OwnerApp},

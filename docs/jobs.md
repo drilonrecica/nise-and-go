@@ -43,11 +43,47 @@ The job row is written by the same transaction as the business change, so it
 becomes visible if and only if that change committed. A rollback takes the job
 with it; there is no window in which one exists without the other.
 
-`Client.Insert` enqueues outside a transaction. Prefer `InsertTx` whenever the
-job exists *because of* a change the application is making: an `Insert` beside
-a separate write is two operations that can disagree, in both directions — a
-job enqueued for a change that then failed, and a change that committed with
-no job to follow it up.
+`Client.Insert` enqueues outside a transaction — and **refuses to be called
+from inside one**:
+
+```
+jobs: Insert was called inside a transaction; use InsertTx with that
+transaction so the job commits with the change that needs it (kind
+"send_receipt")
+```
+
+The refusal is the point. An `Insert` made while a transaction is open is two
+operations that can disagree, in both directions: the job is enqueued and the
+change then fails, or the change commits and the job was never written.
+Neither shows up in review, both are intermittent in production, and both have
+the same one-word fix. So rather than document the hazard and hope, the client
+refuses, names the alternative, and refuses before writing anything.
+
+It knows from the context. `runtime/transaction` marks the context it hands
+its callback, and a use case is required to propagate that context anyway;
+`transaction.IsActive` is the read-only predicate built on it. The transaction
+itself is never fished out of the context — it is a parameter, so a reader can
+see at the call site which transaction a job joined.
+
+A caller that has genuinely decided a job must be enqueued whether or not the
+surrounding change commits calls `Insert` after `Within` returns, which is
+also where a reader would look for that decision.
+
+## Depend on the narrow interface
+
+A use case needs to put work on the queue. It does not need to start the
+client, stop it, or ask what kinds exist, and taking `*jobs.Client` as a
+parameter would let it do all three.
+
+```go
+type Enqueuer interface {
+    Insert(ctx context.Context, args river.JobArgs, opts *river.InsertOpts) error
+    InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) error
+}
+```
+
+`*jobs.Client` satisfies it, and a test satisfies it with a recorder in four
+lines.
 
 ## Declaring a job
 
@@ -85,6 +121,24 @@ discovery step. A job runs because a line of ordinary code says so, and the
 kinds a process knows about are printed in its startup log so that "the job
 never ran" and "this deployment does not know about that job" are
 distinguishable without a database query.
+
+## What is actually proved
+
+`internal/platform/jobs/jobs_postgres_test.go` runs against a real, isolated
+PostgreSQL database, because nothing here can be proved without one — the
+claim is about what a second connection sees after `COMMIT` and after
+`ROLLBACK`, which is a property of PostgreSQL rather than of any code in this
+project. It pins four things:
+
+- A job enqueued inside an open transaction is **not** visible to another
+  connection until that transaction commits.
+- After the commit, it is.
+- After a rollback, it never existed.
+- `Insert` inside a transaction is refused, and writes nothing.
+
+The counts are read straight out of `river_job` on a separate connection.
+Reading them back through River's own API would prove only that River agrees
+with itself.
 
 ## Every job must be safe to run twice
 
