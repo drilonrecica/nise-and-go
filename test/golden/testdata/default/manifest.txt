@@ -38,9 +38,13 @@ deploy/Dockerfile file 0644 396d7a7bcbeb0685aedaf5abf1ae93d00f16a8a8d9e7fb9ac410
 deploy/README.md file 0644 8040eed460f74fbece44b0f5bf1080bf1d821f99d6a7119947028ddb396c2f37
 deploy/compose.yaml file 0644 a993cfffeb42db237179c3663f8e22e574580ef0c7ab74a008664b961c332933
 frontend dir 0755
-frontend/.gitignore file 0644 2dd21d60d8b83062584d4be22e8b314de402773497ce0041fccdd6968fbc34aa
+frontend/.gitignore file 0644 eb010afc393f40f48ed0ae314791412f77516e00fb4dae5182966ed770030b04
 frontend/README.md file 0644 77dae261d467ec50d4f68a39d1ecc30c02c35837bb26628096985db3236fbadc
-frontend/package.json file 0644 24a9bbb1cafbb2dc6da96c7065296151c047e765bcaa74a773161c0279aab298
+frontend/messages dir 0755
+frontend/messages/en.json file 0644 6b33bd279db3620e1adbe5e0c91d06930f7b5b1fd2988b27709abbac959aebcc
+frontend/package.json file 0644 3fb40e540eb341b382a900ec8755a3cddf1c877f8a93e8d32b5c1355653a7182
+frontend/project.inlang dir 0755
+frontend/project.inlang/settings.json file 0644 712baf12bc3c5ddb04cd1bb15208ed6bdc68851567d937fb3d9012fbd9cce6c1
 frontend/scripts dir 0755
 frontend/scripts/check-contrast.mjs file 0644 c918f83e166cf2f7f68b13619f7f0b2a29068d5717097d8a8ec2a4f4e2c3a714
 frontend/scripts/check-runes.mjs file 0644 f95e911aebdf9dea61b46f1546f902dec5be6f800a70fe539bab17c3a4b47db8
@@ -56,7 +60,8 @@ frontend/src/lib/api/problem.test.ts file 0644 10d98186a29ac2fc7f3a1f73470557296
 frontend/src/lib/api/problem.ts file 0644 1128ddfe426bf87e0d120851cc0bff3374ac9899878722634ec8569030965d7c
 frontend/src/lib/api/schema.d.ts file 0644 5102ff4af5e9046506352bd593e780f7c953ef2f87870c2677480e8f5249717d
 frontend/src/lib/components dir 0755
-frontend/src/lib/components/ThemeControl.svelte file 0644 8360f3ca2b33ccbd2ef80cdb0639eb07fa1a1ab82581dcddcb999d1dd0d1f66b
+frontend/src/lib/components/LocaleControl.svelte file 0644 ab43b85f47d02188eb4b024dbb5b6ab11e8042fa8d8880e24c13597ef1fa249d
+frontend/src/lib/components/ThemeControl.svelte file 0644 581de32d5dbb8f9f96159fed91536b8838c56c3603434d3d9cd73b834633b452
 frontend/src/lib/components/shell dir 0755
 frontend/src/lib/components/shell/AccountMenu.svelte file 0644 2efc8747bff455bb784624d1f46d1d5fbe6598fcd02322ace8a8a33f3c6c5f7c
 frontend/src/lib/components/shell/AppShell.svelte file 0644 6bb78ea6a24c03614aea37eea2c82bfe0c8e48f0a45c5ed54e6fb01638dad32c
@@ -64,7 +69,7 @@ frontend/src/lib/components/shell/Breadcrumbs.svelte file 0644 00022a11aefb67ebc
 frontend/src/lib/components/shell/NavDrawer.svelte file 0644 3cf371590ea1388aa3b4b693310fbed008b3a6fc22da324684ab8f965d58cf95
 frontend/src/lib/components/shell/Sidebar.svelte file 0644 247b9a230194fc3103cd0b9534e2fe9190025d065ee528b9b9da95fee3f0d1f5
 frontend/src/lib/components/shell/SidebarNav.svelte file 0644 5e08c60c3e7b0730c840e7b6d357e7c077ae23ee9d9231e1c36729dac6b0cc0a
-frontend/src/lib/components/shell/TopBar.svelte file 0644 94384db1eb6181f7755393e6272d367fb4bc999f7f272210a7762a72d9ef56aa
+frontend/src/lib/components/shell/TopBar.svelte file 0644 08d4242f8a5a31e51cb314fbab420c1e537ea2b8f2cfeaab2946072811c6730a
 frontend/src/lib/components/ui dir 0755
 frontend/src/lib/components/ui/Alert.svelte file 0644 ceaed7dbd52d958a7fee377aec7fbdc1705c35292e54589e89a78af110e43009
 frontend/src/lib/components/ui/Badge.svelte file 0644 caf321871713a71af14435c45df43e2ae2c1a960c338158505df795c7f50ad61
@@ -91,6 +96,7 @@ frontend/src/lib/components/ui/toast.svelte.ts file 0644 15897dca12363f4b9d2f4ce
 frontend/src/lib/components/ui/toast.test.ts file 0644 ba724dfd6210ff64456d2b3ac9fe5081f8b35d395d9c78969fc7cb6b28976bc8
 frontend/src/lib/forms.svelte.ts file 0644 55b2795d063a7f51f054c4df4bb737e868f47fe689de111f0a781cad2d2aa739
 frontend/src/lib/forms.test.ts file 0644 799e32c8d45fa056c986a2ef0e97247f3aad66b9c8d4f8c0496965de46a81687
+frontend/src/lib/i18n.ts file 0644 dbca5ceb57ed5d1e909b2e703b3d0dc0575d92af807400808baa95df9dd00efb
 frontend/src/lib/navigation.test.ts file 0644 aa0aefb81d4bb2b73dc1c552b7461e14f7bd605c6590a8435994677cfeac5eb8
 frontend/src/lib/navigation.ts file 0644 6217362979c28c8b5e08003dba80883da036a063489676452ea39f28e5659f56
 frontend/src/lib/session.svelte.ts file 0644 48d620ecb7d2f579e6c08a92fa364953de85b8be10cf214b4d78b095255b8fb9
@@ -113,7 +119,7 @@ frontend/src/routes/(app)/settings/+page.svelte file 0644 239330df3d0d706cd7c41e
 frontend/src/routes/(app)/sign-out dir 0755
 frontend/src/routes/(app)/sign-out/+page.svelte file 0644 8063cdebb7876d73a9810f71b4f624aeafdbb4da20414a5ed0fb5df7c0aee7e7
 frontend/src/routes/(public) dir 0755
-frontend/src/routes/(public)/+layout.svelte file 0644 48496d0b8eb8d0e8c28f2379b4af509b41139edfa96777d0710b0783e4201ef8
+frontend/src/routes/(public)/+layout.svelte file 0644 100ad4d9188dd2eeefe0d56ae4e4fc2cb040bc5a2038a5c6322341fbd46324aa
 frontend/src/routes/(public)/invitations dir 0755
 frontend/src/routes/(public)/invitations/accept dir 0755
 frontend/src/routes/(public)/invitations/accept/+page.svelte file 0644 4921e7afbf0628bbdecb6cb3ccd7491b58260037524ec4634b5e54648c4dbc6d
@@ -127,7 +133,7 @@ frontend/static dir 0755
 frontend/static/favicon.svg file 0644 eb78958ea23231a46ef84123653ecbeb7eda847b779fa4e72981933e1e7a5285
 frontend/svelte.config.js file 0644 d290c5b3e673ab33a1b79e093db8acd30dac7cc3b56c90bd5452f1da0e2d3af1
 frontend/tsconfig.json file 0644 d8a3f998af73617b07026a41adfbf33f7004647bc4a6759c00d7cc8b06c29e2a
-frontend/vite.config.ts file 0644 57a86e48dcebe27e59bcfe9d7336f5329b32df27390426ef77826c3c65c4d69d
+frontend/vite.config.ts file 0644 fa607392dd5733209992684aef317e8bff614bcd3bf18ab8513b80e6fc1e158a
 frontend/vitest.config.ts file 0644 a4746c6c2e536dacf48fa3e3bdb390cdf76d60d1fd2a003224b0474d1c78af5e
 go.mod file 0644 b79a68cf369fcca7aef313df1c98499bb2b1568207193aeef6dd31aefb440ede
 internal dir 0755

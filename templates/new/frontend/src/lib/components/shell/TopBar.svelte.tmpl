@@ -3,6 +3,7 @@
 	import AccountMenu from '$lib/components/shell/AccountMenu.svelte';
 	import Breadcrumbs from '$lib/components/shell/Breadcrumbs.svelte';
 	import Icon from '$lib/components/ui/Icon.svelte';
+	import LocaleControl from '$lib/components/LocaleControl.svelte';
 	import ThemeControl from '$lib/components/ThemeControl.svelte';
 	import { shell } from '$lib/shell.svelte';
 
@@ -25,6 +26,7 @@
 	<Breadcrumbs />
 
 	<div class="ms-auto flex items-center gap-2">
+		<LocaleControl />
 		<ThemeControl />
 		<AccountMenu {account} />
 	</div>

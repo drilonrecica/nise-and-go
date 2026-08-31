@@ -223,3 +223,50 @@ func TestGeneratedListStateLivesInTheURL(t *testing.T) {
 		}
 	}
 }
+
+// TestGeneratedInternationalization pins the compile-time i18n contract (Nise
+// task M6-011): messages compile, the compiled output is never committed, and
+// no locale reaches the URL.
+func TestGeneratedInternationalization(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, defaultOptions())
+
+	for _, path := range []string{
+		"frontend/project.inlang/settings.json",
+		"frontend/messages/en.json",
+		"frontend/src/lib/i18n.ts",
+		"frontend/src/lib/components/LocaleControl.svelte",
+	} {
+		if _, exists := content[path]; !exists {
+			t.Errorf("generated project lacks %s", path)
+		}
+	}
+
+	// The compiled directory is generated output. Committing it would make a
+	// message change a two-file change, and the second file the one nobody
+	// regenerates.
+	if !strings.Contains(content["frontend/.gitignore"], "src/lib/paraglide/") {
+		t.Error("frontend/.gitignore does not ignore the compiled messages")
+	}
+
+	pkg := content["frontend/package.json"]
+	for _, fragment := range []string{
+		`"messages:compile": "paraglide-js compile`,
+		"pnpm run messages:compile &&",
+	} {
+		if !strings.Contains(pkg, fragment) {
+			t.Errorf("frontend/package.json lacks %q", fragment)
+		}
+	}
+
+	// No locale segment in the URL: one application, one path, and a route
+	// that does not exist once per language.
+	vite := content["frontend/vite.config.ts"]
+	if !strings.Contains(vite, "strategy: ['localStorage', 'preferredLanguage', 'baseLocale']") {
+		t.Error("vite.config.ts does not pin the non-URL locale strategy")
+	}
+	if strings.Contains(vite, "'url'") {
+		t.Error("vite.config.ts enables the URL locale strategy")
+	}
+}

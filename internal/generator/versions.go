@@ -98,6 +98,11 @@ const (
 	// ships in the bundle rather than only building it.
 	ValibotVersion = "1.1.0"
 
+	// ParaglideVersion pins the compile-time internationalization toolchain.
+	// It is a build tool, not a bundled package: messages compile to modules,
+	// so what ships is the messages the application actually imports.
+	ParaglideVersion = "2.25.0"
+
 	// TableCoreVersion pins the framework-agnostic table primitive the
 	// generated DataTable wraps. It is the 8.x line rather than the newer
 	// 9.x: 9's core delegates reactivity to a per-framework adapter feature,
@@ -141,6 +146,7 @@ var frontendDependencies = []Dependency{
 	{Name: "@sveltejs/kit", Version: "2.70.3"},
 	{Name: "@sveltejs/vite-plugin-svelte", Version: "7.3.0"},
 	{Name: "@tailwindcss/vite", Version: "4.3.3"},
+	{Name: "@inlang/paraglide-js", Version: ParaglideVersion},
 	{Name: "openapi-typescript", Version: OpenAPITypescriptVersion},
 	{Name: "svelte", Version: "5.56.10"},
 	{Name: "svelte-check", Version: "4.7.6"},
