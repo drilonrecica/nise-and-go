@@ -222,8 +222,7 @@ func TestGeneratedProjectCarriesTheSessionCookie(t *testing.T) {
 			"auth.NewSessions(transactor, cfg.SessionLifetime)",
 			"httpauth.NewCookies(cfg.SessionCookie)",
 			"httpauth.NewResolver(sessions, sessionCookies)",
-			"API:      []httpapi.Middleware{sessionResolver.Middleware}",
-			"Document: []httpapi.Middleware{sessionResolver.Middleware}",
+			"sessionResolver.Middleware",
 		},
 		".env.example": {
 			"SESSION_IDLE_TIMEOUT=12h",

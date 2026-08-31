@@ -167,11 +167,63 @@ The refusal reason is logged, never the credential. An error may implement
 `auth.InactiveError` reports `revoked`, `expired`, or `idle` without this
 package importing the feature.
 
+## Anti-forgery
+
+State-changing requests pass three checks, and all of them must pass. They are
+layered because each fails differently:
+
+1. **Fetch Metadata.** A browser sets `Sec-Fetch-Site` and a page cannot change
+   it, so this is the one check an attacker cannot satisfy from another site at
+   all. `same-site` is refused along with `cross-site`: a sibling subdomain is a
+   different security boundary, which is exactly why the session cookie carries
+   `__Host-`. An absent header is not a refusal — a non-browser client does not
+   set one — and the remaining checks still apply.
+2. **Origin.** With no explicit list, the comparison is against the
+   application's own resolved origin. A browser making a cross-site request
+   sends the attacker's `Origin` and this application's `Host`, so the two
+   disagree. `Referer` is a fallback for a browser that stripped `Origin`, and
+   only its origin is read. Neither present is a refusal: a browser sends
+   `Origin` on every state-changing request.
+3. **The session-bound token.** When the request carries a session, an
+   `X-CSRF-Token` header must carry the token bound to *that* session.
+
+The token is derived, not stored:
+
+```
+token = base64url(HMAC-SHA256(key = session token, "nise-csrf-v1"))
+```
+
+Using the session token as the key means there is no server-side key to
+configure, no column to migrate, and no separate lifetime: the token changes
+exactly when the session does, and one session's token cannot verify against
+another. The derivation is one-way, so handing the value to the browser reveals
+nothing about the credential.
+
+It is delivered in `__Host-session_csrf`, which shares every attribute of the
+session cookie **except** `HttpOnly` — the application's own script has to read
+it to echo it in a header, and that is the entire mechanism. Handing it to
+script costs nothing an attacker does not already have after cross-site
+scripting, and buys the property that matters: a form posted from another origin
+cannot set a request header.
+
+The resolver keeps the pair in step. A browser missing the anti-forgery cookie,
+or holding one from a session that has since rotated, gets the current value
+back on its next resolved request rather than having to sign in again; a
+credential that fails to resolve has both cookies cleared together.
+
+**Unauthenticated state changes are still protected.** Logging in is the case
+login CSRF targets, and there is no session to bind a token to; Origin and Fetch
+Metadata carry it.
+
+Every refusal is one public code — `403 cross_site_request` on the API surface —
+because which of a caller's guesses was structurally valid is not something to
+tell them. Which check failed is in the server's log.
+
 ## Not yet here
 
-CSRF, login, and enrollment are the tasks that follow. Resolving a session says
-who is asking; nothing here decides what they may do, and there is no login
-endpoint to obtain a session from yet.
+Login and enrollment are the tasks that follow. Resolving a session says who is
+asking; nothing here decides what they may do, and there is no login endpoint to
+obtain a session from yet.
 
 ## Related
 

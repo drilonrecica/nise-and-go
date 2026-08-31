@@ -81,9 +81,19 @@ func (s *Resolver) Middleware(next http.Handler) http.Handler {
 		record, err := s.authenticator.Authenticate(r.Context(), presented)
 		if err != nil {
 			s.cookies.Clear(w)
+			// The anti-forgery cookie is cleared with it, so a browser is
+			// never left holding one half of the pair.
+			s.cookies.ClearCSRFCookie(w)
 			logResolution(r, err)
 			next.ServeHTTP(w, r)
 			return
+		}
+		// Keep the anti-forgery cookie in step with the session it is bound
+		// to. A browser that dropped it, or kept one from a session that has
+		// since rotated, gets the current value back rather than having to
+		// sign in again to obtain it.
+		if token, err := session.Parse(presented); err == nil {
+			s.cookies.EnsureCSRFCookie(w, r, token, record.ExpiresAt, s.now())
 		}
 		next.ServeHTTP(w, r.WithContext(WithSession(r.Context(), record)))
 	})

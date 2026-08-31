@@ -241,6 +241,12 @@ See [sessions](sessions.md) for the cookie and lifecycle contracts.
 | `SESSION_TOUCH_INTERVAL` | `5m` | greater than zero and at most half the idle timeout |
 | `SESSION_COOKIE_NAME` | *(the policy default)* | must match the transport: `__Host-`-prefixed when Secure, unprefixed when not |
 | `SESSION_COOKIE_INSECURE` | `false` | must be false in production |
+| `ALLOWED_ORIGINS` | *(this application's own origin)* | comma-separated absolute `scheme://host` values, no path |
+
+`ALLOWED_ORIGINS` empty is not "allow anything": state-changing requests are
+compared against the application's own resolved origin, which is what a
+single-origin application wants. Set it only when a genuinely different origin
+must be able to post here.
 
 `SESSION_COOKIE_INSECURE` drops the `__Host-` prefix and the `Secure` attribute
 together and warns at startup. It exists for a development origin that is not

@@ -1,0 +1,198 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpauth
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"slices"
+	"strings"
+
+	"github.com/drilonrecica/nise-and-go/runtime/forwarded"
+)
+
+// Fetch Metadata headers. A browser sets them; anything else does not, which
+// is the distinction the checks below are built on.
+const (
+	// HeaderFetchSite reports the relationship between the initiator's origin
+	// and the target's.
+	HeaderFetchSite = "Sec-Fetch-Site"
+	// HeaderFetchMode reports what kind of request it is.
+	HeaderFetchMode = "Sec-Fetch-Mode"
+	// HeaderOrigin is the initiator's origin.
+	HeaderOrigin = "Origin"
+	// HeaderReferer is the fallback when Origin is absent.
+	HeaderReferer = "Referer"
+)
+
+// MaxOriginBytes bounds an accepted origin value.
+const MaxOriginBytes = 255
+
+// Reasons a state-changing request is refused. They are values rather than
+// free text so a log line, a metric label, and a test all name the same thing.
+const (
+	// ReasonCrossSite means Fetch Metadata reported the request came from
+	// another site.
+	ReasonCrossSite = "cross_site"
+	// ReasonOriginMissing means neither Origin nor a usable Referer arrived.
+	ReasonOriginMissing = "origin_missing"
+	// ReasonOriginMismatch means the origin is not one this application
+	// accepts.
+	ReasonOriginMismatch = "origin_mismatch"
+	// ReasonTokenMissing means an authenticated request carried no
+	// anti-forgery token.
+	ReasonTokenMissing = "csrf_token_missing"
+	// ReasonTokenMismatch means the token did not belong to this session.
+	ReasonTokenMismatch = "csrf_token_mismatch"
+)
+
+// ErrOrigins reports an unusable allowed-origin list.
+var ErrOrigins = errors.New("allowed origins are not usable")
+
+// OriginPolicy is the set of origins permitted to make state-changing requests.
+//
+// An empty list is not "allow anything": it means the application's own origin,
+// derived per request from the resolved scheme and host. That is the right
+// default for a single-origin application, and it is why this is safe to leave
+// unset.
+type OriginPolicy struct {
+	allowed []string
+}
+
+// NewOriginPolicy validates an explicit allowed-origin list. Each entry is an
+// absolute origin — scheme and host, with no path, query, or trailing slash —
+// because comparing anything else against a browser's Origin header would be
+// comparing two different things.
+func NewOriginPolicy(origins []string) (OriginPolicy, error) {
+	normalized := make([]string, 0, len(origins))
+	for i, origin := range origins {
+		value, err := normalizeOrigin(strings.TrimSpace(origin))
+		if err != nil {
+			return OriginPolicy{}, fmt.Errorf("%w: entry %d: %v", ErrOrigins, i+1, err)
+		}
+		if slices.Contains(normalized, value) {
+			return OriginPolicy{}, fmt.Errorf("%w: entry %d (%s) is repeated", ErrOrigins, i+1, value)
+		}
+		normalized = append(normalized, value)
+	}
+	return OriginPolicy{allowed: normalized}, nil
+}
+
+// ParseOrigins reads a comma-separated list as configuration supplies it.
+func ParseOrigins(value string) ([]string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil, nil
+	}
+	return strings.Split(trimmed, ","), nil
+}
+
+// Allowed returns the explicitly permitted origins.
+func (p OriginPolicy) Allowed() []string { return slices.Clone(p.allowed) }
+
+// Permits reports whether origin may make a state-changing request to r.
+//
+// With no explicit list, the comparison is against the application's own
+// resolved origin. A browser making a cross-site request sends the attacker's
+// Origin and the target's Host, so the two disagree and the request is refused;
+// the same-origin case is the only one where they match.
+func (p OriginPolicy) Permits(r *http.Request, origin string) bool {
+	if len(p.allowed) > 0 {
+		return slices.Contains(p.allowed, origin)
+	}
+	own, err := normalizeOrigin(requestOrigin(r))
+	if err != nil {
+		return false
+	}
+	return origin == own
+}
+
+// requestOrigin builds this application's own origin for the request, using
+// the resolved edge view when the middleware supplied one.
+func requestOrigin(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	host := r.Host
+	if resolved, ok := forwarded.FromContext(r.Context()); ok {
+		scheme = resolved.Scheme
+		host = resolved.Host
+	}
+	return scheme + "://" + host
+}
+
+// normalizeOrigin reduces a value to the scheme://host form a browser sends,
+// refusing anything carrying more than that.
+func normalizeOrigin(value string) (string, error) {
+	if value == "" || len(value) > MaxOriginBytes {
+		return "", fmt.Errorf("%d bytes, want 1..%d", len(value), MaxOriginBytes)
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", errors.New("not a URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", errors.New("scheme is not http or https")
+	}
+	if parsed.Host == "" {
+		return "", errors.New("no host")
+	}
+	if parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return "", errors.New("carries more than a scheme and host")
+	}
+	return parsed.Scheme + "://" + parsed.Host, nil
+}
+
+// presentedOrigin returns the origin a request claims, preferring Origin and
+// falling back to Referer.
+//
+// Referer is a fallback, not an equal: it is stripped by referrer policies and
+// carries a full URL, so only its origin is read. A request with neither is
+// refused rather than allowed, because a browser sends Origin on every
+// state-changing request and something that does not is not the browser this
+// check exists for.
+func presentedOrigin(r *http.Request) (string, bool) {
+	if raw := r.Header.Get(HeaderOrigin); raw != "" && raw != "null" {
+		origin, err := normalizeOrigin(raw)
+		if err != nil {
+			return "", false
+		}
+		return origin, true
+	}
+	raw := r.Header.Get(HeaderReferer)
+	if raw == "" || len(raw) > MaxOriginBytes*4 {
+		return "", false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", false
+	}
+	origin, err := normalizeOrigin(parsed.Scheme + "://" + parsed.Host)
+	if err != nil {
+		return "", false
+	}
+	return origin, true
+}
+
+// fetchMetadataRefusal reports why Fetch Metadata rejects a state-changing
+// request, or the empty string when it does not.
+//
+// Absent headers are not a refusal on their own: a client that is not a browser
+// does not set them, and the Origin and token checks still apply. The value of
+// this check is that a browser cannot be made to lie about it.
+func fetchMetadataRefusal(r *http.Request) string {
+	switch strings.ToLower(r.Header.Get(HeaderFetchSite)) {
+	case "":
+		return ""
+	case "same-origin":
+		return ""
+	default:
+		// same-site and cross-site are both refused. A sibling subdomain is
+		// a different security boundary, and the __Host- cookie prefix is
+		// chosen for exactly that reason.
+		return ReasonCrossSite
+	}
+}

@@ -1,0 +1,167 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpauth
+
+import (
+	"errors"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/session"
+)
+
+// Guard refuses cross-site state-changing requests.
+//
+// Three checks run, and all of them must pass. They are layered because each
+// one fails differently: Fetch Metadata is unforgeable but only present on
+// modern browsers, the Origin check works everywhere a browser is involved but
+// depends on the header arriving, and the session-bound token is the one an
+// attacker cannot produce even if the first two are somehow satisfied.
+//
+// The zero value is unusable; construct one with NewGuard.
+type Guard struct {
+	origins OriginPolicy
+	cookies *Cookies
+	refuse  http.HandlerFunc
+}
+
+// NewGuard constructs the anti-forgery middleware.
+//
+// refuse writes the failure response. It is supplied rather than chosen here so
+// the API surface answers with its Problem Details and the document surface
+// answers with its own format, without this package knowing about either.
+func NewGuard(origins OriginPolicy, cookies *Cookies, refuse http.HandlerFunc) (*Guard, error) {
+	if cookies == nil {
+		return nil, errors.New("httpauth: a cookie boundary is required")
+	}
+	if refuse == nil {
+		return nil, errors.New("httpauth: a refusal handler is required")
+	}
+	return &Guard{origins: origins, cookies: cookies, refuse: refuse}, nil
+}
+
+// Middleware refuses a state-changing request that fails any check.
+//
+// Safe methods pass untouched: they must not change state, and a GET that does
+// is a defect the anti-forgery layer cannot fix. Everything else is checked,
+// including methods nobody anticipated, because the safe set is a closed list
+// rather than an exclusion of the four common verbs.
+//
+// The token check applies only when the request carries a session. An
+// unauthenticated state-changing request — logging in, most importantly — is
+// still protected: it is exactly the case login CSRF targets, and Origin and
+// Fetch Metadata carry it.
+func (g *Guard) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if session.SafeMethod(r.Method) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if reason := g.refusal(r); reason != "" {
+			logging.FromContext(r.Context()).Warn("state-changing request refused",
+				slog.String("reason", reason),
+				slog.String("method", r.Method))
+			g.refuse(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// refusal returns the reason to refuse r, or the empty string to allow it.
+func (g *Guard) refusal(r *http.Request) string {
+	if reason := fetchMetadataRefusal(r); reason != "" {
+		return reason
+	}
+	origin, ok := presentedOrigin(r)
+	if !ok {
+		return ReasonOriginMissing
+	}
+	if !g.origins.Permits(r, origin) {
+		return ReasonOriginMismatch
+	}
+
+	presented, ok := g.cookies.Read(r)
+	if !ok {
+		// No session credential: nothing to forge as. Origin and Fetch
+		// Metadata have already carried this request.
+		return ""
+	}
+	token, err := session.Parse(presented)
+	if err != nil {
+		// A malformed credential is not an authenticated request either.
+		// The resolver has already cleared it.
+		return ""
+	}
+	submitted := r.Header.Get(session.CSRFHeaderName)
+	if submitted == "" {
+		return ReasonTokenMissing
+	}
+	if !session.VerifyCSRF(token, submitted) {
+		return ReasonTokenMismatch
+	}
+	return ""
+}
+
+// WriteCSRFCookie delivers the anti-forgery token for a session.
+//
+// The cookie is deliberately not HttpOnly: the application's own script has to
+// read it to echo the value in a header, and that is the whole mechanism. It
+// keeps every other attribute of the session cookie, so a browser that will not
+// send one will not send the other.
+//
+// Handing the token to script costs nothing an attacker does not already have
+// after cross-site scripting, and buys the property that matters: a form posted
+// from another origin cannot set a request header.
+func (c *Cookies) WriteCSRFCookie(w http.ResponseWriter, token session.Token, expiresAt, now time.Time) {
+	remaining := int(expiresAt.Sub(now).Seconds())
+	if remaining < 1 {
+		c.ClearCSRFCookie(w)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     c.policy.CSRFName(),
+		Value:    session.CSRFToken(token),
+		Path:     "/",
+		MaxAge:   remaining,
+		HttpOnly: false,
+		Secure:   c.policy.Secure(),
+		SameSite: c.policy.SameSite(),
+	})
+}
+
+// EnsureCSRFCookie writes the anti-forgery cookie when the browser is not
+// already holding the right one, and reports whether it wrote.
+//
+// It runs on every resolved request so the pair cannot drift apart: a browser
+// that dropped one cookie, or kept one from a session that has since rotated,
+// gets the current value back without the user having to sign in again.
+// Rewriting it unconditionally would put a Set-Cookie on every authenticated
+// response, which is a header on every page for no benefit.
+func (c *Cookies) EnsureCSRFCookie(w http.ResponseWriter, r *http.Request, token session.Token, expiresAt, now time.Time) bool {
+	expected := session.CSRFToken(token)
+	if expected == "" {
+		return false
+	}
+	if cookie, err := r.Cookie(c.policy.CSRFName()); err == nil && cookie.Value == expected {
+		return false
+	}
+	c.WriteCSRFCookie(w, token, expiresAt, now)
+	return true
+}
+
+// ClearCSRFCookie removes the anti-forgery cookie. It runs wherever the session
+// cookie is cleared, so a browser is never left holding one half of the pair.
+func (c *Cookies) ClearCSRFCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     c.policy.CSRFName(),
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: false,
+		Secure:   c.policy.Secure(),
+		SameSite: c.policy.SameSite(),
+	})
+}

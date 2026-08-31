@@ -69,11 +69,6 @@ var httpsHostAllowlist = map[string]string{
 	"no-color.org":  "doc comment citing the NO_COLOR informal standard",
 	"prometheus.io": "doc comment citing the Prometheus exposition format spec",
 
-	// A canonical placeholder host used in error messages and doc comments
-	// to show the *shape* a value must take (e.g. a Permissions-Policy
-	// allowlist origin) — never a real destination.
-	"example.com": "placeholder origin shown in CSP/Permissions-Policy error messages and doc comments, not a real destination",
-
 	// Hosts that appear only inside templates/ — copied verbatim into
 	// every generated application, never fetched by nise itself.
 	"svelte.dev": "a doc-comment link in the generated app.d.ts, pointing a reader at SvelteKit's own type docs",
@@ -87,6 +82,50 @@ var httpsHostAllowlist = map[string]string{
 // reader could be misled by, and this test's job is to make every one of
 // them a deliberate, allowlisted decision).
 var httpsHostPattern = regexp.MustCompile(`https?://([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)`)
+
+// reservedTLDs are the top-level domains IANA guarantees will never be
+// delegated: RFC 2606 reserves .test, .example, .invalid, and .localhost
+// exactly so that documentation, examples, and test fixtures have names that
+// cannot resolve, and RFC 6761 gives them special-use status.
+//
+// A name under one of them is not a network destination and cannot become one,
+// so it needs no per-host allowlist entry. Listing them individually would mean
+// a growing list of fixture hostnames whose entries all say the same thing,
+// which makes the real entries — the ones naming a host that does resolve —
+// harder to see.
+var reservedTLDs = map[string]bool{
+	"test":      true,
+	"example":   true,
+	"invalid":   true,
+	"localhost": true,
+}
+
+// reservedSecondLevel are the second-level names RFC 2606 reserves for the
+// same purpose.
+var reservedSecondLevel = map[string]bool{
+	"example.com": true,
+	"example.net": true,
+	"example.org": true,
+}
+
+// isReservedDocumentationHost reports whether host is one IANA guarantees can
+// never resolve.
+//
+// The suffix comparisons are anchored on a dot, deliberately: a bare
+// strings.HasSuffix(host, "example") would let "not-an-example" through, and
+// "example.com.evil-telemetry.net" must be reported like any other real host.
+func isReservedDocumentationHost(host string) bool {
+	if reservedSecondLevel[host] || reservedTLDs[host] {
+		return true
+	}
+	for name := range reservedSecondLevel {
+		if strings.HasSuffix(host, "."+name) {
+			return true
+		}
+	}
+	labels := strings.Split(host, ".")
+	return len(labels) > 1 && reservedTLDs[labels[len(labels)-1]]
+}
 
 // loopbackHosts never need an allowlist entry: they are not network
 // destinations outside this process, they are the localhost addresses
@@ -147,7 +186,7 @@ func TestNoTelemetryMarkers(t *testing.T) {
 			}
 			for _, m := range httpsHostPattern.FindAllStringSubmatch(line, -1) {
 				host := strings.ToLower(m[1])
-				if isLoopbackHost(host) {
+				if isLoopbackHost(host) || isReservedDocumentationHost(host) {
 					continue
 				}
 				if _, ok := httpsHostAllowlist[host]; ok {
@@ -252,4 +291,40 @@ func readLines(path string) ([]string, error) {
 		lines = append(lines, scanner.Text())
 	}
 	return lines, scanner.Err()
+}
+
+// TestReservedDocumentationHosts pins the anchoring the exemption depends on.
+// A suffix match that was not anchored on a dot would let a real host that
+// merely ends in a reserved name skip the allowlist entirely, which is the one
+// way this exemption could become a hole.
+func TestReservedDocumentationHosts(t *testing.T) {
+	t.Parallel()
+
+	reserved := []string{
+		"example.com", "example.net", "example.org",
+		"www.example.com", "app.example", "other.app.example",
+		"something.test", "host.invalid", "api.localhost",
+		"test", "example", "invalid", "localhost",
+	}
+	for _, host := range reserved {
+		if !isReservedDocumentationHost(host) {
+			t.Errorf("%q is not recognized as a reserved documentation host", host)
+		}
+	}
+
+	real := []string{
+		"example.com.evil-telemetry.net",
+		"notexample.com",
+		"examplecom",
+		"my-example",
+		"testing.io",
+		"localhost.evil.io",
+		"github.com",
+		"",
+	}
+	for _, host := range real {
+		if isReservedDocumentationHost(host) {
+			t.Errorf("%q was treated as a reserved documentation host", host)
+		}
+	}
 }
