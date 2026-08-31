@@ -93,6 +93,7 @@ var templateFiles = []templateFile{
 	{Template: "db/embed.gen.go.tmpl", Output: "db/embed.gen.go", Owner: OwnerNise},
 	{Template: "db/embed_test.go.tmpl", Output: "db/embed_test.go", Owner: OwnerApp},
 	{Template: "db/migrations/00001_baseline.sql.tmpl", Output: "db/migrations/00001_baseline.sql", Owner: OwnerApp},
+	{Template: "db/migrations/00002_idempotency_keys.sql.tmpl", Output: "db/migrations/00002_idempotency_keys.sql", Owner: OwnerApp},
 	{Template: "deploy/Dockerfile.tmpl", Output: "deploy/Dockerfile", Owner: OwnerApp},
 	{Template: "deploy/README.md.tmpl", Output: "deploy/README.md", Owner: OwnerApp},
 	{Template: "deploy/compose.yaml.tmpl", Output: "deploy/compose.yaml", Owner: OwnerApp},
@@ -149,6 +150,8 @@ var templateFiles = []templateFile{
 	{Template: "internal/platform/httpapi/problem/problem_test.go.tmpl", Output: "internal/platform/httpapi/problem/problem_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/router.go.tmpl", Output: "internal/platform/httpapi/router.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpapi/router_test.go.tmpl", Output: "internal/platform/httpapi/router_test.go", Owner: OwnerApp},
+	{Template: "internal/platform/idempotency/idempotency.go.tmpl", Output: "internal/platform/idempotency/idempotency.go", Owner: OwnerApp},
+	{Template: "internal/platform/idempotency/idempotency_test.go.tmpl", Output: "internal/platform/idempotency/idempotency_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/webui/embedded/placeholder.html.tmpl", Output: "internal/platform/webui/embedded/placeholder.html", Owner: OwnerNise},
 	{Template: "internal/platform/webui/webui.go.tmpl", Output: "internal/platform/webui/webui.go", Owner: OwnerNise},
 }

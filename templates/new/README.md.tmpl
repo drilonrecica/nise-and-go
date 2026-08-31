@@ -224,6 +224,15 @@ without it, and `CURSOR_RETIRED_KEYS` rotates it without breaking outstanding
 cursors. `runtime/pagination` owns the token; `api.go` owns the per-collection
 binding, page issuing, and `400` mapping.
 
+A command worth not repeating takes an `Idempotency-Key` header.
+`internal/platform/idempotency` writes its record in the same transaction as
+the command, so a rolled-back command leaves no claim and a visible record is
+always a completed one. A retry with the same key replays the recorded response
+byte-for-byte; a second attempt arriving while the first is still running is
+refused with `409` through a transaction-scoped advisory lock rather than held
+open; a key replayed with a different body is `422`. Retention defaults to 24
+hours and expired records are removed by a bounded sweep.
+
 Reports use a separate `page`/`size` contract returning `ReportPage` with
 `total` and `total_pages`. Offsets are computed in `int64`, page and size are
 refused rather than clamped, a page past the report's offset ceiling is

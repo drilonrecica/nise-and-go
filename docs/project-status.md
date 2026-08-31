@@ -22,8 +22,9 @@ closed extension set across generated and routing failures. Direct resources
 and explicit non-null `{items,page}` collections are defined and generated in
 both languages. Cursor pagination is authenticated, versioned, expiring, bound
 to its query, and rotatable, and offset reporting pagination is a separate
-overflow-safe page/size/total contract. Idempotency remains in progress; this
-is not yet a complete public API surface.
+overflow-safe page/size/total contract. Sensitive commands can record and replay a
+response under an idempotency key in the same transaction as the command. This
+is not yet a complete public API surface: it has no authentication boundary.
 
 V0.1 may implement and correct the documented foundation. It may not add another router, database, frontend framework, plugin system, AI integration, billing system, or deployment platform merely because it could be useful someday.
 

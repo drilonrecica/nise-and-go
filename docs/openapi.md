@@ -61,6 +61,18 @@ combining them is refused rather than resolved.
 Pagination failures across both contracts are `400` with the
 `invalid_pagination`, `cursor_expired`, or `report_too_deep` Problem code.
 
+## Idempotent commands
+
+A command worth not repeating declares the reusable `IdempotencyKey` header
+parameter. `internal/platform/idempotency` records the response in the same
+transaction as the command, so a rolled-back command leaves no claim, and
+replays it byte-for-byte on a retry with the same key. The three public
+refusals are `400 invalid_idempotency_key`, `409 idempotency_conflict` for a
+concurrent attempt, and `422 idempotency_key_reuse` for a key replayed with a
+different request; `idempotencyKey`, `idempotencyFingerprint`, and
+`idempotencyProblem` in `api.go` are the transport half. See
+[Idempotency for sensitive commands](idempotency.md).
+
 ## Files and ownership
 
 | Path | Owner | Purpose |
@@ -74,6 +86,8 @@ Pagination failures across both contracts are `400` with the
 | `internal/platform/httpapi/httpjson/json_test.go` | application | malformed, duplicate, unknown, and oversized-body contracts |
 | `internal/platform/httpapi/problem/problem.go` | application | validated RFC 9457 catalog and bounded writer |
 | `internal/platform/httpapi/problem/problem_test.go` | application | shape, escaping, identity, and cause-isolation contracts |
+| `internal/platform/idempotency/idempotency.go` | application | transaction-owned idempotent command executor and its store |
+| `internal/platform/idempotency/idempotency_test.go` | application | real-PostgreSQL execution, conflict, rollback, retry, and expiry contracts |
 | `frontend/src/lib/api/schema.d.ts` | Nise/tool | complete checked-in openapi-typescript output |
 | `frontend/src/lib/api/client.ts` | application | small typed fetch wrapper over the generated paths |
 | `frontend/src/lib/api/client.test.ts` | application | credentials, cancellation, typing, and error contracts |
@@ -176,7 +190,8 @@ a second wire struct. Required text and identity members are explicitly
 nonempty in both the schema and the Go definition validator.
 
 The application-owned `problem` package exposes validated catalog accessors
-for `400` (three distinct codes), `404`, `405`, `413`, `415`, and `500`. Built-in `type` identifiers
+for `400` (four distinct codes), `404`, `405`, `409`, `413`, `415`, `422`, and
+`500`. Built-in `type` identifiers
 are root-relative full paths under `/problems/`, titles and public details are
 stable, and HTTP/JSON statuses come from the same definition. Definitions
 bound every text field and restrict machine codes. `httpjson.WriteMediaType`

@@ -1,0 +1,30 @@
+-- Generated once by nise; owned by this application. Nise will not overwrite it.
+--
+-- One row per completed sensitive command. The row is written inside the same
+-- transaction as the command it records, so a rolled-back command leaves no
+-- claim behind and there is no half-finished state to reconcile: a visible row
+-- is always a completed one.
+
+-- +goose Up
+CREATE TABLE idempotency_keys (
+    scope               text        NOT NULL,
+    idempotency_key     text        NOT NULL,
+    request_fingerprint bytea       NOT NULL,
+    response_status     integer     NOT NULL,
+    response_body       bytea       NOT NULL,
+    created_at          timestamptz NOT NULL,
+    expires_at          timestamptz NOT NULL,
+    CONSTRAINT idempotency_keys_pkey PRIMARY KEY (scope, idempotency_key),
+    CONSTRAINT idempotency_keys_scope_length CHECK (char_length(scope) BETWEEN 1 AND 128),
+    CONSTRAINT idempotency_keys_key_length CHECK (char_length(idempotency_key) BETWEEN 1 AND 255),
+    CONSTRAINT idempotency_keys_fingerprint_length CHECK (octet_length(request_fingerprint) = 32),
+    CONSTRAINT idempotency_keys_response_body_length CHECK (octet_length(response_body) <= 1048576),
+    CONSTRAINT idempotency_keys_response_status CHECK (response_status BETWEEN 100 AND 599),
+    CONSTRAINT idempotency_keys_lifetime CHECK (expires_at > created_at)
+);
+
+-- Retention is swept by expiry, so that is the column the sweep orders by.
+CREATE INDEX idempotency_keys_expires_at_idx ON idempotency_keys (expires_at);
+
+-- +goose Down
+DROP TABLE idempotency_keys;

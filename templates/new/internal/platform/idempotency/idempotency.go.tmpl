@@ -1,0 +1,391 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package idempotency makes a sensitive command safe to retry.
+//
+// A client that never learns whether its request arrived — a timeout, a
+// dropped connection, a retrying proxy — has to choose between losing the
+// command and running it twice. An idempotency key removes that choice: the
+// second attempt returns the first attempt's recorded response instead of
+// charging the card again.
+//
+// The claim and the command share one transaction. That is the whole design:
+// a row is written only if the command commits, so a rolled-back command
+// leaves nothing to reconcile, and a visible row is always a completed one.
+// There is no in-progress state, no reaper for abandoned claims, and no window
+// in which a crash leaves a key permanently poisoned.
+//
+// Concurrency is resolved by a transaction-scoped advisory lock rather than by
+// waiting on a unique index. Two simultaneous attempts with the same key
+// therefore produce exactly one execution and one immediate refusal, instead
+// of one execution and one request blocked for as long as the first takes.
+package idempotency
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+const (
+	// HeaderName is the request header carrying the client's key.
+	HeaderName = "Idempotency-Key"
+	// MaxScopeBytes bounds the server-chosen command scope.
+	MaxScopeBytes = 128
+	// MaxKeyBytes bounds the client-supplied key.
+	MaxKeyBytes = 255
+	// MinKeyBytes is the shortest key worth accepting. A one-character key
+	// is not a key; it is a collision waiting for a second client.
+	MinKeyBytes = 8
+	// MaxResponseBytes bounds a recorded response body. It matches the
+	// transport response limit, because a body too large to send is also too
+	// large to replay.
+	MaxResponseBytes = 1 << 20
+	// FingerprintBytes is the length of a request fingerprint.
+	FingerprintBytes = sha256.Size
+	// DefaultRetention is how long a recorded response stays replayable.
+	DefaultRetention = 24 * time.Hour
+	// MaxRetention bounds retention. A key kept longer than this is holding
+	// a response body for a client that has long since given up.
+	MaxRetention = 7 * 24 * time.Hour
+)
+
+// Errors this package reports. Each maps to one public failure at the
+// transport boundary; none of them should reach a client as its own text.
+var (
+	// ErrInvalidScope reports a scope outside the permitted bounds.
+	ErrInvalidScope = errors.New("idempotency scope is not within the permitted bounds")
+	// ErrInvalidKey reports a key that is absent, too short, too long, or
+	// contains a character outside the permitted set.
+	ErrInvalidKey = errors.New("idempotency key is not within the permitted bounds")
+	// ErrInvalidFingerprint reports a fingerprint of the wrong length.
+	ErrInvalidFingerprint = errors.New("idempotency request fingerprint is not the expected length")
+	// ErrConcurrentRequest reports a second attempt arriving while the first
+	// is still running.
+	ErrConcurrentRequest = errors.New("a request with this idempotency key is already in progress")
+	// ErrKeyReuse reports a key replayed with a different request.
+	ErrKeyReuse = errors.New("idempotency key was already used for a different request")
+	// ErrResponseTooLarge reports a recorded response above MaxResponseBytes.
+	ErrResponseTooLarge = errors.New("idempotent response exceeds the recorded byte limit")
+	// ErrInvalidStatus reports a recorded status outside 100..599.
+	ErrInvalidStatus = errors.New("idempotent response status is outside 100..599")
+	// ErrRetention reports a retention outside the permitted bounds.
+	ErrRetention = errors.New("idempotency retention is outside the permitted bounds")
+	// ErrSweepLimit reports a non-positive expiry sweep batch size.
+	ErrSweepLimit = errors.New("idempotency sweep limit must be greater than zero")
+)
+
+// Response is the outcome a sensitive command recorded.
+type Response struct {
+	// Status is the HTTP status the command produced.
+	Status int
+	// Body is the exact response body bytes to replay.
+	Body []byte
+}
+
+// Result is what Do produced, and whether it ran the command or replayed it.
+type Result struct {
+	Response
+	// Replayed reports that the command did not run: this response came from
+	// a previous attempt with the same key.
+	Replayed bool
+}
+
+// Command is the work one sensitive request performs. It runs inside the
+// executor's transaction and must use the supplied pgx.Tx for every write, so
+// that its effects and its idempotency record commit or roll back together.
+type Command func(context.Context, pgx.Tx) (Response, error)
+
+// Executor runs sensitive commands under an idempotency key.
+//
+// The zero value is unusable; construct one with NewExecutor.
+type Executor struct {
+	transactor *database.Transactor
+	retention  time.Duration
+	now        func() time.Time
+}
+
+// Option configures an Executor.
+type Option func(*Executor)
+
+// WithClock replaces the clock the executor reads for expiry. It exists for
+// tests; production leaves the default time.Now in place.
+func WithClock(now func() time.Time) Option {
+	return func(e *Executor) {
+		if now != nil {
+			e.now = now
+		}
+	}
+}
+
+// NewExecutor constructs the executor. retention is how long a recorded
+// response stays replayable.
+func NewExecutor(transactor *database.Transactor, retention time.Duration, options ...Option) (*Executor, error) {
+	if transactor == nil {
+		return nil, errors.New("idempotency executor requires a transactor")
+	}
+	if retention <= 0 || retention > MaxRetention {
+		return nil, fmt.Errorf("%w: %s is outside 0..%s", ErrRetention, retention, MaxRetention)
+	}
+	executor := &Executor{transactor: transactor, retention: retention, now: time.Now}
+	for _, option := range options {
+		option(executor)
+	}
+	return executor, nil
+}
+
+// Retention returns how long a recorded response stays replayable.
+func (e *Executor) Retention() time.Duration { return e.retention }
+
+// Do runs command exactly once for the given scope and key, or replays the
+// response a previous attempt recorded.
+//
+// scope names the command, not the resource: two different commands may share
+// a client's key without colliding, and the same command with the same key is
+// the same request. fingerprint is what makes "the same request" checkable —
+// build it with Fingerprint over whatever the client is not allowed to change
+// between attempts.
+//
+// The command's writes and its record commit together. If command returns an
+// error, nothing is recorded and a later attempt with the same key runs it
+// again: an idempotency key promises at-most-once for a *successful* command,
+// not that a failure is permanent.
+func (e *Executor) Do(ctx context.Context, scope, key string, fingerprint []byte, command Command) (Result, error) {
+	if err := ValidateScope(scope); err != nil {
+		return Result{}, err
+	}
+	if err := ValidateKey(key); err != nil {
+		return Result{}, err
+	}
+	if len(fingerprint) != FingerprintBytes {
+		return Result{}, fmt.Errorf("%w: %d bytes, want %d", ErrInvalidFingerprint, len(fingerprint), FingerprintBytes)
+	}
+	if command == nil {
+		return Result{}, errors.New("idempotency executor requires a command")
+	}
+
+	var result Result
+	err := e.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		result, err = e.run(ctx, tx, scope, key, fingerprint, command)
+		return err
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	return result, nil
+}
+
+// run is the whole protocol, inside one transaction.
+func (e *Executor) run(ctx context.Context, tx pgx.Tx, scope, key string, fingerprint []byte, command Command) (Result, error) {
+	// The advisory lock is transaction-scoped, so PostgreSQL releases it at
+	// commit or rollback with nothing for this code to unwind. try, not
+	// wait: a duplicate that arrives mid-flight is told to retry rather than
+	// held open for as long as the first attempt takes.
+	high, low := lockKey(scope, key)
+	var acquired bool
+	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1, $2)`, high, low).Scan(&acquired); err != nil {
+		return Result{}, fmt.Errorf("claiming the idempotency key: %w", err)
+	}
+	if !acquired {
+		return Result{}, ErrConcurrentRequest
+	}
+
+	now := e.now().UTC()
+	var (
+		recordedFingerprint []byte
+		recordedStatus      int32
+		recordedBody        []byte
+		expiresAt           time.Time
+	)
+	err := tx.QueryRow(ctx, `
+		SELECT request_fingerprint, response_status, response_body, expires_at
+		FROM idempotency_keys
+		WHERE scope = $1 AND idempotency_key = $2`,
+		scope, key,
+	).Scan(&recordedFingerprint, &recordedStatus, &recordedBody, &expiresAt)
+
+	switch {
+	case err == nil && now.Before(expiresAt):
+		// The recorded fingerprint is compared before the response is
+		// returned: replaying one request's response to a different request
+		// would be worse than refusing either.
+		if !equalFingerprint(recordedFingerprint, fingerprint) {
+			return Result{}, ErrKeyReuse
+		}
+		return Result{
+			Response: Response{Status: int(recordedStatus), Body: recordedBody},
+			Replayed: true,
+		}, nil
+	case err == nil:
+		// Expired. Remove it so the insert below has a free primary key; the
+		// delete is bounded by that key and can touch at most one row.
+		if _, err := tx.Exec(ctx, `DELETE FROM idempotency_keys WHERE scope = $1 AND idempotency_key = $2`, scope, key); err != nil {
+			return Result{}, fmt.Errorf("removing the expired idempotency record: %w", err)
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+	default:
+		return Result{}, fmt.Errorf("reading the idempotency record: %w", err)
+	}
+
+	response, err := command(ctx, tx)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := validateResponse(response); err != nil {
+		return Result{}, err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO idempotency_keys
+			(scope, idempotency_key, request_fingerprint, response_status, response_body, created_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		scope, key, fingerprint, int32(response.Status), body(response.Body), now, now.Add(e.retention),
+	); err != nil {
+		return Result{}, fmt.Errorf("recording the idempotent response: %w", err)
+	}
+	return Result{Response: response}, nil
+}
+
+// Fingerprint derives the value that decides whether two attempts are the same
+// request. Include everything a client must not change between attempts and
+// nothing it legitimately might: the method, the target, and the exact request
+// body are the usual set.
+//
+// Parts are length-prefixed, so no two different requests can be assembled
+// into the same input by moving a byte across a boundary.
+func Fingerprint(method, target string, body []byte) []byte {
+	digest := sha256.New()
+	for _, part := range [][]byte{[]byte(method), []byte(target), body} {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
+		// A hash writer never fails and never writes short.
+		_, _ = digest.Write(length[:])
+		_, _ = digest.Write(part)
+	}
+	return digest.Sum(nil)
+}
+
+// ValidateScope checks a server-chosen command scope.
+func ValidateScope(scope string) error {
+	if len(scope) < 1 || len(scope) > MaxScopeBytes {
+		return fmt.Errorf("%w: %d bytes, want 1..%d", ErrInvalidScope, len(scope), MaxScopeBytes)
+	}
+	for i := range len(scope) {
+		char := scope[i]
+		switch {
+		case char >= 'a' && char <= 'z', char >= '0' && char <= '9', char == '.', char == '_', char == '-', char == '/':
+		default:
+			return fmt.Errorf("%w: unexpected character", ErrInvalidScope)
+		}
+	}
+	return nil
+}
+
+// ValidateKey checks a client-supplied key.
+//
+// The permitted set is printable ASCII without space or control characters:
+// wide enough for a UUID, a ULID, or a hash, narrow enough that a key cannot
+// smuggle a newline into a log line or a delimiter into anything that later
+// concatenates it.
+func ValidateKey(key string) error {
+	if len(key) < MinKeyBytes || len(key) > MaxKeyBytes {
+		return fmt.Errorf("%w: %d bytes, want %d..%d", ErrInvalidKey, len(key), MinKeyBytes, MaxKeyBytes)
+	}
+	for i := range len(key) {
+		if key[i] <= 0x20 || key[i] >= 0x7f {
+			return fmt.Errorf("%w: unexpected character", ErrInvalidKey)
+		}
+	}
+	return nil
+}
+
+// Queryer is the subset of pgx a bounded expiry sweep needs. A pool and a
+// transaction both satisfy it, so a sweep can run as its own statement or
+// inside a job's transaction without a second implementation.
+type Queryer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+// DeleteExpired removes at most limit expired records and reports how many it
+// removed. It is bounded so a sweep is a predictable amount of work rather
+// than one statement holding locks over an unbounded backlog; call it in a
+// loop until it returns zero.
+func DeleteExpired(ctx context.Context, db Queryer, now time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, fmt.Errorf("%w: %d", ErrSweepLimit, limit)
+	}
+	tag, err := db.Exec(ctx, `
+		DELETE FROM idempotency_keys
+		WHERE (scope, idempotency_key) IN (
+			SELECT scope, idempotency_key
+			FROM idempotency_keys
+			WHERE expires_at <= $1
+			ORDER BY expires_at
+			LIMIT $2
+		)`,
+		now.UTC(), int64(limit),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("sweeping expired idempotency records: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+func validateResponse(response Response) error {
+	if response.Status < 100 || response.Status > 599 {
+		return fmt.Errorf("%w: %d", ErrInvalidStatus, response.Status)
+	}
+	if len(response.Body) > MaxResponseBytes {
+		return fmt.Errorf("%w: %d bytes, maximum is %d", ErrResponseTooLarge, len(response.Body), MaxResponseBytes)
+	}
+	return nil
+}
+
+// body normalizes a nil body to an empty non-nil slice, because the column is
+// NOT NULL and a bodyless 204 is a perfectly ordinary recorded response.
+func body(value []byte) []byte {
+	if value == nil {
+		return []byte{}
+	}
+	return value
+}
+
+// equalFingerprint compares two fingerprints in constant time. They are not
+// secrets, but the comparison is cheap and a timing-independent one removes
+// the question.
+func equalFingerprint(recorded, supplied []byte) bool {
+	if len(recorded) != len(supplied) {
+		return false
+	}
+	var difference byte
+	for i := range recorded {
+		difference |= recorded[i] ^ supplied[i]
+	}
+	return difference == 0
+}
+
+// lockKey derives the two int32 arguments of pg_try_advisory_xact_lock from
+// the scope and key. Two unrelated keys that collide here merely serialize
+// with each other, which is correct but slower; the primary key is what
+// actually decides identity.
+func lockKey(scope, key string) (int32, int32) {
+	digest := sha256.New()
+	var length [8]byte
+	for _, part := range [][]byte{[]byte(scope), []byte(key)} {
+		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
+		_, _ = digest.Write(length[:])
+		_, _ = digest.Write(part)
+	}
+	sum := digest.Sum(nil)
+	return int32(binary.BigEndian.Uint32(sum[0:4])), int32(binary.BigEndian.Uint32(sum[4:8]))
+}

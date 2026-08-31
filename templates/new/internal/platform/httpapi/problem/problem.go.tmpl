@@ -79,6 +79,18 @@ var (
 		"/problems/report-too-deep", "Report Too Deep", http.StatusBadRequest,
 		"The requested report page is beyond the supported depth; narrow the filters.", "report_too_deep",
 	)
+	invalidIdempotencyKey = mustDefinition(
+		"/problems/invalid-idempotency-key", "Invalid Idempotency Key", http.StatusBadRequest,
+		"This command requires a valid Idempotency-Key header.", "invalid_idempotency_key",
+	)
+	idempotencyConflict = mustDefinition(
+		"/problems/idempotency-conflict", "Idempotency Conflict", http.StatusConflict,
+		"A request with this idempotency key is already in progress; retry shortly.", "idempotency_conflict",
+	)
+	idempotencyKeyReuse = mustDefinition(
+		"/problems/idempotency-key-reuse", "Idempotency Key Reuse", http.StatusUnprocessableEntity,
+		"This idempotency key was already used for a different request.", "idempotency_key_reuse",
+	)
 	unsupportedMediaType = mustDefinition(
 		"/problems/unsupported-media-type", "Unsupported Media Type", http.StatusUnsupportedMediaType,
 		"The request Content-Type is not supported for this operation.", "unsupported_media_type",
@@ -116,6 +128,19 @@ func CursorExpired() Definition { return cursorExpired }
 // separate from InvalidPagination because a client can act on it: the fix is a
 // narrower filter or an export, not a retry.
 func ReportTooDeep() Definition { return reportTooDeep }
+
+// InvalidIdempotencyKey returns the missing or malformed key failure.
+func InvalidIdempotencyKey() Definition { return invalidIdempotencyKey }
+
+// IdempotencyConflict returns the concurrent-attempt failure. It is a 409
+// because the request is well formed and may succeed on retry; the server is
+// simply already running the same one.
+func IdempotencyConflict() Definition { return idempotencyConflict }
+
+// IdempotencyKeyReuse returns the key-replayed-with-a-different-request
+// failure. It is a 422 because the request is syntactically fine and
+// semantically wrong, and no retry of it will ever succeed.
+func IdempotencyKeyReuse() Definition { return idempotencyKeyReuse }
 
 // UnsupportedMediaType returns the request media-type failure.
 func UnsupportedMediaType() Definition { return unsupportedMediaType }

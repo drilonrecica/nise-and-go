@@ -6,6 +6,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"{{.ModulePath}}/internal/platform/httpapi/httpjson"
 	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
 	"{{.ModulePath}}/internal/platform/httpapi/problem"
+	"{{.ModulePath}}/internal/platform/idempotency"
 )
 
 // Server adapts application behavior to the strict interface generated from
@@ -91,6 +93,53 @@ func (*Server) GetAPIIndex(context.Context, openapigen.GetAPIIndexRequestObject)
 	return openapigen.GetAPIIndex200JSONResponse{
 		Version: openapigen.V1,
 	}, nil
+}
+
+// idempotencyKey reads and validates the client's key for a sensitive command.
+//
+// The header is required rather than optional for the commands that use it: a
+// command that is only sometimes idempotent is one whose safety depends on the
+// client remembering to ask for it.
+func idempotencyKey(r *http.Request) (string, error) {
+	key := r.Header.Get(idempotency.HeaderName)
+	if err := idempotency.ValidateKey(key); err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
+// idempotencyFingerprint derives what makes two attempts the same request:
+// the method, the path, and the decoded request body.
+//
+// It hashes the decoded value rather than the raw bytes because the strict
+// decoder has already consumed those, and because a re-encoded Go struct is
+// canonical — field order is fixed, so two attempts that differ only in JSON
+// key order are correctly treated as the same request. Anything outside the
+// body that must not change between attempts (an actor, a tenant) belongs in
+// the scope, not here.
+func idempotencyFingerprint(r *http.Request, requestBody any) ([]byte, error) {
+	encoded, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprinting the idempotent request: %w", err)
+	}
+	return idempotency.Fingerprint(r.Method, r.URL.Path, encoded), nil
+}
+
+// idempotencyProblem maps one idempotency failure onto the public catalog.
+//
+// A concurrent attempt and a reused key are deliberately different statuses: a
+// client should retry the first and must never retry the second.
+func idempotencyProblem(err error) problem.Definition {
+	switch {
+	case errors.Is(err, idempotency.ErrConcurrentRequest):
+		return problem.IdempotencyConflict()
+	case errors.Is(err, idempotency.ErrKeyReuse):
+		return problem.IdempotencyKeyReuse()
+	case errors.Is(err, idempotency.ErrInvalidKey):
+		return problem.InvalidIdempotencyKey()
+	default:
+		return problem.InternalServerError()
+	}
 }
 
 // cursorBinding fingerprints the query a cursor belongs to: the collection's

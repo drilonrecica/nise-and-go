@@ -20,6 +20,12 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   page/size/total contract with overflow-safe parsing, a configurable offset
   ceiling, and the `report_too_deep` Problem type. It cannot be combined with
   cursor parameters.
+- Add idempotency for sensitive commands: an `idempotency_keys` migration and a
+  transaction-owned executor that records a response in the same transaction as
+  the command, replays it byte-for-byte on retry, resolves concurrent attempts
+  with an advisory lock, refuses a key reused for a different request, and
+  expires records on a bounded sweep. Adds the `invalid_idempotency_key`,
+  `idempotency_conflict`, and `idempotency_key_reuse` Problem types.
 
 ## Release policy
 

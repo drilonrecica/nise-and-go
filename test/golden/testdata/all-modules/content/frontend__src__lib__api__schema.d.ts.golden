@@ -102,6 +102,8 @@ export interface components {
         CursorAfter: components["schemas"]["Cursor"];
         /** @description Read the page preceding this cursor. Only a cursor this collection issued as prev_cursor is accepted; it cannot be combined with after. */
         CursorBefore: components["schemas"]["Cursor"];
+        /** @description A client-generated key that makes this command safe to retry. Reuse the same key for every retry of the same request and a new key for a new request; a key replayed with a different body is refused. Recorded responses are replayable for a bounded retention window. */
+        IdempotencyKey: string;
         /** @description 1-based page number. Absent means the first page. A page whose first row is past the report's offset ceiling is refused rather than served slowly. */
         ReportPageNumber: number;
         /** @description Report page size. Absent means the report's default. Out of range is refused rather than clamped. It cannot be combined with the cursor parameters. */

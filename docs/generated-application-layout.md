@@ -122,6 +122,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
         │   ├── router_test.go         [app]   surface boundary and middleware-order contract
         │   └── openapigen/
         │       └── openapi.gen.go     [nise]  complete strict chi types and bindings
+        ├── idempotency/               [app]   transaction-owned idempotent command executor and its store
         ├── jobs/                      [app]   core: the River runner, queues, and registration
         ├── mail/
         │   ├── mail.go                [app]
