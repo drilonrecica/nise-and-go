@@ -130,6 +130,26 @@ func (*NestedError) Error() string {
 
 type activeContextKey struct{}
 
+// IsActive reports whether ctx came from inside a [Runner.Within] callback.
+//
+// It exists so that a package with no business of its own can refuse an
+// operation that would silently escape the caller's transaction. The
+// motivating case is enqueuing a background job: a job inserted through the
+// transaction becomes visible exactly when that transaction commits, while
+// the same job inserted beside it is a second operation that can disagree
+// with the first in both directions — enqueued for a change that then failed,
+// or missing after a change that committed. Both are invisible in review and
+// intermittent in production.
+//
+// This predicate is the whole extent of what a caller may learn about the
+// transaction from the context. It deliberately does not expose the
+// transaction itself: that is passed to the callback as a value, and a
+// package that fishes one out of a context is a package that has stopped
+// being honest about what it needs.
+func IsActive(ctx context.Context) bool {
+	return ctx != nil && ctx.Value(activeContextKey{}) != nil
+}
+
 // Within runs work in one transaction. Success commits. Work failure or
 // cancellation rolls back and preserves both the primary and rollback errors.
 // A panic triggers bounded best-effort rollback and is re-panicked unchanged.
