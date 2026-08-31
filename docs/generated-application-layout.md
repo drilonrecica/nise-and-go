@@ -306,3 +306,27 @@ The full authenticated application shell — sidebar, navigation, theme and lang
 The core services arrive with the slices that build them: `internal/features/{auth,authz,audit}/` in Slice 3 (M5) and `internal/platform/jobs/` and `internal/platform/mail/` in Slice 4 (M8). Until then `internal/features/` is created holding only a `README.md` naming what will live there and the rules that place it, because version control cannot carry an empty directory and a file with an ownership header is preferable to one without. Every other directory this layout reserves for a later milestone — `api/`, `db/`, `internal/platform/database/` — is created the same way, so there is no mix of placeholder conventions. `internal/app/modules.gen.go` is written with an empty module selection.
 
 Custom features are populated by `nise generate` from Slice 2 onward.
+
+## What `nise generate` owns, and what it will not touch
+
+A generated feature or resource is **application-owned from the moment it is
+written**. Nise does not regenerate it, upgrade it, or reconcile it; the only
+tool-owned path inside one is its `store/`, which sqlc replaces wholesale.
+
+`nise generate` **creates files and modifies none** ([ADR
+0026](adr/0026-feature-generation-writes-only-new-files.md)). Four files a
+slice needs a line in — `api/openapi.yaml`, `internal/app/app.go`,
+`internal/platform/httpapi/api.go`, and `frontend/src/lib/navigation.ts` — are
+application-owned, so the command prints exactly what to add and where, and
+writes nothing. The generated OpenAPI is a fragment at `api/<name>.yaml`, so
+the insertion into the authoritative document is two `$ref` lines rather than
+two hundred lines of schema.
+
+Running the same command twice is refused per file rather than merged: the
+second run stops before writing anything and names every path that already
+exists.
+
+Generation invents no domain rules. A generated resource has an identifier, a
+`name`, and timestamps; every validation, state transition, and permission
+beyond the four CRUD ones is a `TODO` for the owner, because a rule a
+generator guessed is a rule nobody decided.
