@@ -146,9 +146,15 @@ work running and `nise test` waiting on its output. The group gets
 `SIGTERM` first, and is killed outright if it has not exited two seconds
 later. Nothing nise started is left running after `nise test` exits.
 
-On Windows there is no `SIGTERM`, so — exactly as documented for
-[`nise dev`](dev.md) — the child is ended directly and the two-second
-grace period has no effect.
+On Windows there is neither `SIGTERM` nor a process group to signal, so —
+exactly as documented for [`nise dev`](dev.md) — the child is ended directly
+and the grace period has no effect. A grandchild it left behind is not
+terminated, and because that grandchild inherited the pipe carrying the
+suite's output, `nise test` would otherwise wait on it for as long as the
+suite would have taken anyway. A one-second backstop closes the pipes instead,
+so the interrupt is answered promptly on every platform. Output a Windows
+grandchild writes after that point is lost, which is the better half of the
+only trade available.
 
 ## Safety notes
 

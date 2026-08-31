@@ -52,6 +52,33 @@ type Runner interface {
 	Start(spec Spec) (Process, error)
 }
 
+// waitDelay bounds how long Wait may block after the child has exited.
+//
+// Wait does not return when the process dies; it returns when the pipes
+// carrying the child's output are closed, and a grandchild inherits the write
+// end of those pipes. On Unix that is covered — terminateGroup and killGroup
+// signal the whole group, so the grandchildren die with their parent and the
+// pipes close. On Windows there is no process group to signal: terminateGroup
+// can only end the process it started, so a `go test` that spawned a test
+// binary, or a `pnpm` that spawned a runner, leaves a live writer behind and
+// Wait blocks for as long as that grandchild would have run anyway.
+//
+// This is the backstop for that case. When it elapses, os/exec closes the
+// pipes itself and Wait returns exec.ErrWaitDelay. Output written by a
+// grandchild after this point is lost, which is the right trade: the
+// alternative is a Ctrl-C that appears to do nothing.
+//
+// It never fires on the Unix path, where the pipes are already closed by the
+// time Wait looks.
+//
+// One second, and deliberately shorter than every grace period a caller
+// passes to Stop (`nise dev` uses six, `nise test` two). Stop waits for the
+// exit to be observed or for its grace to elapse, whichever comes first, so a
+// backstop longer than the grace would make Stop take the escalation branch
+// on a process that is already dead — a kill aimed at a pid that is only
+// still there because Wait had not returned yet.
+const waitDelay = time.Second
+
 // OSRunner is the production Runner: it starts real processes, each in its
 // own process group.
 //
@@ -78,6 +105,7 @@ func (OSRunner) Start(spec Spec) (Process, error) {
 	cmd.Env = spec.Env
 	cmd.Stdout = spec.Stdout
 	cmd.Stderr = spec.Stderr
+	cmd.WaitDelay = waitDelay
 	setProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting %s: %w", spec.Name, err)
