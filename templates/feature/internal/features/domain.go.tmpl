@@ -1,0 +1,67 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package {{.Singular}} is the {{.Title}} feature: its domain types and rules,
+// the use case that owns their transaction boundary, and the SQL behind them.
+//
+// Nise generated the shape and none of the rules. What is here is an
+// identifier, a name, and timestamps — the least a record can be — because a
+// rule a generator guessed is a rule nobody decided. Every TODO below is a
+// decision waiting for the person who knows the domain.
+package {{.Singular}}
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// Bounds on a {{.Title}}'s name, matching the column check in the migration.
+//
+// They are repeated in Go so a bad value is refused before it becomes a
+// constraint violation an operator has to read backwards from a log line.
+const (
+	// MinNameLength is the shortest acceptable name.
+	MinNameLength = 1
+	// MaxNameLength is the longest. It matches the column.
+	MaxNameLength = 200
+)
+
+// Errors this feature reports.
+var (
+	// ErrName reports a name outside the permitted bounds.
+	ErrName = errors.New("{{.Singular}} name is not acceptable")
+	// ErrNotFound reports that no {{.Singular}} matches.
+	ErrNotFound = errors.New("no {{.Singular}} matches")
+)
+
+// {{.Type}} is one record.
+//
+// TODO: add the fields this domain actually has. Every one of them wants the
+// same three answers: what values are legal, who may change it, and what a
+// change to it means for the rest of the record.
+type {{.Type}} struct {
+	// ID is the record's identifier, assigned by the database.
+	ID string
+	// Name is the human-readable name.
+	Name string
+	// CreatedAt is when the record was created.
+	CreatedAt time.Time
+	// UpdatedAt is when it was last changed.
+	UpdatedAt time.Time
+}
+
+// NormalizeName folds a submitted name to the one form this feature stores,
+// and refuses anything outside the bounds.
+//
+// Surrounding space is removed and nothing else is "cleaned": a generator does
+// not know whether this domain's names are case-sensitive, whether internal
+// punctuation is meaningful, or whether two names that differ only by spacing
+// are the same thing. Decide that here.
+func NormalizeName(name string) (string, error) {
+	normalized := strings.TrimSpace(name)
+	if len(normalized) < MinNameLength || len(normalized) > MaxNameLength {
+		return "", fmt.Errorf("%w: length %d is outside %d..%d", ErrName, len(normalized), MinNameLength, MaxNameLength)
+	}
+	return normalized, nil
+}

@@ -22,3 +22,13 @@ import "embed"
 //
 //go:embed all:new
 var FS embed.FS
+
+// FeatureFS holds the templates `nise generate feature` and `nise generate
+// resource` render into an existing project. They are a separate tree from
+// new/ because they are rendered against different data, into a project that
+// already exists, and under a different ownership rule: everything they
+// produce is application-owned from the moment it is written and is never
+// regenerated (ADR 0026).
+//
+//go:embed all:feature
+var FeatureFS embed.FS

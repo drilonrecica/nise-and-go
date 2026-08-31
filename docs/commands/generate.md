@@ -1,11 +1,9 @@
 # `nise generate`
 
-`nise generate` is the command surface for the feature and resource
-generators [milestone M7](../roadmap.md) will build. **As of this task
-(M1-014), no generator exists.** This command's argument parsing and name
-validation are genuine today; running a subcommand always fails with an
-honest error naming the milestone that will implement it. It never
-fabricates a success.
+`nise generate` scaffolds a vertical slice into an existing application: a
+feature's package, its use case with the transaction boundary and the
+permission check, and — for a resource — the SQL, the contract, and the
+frontend flows around it.
 
 ```
 $ nise generate feature invoice
@@ -68,33 +66,69 @@ name "invoice_line" must start with a letter and contain only letters and digits
 Choose a name matching ^[A-Za-z][A-Za-z0-9]*$ that is not a reserved word.
 ```
 
-## What happens once the name is valid
+## What it writes, and what it refuses to write
 
-Every subcommand delegates to a `Generator` — a small interface
-(`internal/cli/generate.go`) that milestone M7 implements. This build
-wires in the only implementation that exists today, one whose methods do
-no work and touch no filesystem: they always return an honest
-`*NotImplementedError` naming the subcommand and the milestone that adds a
-real one. `nise generate`'s Run function turns that into the command's own
-error:
+`nise generate` **creates files and modifies none** ([ADR
+0026](../adr/0026-feature-generation-writes-only-new-files.md)).
 
 ```
-$ nise generate resource Order
-nise generate resource is not implemented in this version (arrives with milestone M7)
-Write resource "order" by hand for now, following docs/generated-application-layout.md, or track milestone M7 in the project roadmap.
+$ nise generate feature invoice
+Created feature "invoice" — 4 files
+  internal/features/invoice/README.md
+  internal/features/invoice/domain.go
+  internal/features/invoice/invoice_test.go
+  internal/features/invoice/usecase.go
+
+Now add these, in this order. nise does not edit files it did not
+write, so every change to a file you own stays in your own diff.
+
+internal/platform/authorization/catalog.go
+  the permission block, the permissions() list, and the administrator role
+
+    // InvoicesRead permits reading invoices.
+    InvoicesRead = authz.MustPermission("invoices.read")
+    ...
 ```
 
+A vertical slice needs a line in files that already belong to the
+application — the permission catalog, the constructor wiring, the OpenAPI
+document, the navigation list. Rewriting one would discard what its owner
+put there; inserting at a marker comment is what [ADR
+0009](../adr/0009-generated-application-layout.md) refuses; and rewriting
+through a parser reformats a file its owner is responsible for. So the
+command prints exactly what to add and where, and writes nothing.
+
+Everything it does write is **application-owned from the moment it is
+written**. Nise does not regenerate it, upgrade it, or reconcile it.
+
+## Running it twice
+
+A second run is refused, per file, and writes nothing:
+
 ```
-$ nise generate resource Order --json
-{"error":{"code":"generate.not_implemented","docs":"docs/commands/generate.md","message":"nise generate resource is not implemented in this version (arrives with milestone M7)","recovery":"Write resource \"order\" by hand for now, following docs/generated-application-layout.md, or track milestone M7 in the project roadmap."}}
+$ nise generate feature invoice
+feature "invoice" already exists; nothing was written
+These paths are already there:
+  internal/features/invoice/README.md
+  internal/features/invoice/domain.go
+  internal/features/invoice/invoice_test.go
+  internal/features/invoice/usecase.go
+
+Choose another name, or remove them if they are no longer wanted. A generated
+slice is yours from the moment it is written, so nise will not replace one.
 ```
 
-**This is by design, not a placeholder bug.** A command that faked
-success here would tell a user (or a script driving `nise generate` in
-CI) that a feature exists when nothing was written — silently corrupting
-whatever depended on that feature actually being there. Exit code `1`
-(`ExitError`) and an honest message are the only acceptable outcome until
-M7 lands.
+Every path is checked before anything is written, so a colliding run leaves
+the project exactly as it found it — no half-written feature to identify and
+remove by hand. The write itself uses `O_EXCL`, so even a file created between
+the check and the write is refused rather than overwritten.
+
+## What it does not decide
+
+Generation invents no domain rules. A generated resource has an identifier, a
+`name`, and timestamps; every validation, state transition, and permission
+beyond the two it checks is a `TODO`, because a rule a generator guessed is a
+rule nobody decided.
 
 ## Exit codes
 
@@ -102,23 +136,6 @@ M7 lands.
 |---|---|
 | Wrong number of positional arguments | `2` (`ExitUsage`) |
 | Name fails a naming rule | `2` (`ExitUsage`), code `generate.invalid_name` |
-| Name is valid, but no generator implementation exists yet (today, always) | `1` (`ExitError`), code `generate.not_implemented` |
-| A future M7 `Generator` implementation itself fails | `1` (`ExitError`) |
-| A future M7 `Generator` implementation succeeds | `0` |
-
-## The delegation seam, for a future M7 implementer
-
-```go
-// Generator is the seam the real M7 generators implement.
-type Generator interface {
-	GenerateFeature(ctx context.Context, root, name string) error
-	GenerateResource(ctx context.Context, root, name string) error
-}
-```
-
-`generateCommand()` in `internal/cli/generate.go` is the only place that
-constructs a `Generator` and wires it into the two subcommands. M7 adding
-a real implementation is expected to be a change to that one wiring line
-— replacing `notImplementedGenerator{}` with a real type — not a rewrite
-of this command's flag parsing, help text, or name validation, all of
-which are already correct and already tested.
+| Not run from the root of a Go project | `1` (`ExitError`), code `generate.not_a_project` |
+| The slice already exists | `1` (`ExitError`), code `generate.exists` |
+| Success | `0` |

@@ -1,0 +1,193 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package {{.Singular}}
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	{{.Singular}}store "{{.ModulePath}}/internal/features/{{.Singular}}/store"
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// {{.TitlePlural}} is the use case: it owns the transaction boundary, checks
+// authority, and is the only thing in this feature that talks to the store.
+//
+// It takes its dependencies as constructor parameters and holds no package
+// state, because that is the whole of Nise's wiring model: the object graph is
+// readable top to bottom in internal/app, and a dependency that is not in this
+// struct cannot be reached from any method on it.
+type {{.TitlePlural}} struct {
+	transactor *database.Transactor
+}
+
+// New{{.TitlePlural}} constructs the use case.
+//
+// Add the constructor call to internal/app/app.go; `nise generate` printed the
+// line, and deliberately did not write it, because app.go is yours (ADR 0026).
+func New{{.TitlePlural}}(transactor *database.Transactor) (*{{.TitlePlural}}, error) {
+	if transactor == nil {
+		return nil, errors.New("{{.Singular}}: a transactor is required")
+	}
+	return &{{.TitlePlural}}{transactor: transactor}, nil
+}
+
+// Create stores one {{.Singular}}.
+//
+// The permission check is inside the use case rather than in the handler,
+// because a check in the handler is a check the next caller — a job, a
+// command, another use case — does not perform. Default deny: a caller with no
+// resolved grants is refused.
+func (u *{{.TitlePlural}}) Create(ctx context.Context, name string) ({{.Type}}, error) {
+	if err := authorization.Require(ctx, authorization.{{.PermissionManage}}); err != nil {
+		return {{.Type}}{}, err
+	}
+	normalized, err := NormalizeName(name)
+	if err != nil {
+		return {{.Type}}{}, err
+	}
+
+	// TODO: whatever else creating one means — a related record, an audit
+	// event, a job — belongs inside this transaction, so it either all
+	// happened or none of it did.
+	var created {{.Type}}
+	err = u.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := {{.Singular}}store.New(tx).Create{{.Type}}(ctx, normalized)
+		if err != nil {
+			return fmt.Errorf("creating the {{.Singular}}: %w", err)
+		}
+		created = recordFrom(row)
+		return nil
+	})
+	if err != nil {
+		return {{.Type}}{}, err
+	}
+	return created, nil
+}
+
+// Get resolves one {{.Singular}} by identifier.
+func (u *{{.TitlePlural}}) Get(ctx context.Context, id string) ({{.Type}}, error) {
+	if err := authorization.Require(ctx, authorization.{{.PermissionRead}}); err != nil {
+		return {{.Type}}{}, err
+	}
+	identifier, err := parseUUID(id)
+	if err != nil {
+		// A malformed identifier is not found rather than invalid: telling a
+		// caller their identifier was well formed but missing, and their
+		// malformed one was malformed, is two different answers about records
+		// they may not read.
+		return {{.Type}}{}, ErrNotFound
+	}
+
+	var found {{.Type}}
+	err = u.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := {{.Singular}}store.New(tx).Get{{.Type}}(ctx, identifier)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("reading the {{.Singular}}: %w", err)
+		}
+		found = recordFrom(row)
+		return nil
+	})
+	if err != nil {
+		return {{.Type}}{}, err
+	}
+	return found, nil
+}
+
+// Update renames one {{.Singular}}.
+func (u *{{.TitlePlural}}) Update(ctx context.Context, id, name string) ({{.Type}}, error) {
+	if err := authorization.Require(ctx, authorization.{{.PermissionManage}}); err != nil {
+		return {{.Type}}{}, err
+	}
+	identifier, err := parseUUID(id)
+	if err != nil {
+		return {{.Type}}{}, ErrNotFound
+	}
+	normalized, err := NormalizeName(name)
+	if err != nil {
+		return {{.Type}}{}, err
+	}
+
+	var updated {{.Type}}
+	err = u.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := {{.Singular}}store.New(tx).Update{{.Type}}(ctx, {{.Singular}}store.Update{{.Type}}Params{
+			ID:   identifier,
+			Name: normalized,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("updating the {{.Singular}}: %w", err)
+		}
+		updated = recordFrom(row)
+		return nil
+	})
+	if err != nil {
+		return {{.Type}}{}, err
+	}
+	return updated, nil
+}
+
+// Delete removes one {{.Singular}}.
+//
+// TODO: decide whether this domain deletes or retires. A hard delete is right
+// for a record nothing else references and wrong the moment something does;
+// switching later means a migration and a rewrite of every query.
+func (u *{{.TitlePlural}}) Delete(ctx context.Context, id string) error {
+	if err := authorization.Require(ctx, authorization.{{.PermissionManage}}); err != nil {
+		return err
+	}
+	identifier, err := parseUUID(id)
+	if err != nil {
+		return ErrNotFound
+	}
+
+	return u.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		affected, err := {{.Singular}}store.New(tx).Delete{{.Type}}(ctx, identifier)
+		if err != nil {
+			return fmt.Errorf("deleting the {{.Singular}}: %w", err)
+		}
+		if affected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// recordFrom converts one stored row into the domain type.
+func recordFrom(row {{.Singular}}store.{{.Type}}) {{.Type}} {
+	return {{.Type}}{
+		ID:        uuidString(row.ID),
+		Name:      row.Name,
+		CreatedAt: row.CreatedAt.Time,
+		UpdatedAt: row.UpdatedAt.Time,
+	}
+}
+
+func parseUUID(value string) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	if err := id.Scan(value); err != nil {
+		return pgtype.UUID{}, fmt.Errorf("parsing the identifier: %w", err)
+	}
+	return id, nil
+}
+
+func uuidString(id pgtype.UUID) string {
+	value, err := id.Value()
+	if err != nil || value == nil {
+		return ""
+	}
+	text, _ := value.(string)
+	return text
+}
