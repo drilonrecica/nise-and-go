@@ -3,6 +3,7 @@
 	import type { Snippet } from 'svelte';
 
 	import NavDrawer from '$lib/components/shell/NavDrawer.svelte';
+	import Toaster from '$lib/components/ui/Toaster.svelte';
 	import Sidebar from '$lib/components/shell/Sidebar.svelte';
 	import TopBar from '$lib/components/shell/TopBar.svelte';
 	import { shell } from '$lib/shell.svelte';
@@ -48,4 +49,12 @@
 			{@render children()}
 		</main>
 	</div>
+
+	<!--
+		Mounted once, here, and present from first paint. A live region created
+		at the moment a message arrives is one the screen reader has not been
+		watching, so the first message — usually the only one that matters — is
+		announced to nobody.
+	-->
+	<Toaster />
 </div>

@@ -1,0 +1,44 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	type Tone = 'info' | 'success' | 'warning' | 'danger';
+
+	let {
+		tone = 'info',
+		title,
+		/**
+		 * Announce this alert when it appears. Use it for something that
+		 * happened in response to what the person just did; leave it off for
+		 * a notice that was on the page when they arrived, which a screen
+		 * reader has already read in document order.
+		 */
+		live = false,
+		children
+	}: {
+		tone?: Tone;
+		title?: string;
+		live?: boolean;
+		children?: Snippet;
+	} = $props();
+
+	const tones: Record<Tone, string> = {
+		info: 'border-info-line bg-info-soft text-info-text',
+		success: 'border-success-line bg-success-soft text-success-text',
+		warning: 'border-warning-line bg-warning-soft text-warning-text',
+		danger: 'border-danger-line bg-danger-soft text-danger-text'
+	};
+</script>
+
+<div
+	class="rounded-md border p-3 text-sm {tones[tone]}"
+	role={live ? 'alert' : undefined}
+	aria-live={live ? 'assertive' : undefined}
+>
+	{#if title}
+		<p class="font-medium">{title}</p>
+	{/if}
+	{#if children}
+		<div class:mt-1={title}>{@render children()}</div>
+	{/if}
+</div>

@@ -1,0 +1,38 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	let {
+		caption,
+		/** Hide the caption visually. It stays available to a screen reader. */
+		captionVisible = false,
+		children
+	}: {
+		/** What this table lists. Required: an unnamed table is unnavigable. */
+		caption: string;
+		captionVisible?: boolean;
+		children: Snippet;
+	} = $props();
+</script>
+
+<!--
+	The scroll container carries tabindex and a role, because a region that
+	scrolls must be reachable by keyboard — otherwise a wide table is simply
+	unreadable without a mouse. The caption is required rather than optional:
+	screen readers list tables by their caption, and "table with 7 columns" is
+	not a list entry anybody can use.
+-->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -- a scroll container must be focusable, or a wide table cannot be scrolled without a mouse (WCAG 2.2 SC 2.1.1). The rule assumes tabindex on a static element is always a mistake; for a named scrollable region it is the fix. -->
+<div
+	class="overflow-x-auto rounded-lg border border-line bg-surface"
+	tabindex="0"
+	role="region"
+	aria-label={caption}
+>
+	<table class="w-full border-collapse text-sm">
+		<caption class="px-4 py-3 text-left text-sm text-text-muted" class:sr-only={!captionVisible}>
+			{caption}
+		</caption>
+		{@render children()}
+	</table>
+</div>

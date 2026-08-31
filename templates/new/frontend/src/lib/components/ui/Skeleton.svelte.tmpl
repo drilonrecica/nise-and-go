@@ -1,0 +1,13 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	let { class: className = 'h-4 w-full' }: { class?: string } = $props();
+</script>
+
+<!--
+	A skeleton is decoration for a region that is already announcing itself as
+	busy, so it is hidden from assistive technology. Announcing "loading" once
+	per grey rectangle is how a loading table becomes forty announcements.
+
+	The pulse is suppressed by the global reduced-motion rule in app.css.
+-->
+<span class="block animate-pulse rounded-sm bg-surface-muted {className}" aria-hidden="true"></span>

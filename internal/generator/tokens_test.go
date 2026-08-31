@@ -57,6 +57,7 @@ var contrastPairs = []struct {
 	{"text-inverted", "success", 4.5},
 	{"text-inverted", "warning", 4.5},
 	{"text-inverted", "danger", 4.5},
+	{"text-inverted", "danger-hover", 4.5},
 	{"text-inverted", "info", 4.5},
 
 	{"control-line", "canvas", 3.0},

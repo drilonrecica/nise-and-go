@@ -1,0 +1,42 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	let {
+		label,
+		class: className = 'size-4'
+	}: {
+		/**
+		 * What is being waited for. Provide it when the spinner is the only
+		 * thing saying so; omit it inside a region that already carries its own
+		 * live status, where a second announcement is noise.
+		 */
+		label?: string;
+		class?: string;
+	} = $props();
+</script>
+
+<!--
+	The rotation is suppressed by the global reduced-motion rule in app.css,
+	which collapses it to a single frame rather than removing it. A reader who
+	asked for reduced motion still gets the status text below; they simply do
+	not get a spinning thing.
+-->
+<span class="inline-flex items-center gap-2">
+	<svg
+		class="{className} animate-spin"
+		viewBox="0 0 24 24"
+		fill="none"
+		aria-hidden="true"
+		role="presentation"
+	>
+		<circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity="0.25" stroke-width="2.5" />
+		<path
+			d="M21 12a9 9 0 0 0-9-9"
+			stroke="currentColor"
+			stroke-width="2.5"
+			stroke-linecap="round"
+		/>
+	</svg>
+	{#if label}
+		<span class="sr-only" role="status">{label}</span>
+	{/if}
+</span>

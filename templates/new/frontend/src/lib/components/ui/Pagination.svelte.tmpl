@@ -1,0 +1,46 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import Button from '$lib/components/ui/Button.svelte';
+
+	let {
+		/** Where "previous" goes, or undefined when there is no previous page. */
+		previousHref,
+		/** Where "next" goes, or undefined when there is no next page. */
+		nextHref,
+		/** What is being paged, for the landmark's name. */
+		label = 'Pagination',
+		/** A short description of the current position, when one is meaningful. */
+		summary
+	}: {
+		previousHref?: string;
+		nextHref?: string;
+		label?: string;
+		summary?: string;
+	} = $props();
+</script>
+
+<!--
+	Both controls are links, and both carry a real href, because paging is
+	navigation: it changes the URL, it belongs in history, and it must survive
+	being opened in a new tab. A button that pushes state would break all
+	three.
+
+	An absent page is a disabled control that stays in the tab order and says
+	why, rather than a control that vanishes — a control that disappears when
+	you reach the last page moves the one beside it under your cursor.
+-->
+<nav aria-label={label} class="flex items-center justify-between gap-4 pt-3">
+	<p class="text-sm text-text-muted">{summary ?? ''}</p>
+	<div class="flex items-center gap-2">
+		{#if previousHref}
+			<Button size="sm" href={previousHref} rel="prev">Previous</Button>
+		{:else}
+			<Button size="sm" disabled aria-disabled="true">Previous</Button>
+		{/if}
+		{#if nextHref}
+			<Button size="sm" href={nextHref} rel="next">Next</Button>
+		{:else}
+			<Button size="sm" disabled aria-disabled="true">Next</Button>
+		{/if}
+	</div>
+</nav>

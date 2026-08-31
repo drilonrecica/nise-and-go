@@ -81,6 +81,31 @@ Breadcrumbs label known paths from the navigation list and unknown segments from
 
 The current-section rule is a path-boundary match, not a string prefix: `/settings` claims `/settings/roles` and does not claim `/settings-archive`. An item marked `exact` — the dashboard at `/` — claims only itself, or it would be current on every page in the application.
 
+### The component set
+
+`src/lib/components/ui/` holds the curated set, as ordinary application-owned Svelte 5 components: `Alert`, `Badge`, `Button`, `Checkbox`, `ConfirmDialog`, `Dialog`, `Field`, `Icon`, `Input`, `Menu`, `Pagination`, `Select`, `Skeleton`, `Spinner`, `Table`, `Textarea`, `Toaster`, `Tooltip`, and the `toast` module. There is no `bits-ui` and no `shadcn-svelte`: the generated `package.json` has zero runtime dependencies. [ADR 0025](adr/0025-owned-ui-primitives.md) has the reasoning — in short, [ADR 0013](adr/0013-security-headers-and-csp.md)'s policy blocks the `style` attribute that every Floating UI integration writes to position a floating element, and weakening the policy to fit a dependency was not an option.
+
+Three rules keep an owned set affordable:
+
+- **Use the platform where the platform is better.** Modal surfaces are `<dialog>` with `showModal()`, which supplies the focus trap, the inert background, Escape, and the top layer. Selects are `<select>`, so type-ahead and the mobile picker come free. Checkboxes are real checkboxes coloured with `accent-color`, so forced-colors mode still draws a checkmark.
+- **Position with CSS.** The floating elements are anchored to their trigger with ordinary absolute positioning. Collision detection is a reason to build one component for that case, not to take a dependency for all of them.
+- **Write the keyboard model out in full where it has to be written.** `Menu` is the one component with a real one.
+
+What each component insists on, and why:
+
+| Component | The property it will not give up |
+|---|---|
+| `Button` | It is a `<button>` or an `<a>`, decided by whether the thing navigates, and the two prop sets are separate types. A link that acts and a button that navigates are the two most common defects here, and both are invisible until somebody middle-clicks or presses space. While loading, the label keeps its width and the busy state is announced, not just drawn. |
+| `Field` | It wires the label, help text, error, and `aria-describedby`/`aria-invalid` to the control by id. Doing that per form is how a form ends up with an error that is visible and unannounced. The required marker is the word, not a lone asterisk. |
+| `Dialog` / `ConfirmDialog` / drawer | `showModal()`, always. A hand-rolled modal eventually gets the focus trap wrong, and a wrong focus trap is worse than none. `ConfirmDialog`'s typed-confirmation option is documented as being for the genuinely irreversible; asking routinely trains people to type past it. |
+| `Menu` | Open on click or Arrow, arrow navigation with wrapping, Home/End, Escape and Tab to dismiss, focus returned to the trigger. Escape is handled on the document, because a mouse-opened menu leaves focus on the sibling trigger. |
+| `Tooltip` | `aria-describedby`, never `aria-labelledby`: a tooltip supplements a control that is already named. Hover, focus, and Escape to dismiss are all WCAG 2.2 SC 1.4.13, and Escape is the one people forget. |
+| `Toaster` | One live region, mounted in the shell from first paint. A live region created when the first message arrives is one the screen reader was not watching, so that message is announced to nobody. Polite, not assertive: anything that must interrupt is not a toast. |
+| `Badge` / `Alert` | The tone reinforces; the word carries the meaning (SC 1.4.1). `Alert` announces only when it appears in response to something the person did. |
+| `Skeleton` | `aria-hidden`. It decorates a region that already says it is busy; announcing each grey rectangle is how a loading table becomes forty announcements. |
+| `Table` | The caption is required — screen readers list tables by caption — and the scroll container is focusable, or a wide table cannot be read without a mouse. |
+| `Pagination` | Both controls are real links with real hrefs, because paging is navigation: it belongs in history and must survive being opened in a new tab. An unavailable page is a disabled control that stays put rather than one that vanishes and moves its neighbour under the cursor. |
+
 ### The accessibility properties that are easy to lose
 
 Each of these is invisible when it is gone, so each is pinned by a test:

@@ -1,0 +1,78 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	import Icon from '$lib/components/ui/Icon.svelte';
+
+	let {
+		open = $bindable(false),
+		title,
+		description,
+		/** A side sheet rather than a centred dialog. Same semantics either way. */
+		side = false,
+		children,
+		footer
+	}: {
+		open?: boolean;
+		title: string;
+		description?: string;
+		side?: boolean;
+		children: Snippet;
+		footer?: Snippet;
+	} = $props();
+
+	let dialog = $state<HTMLDialogElement | null>(null);
+
+	const titleId = $derived(`${title.replace(/\W+/g, '-').toLowerCase()}-title`);
+
+	// showModal() is the whole reason this is a <dialog>: the focus trap, the
+	// inert background, Escape, and the top layer come from the platform
+	// rather than from code here that would have to be right on every browser.
+	// A hand-rolled modal gets the focus trap wrong eventually, and a wrong
+	// focus trap is worse than none.
+	$effect(() => {
+		if (!dialog) return;
+		if (open && !dialog.open) {
+			dialog.showModal();
+		} else if (!open && dialog.open) {
+			dialog.close();
+		}
+	});
+</script>
+
+<dialog
+	bind:this={dialog}
+	aria-labelledby={titleId}
+	class="max-h-dvh bg-surface text-text backdrop:bg-overlay {side
+		? 'm-0 ms-auto h-dvh w-100 max-w-[92vw]'
+		: 'm-auto w-125 max-w-[92vw] rounded-lg shadow-overlay'}"
+	onclose={() => (open = false)}
+>
+	<div class="flex max-h-dvh flex-col">
+		<div class="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
+			<div class="min-w-0">
+				<h2 id={titleId} class="text-base font-semibold text-text">{title}</h2>
+				{#if description}
+					<p class="mt-1 text-sm text-text-muted">{description}</p>
+				{/if}
+			</div>
+			<button
+				type="button"
+				class="-me-1.5 -mt-1 rounded-md p-1.5 text-text-muted transition-colors duration-fast ease-standard hover:bg-surface-muted hover:text-text"
+				onclick={() => (open = false)}
+			>
+				<Icon name="close" label="Close" />
+			</button>
+		</div>
+
+		<div class="flex-1 overflow-y-auto px-5 py-4 text-sm">
+			{@render children()}
+		</div>
+
+		{#if footer}
+			<div class="flex justify-end gap-2 border-t border-line px-5 py-4">
+				{@render footer()}
+			</div>
+		{/if}
+	</div>
+</dialog>

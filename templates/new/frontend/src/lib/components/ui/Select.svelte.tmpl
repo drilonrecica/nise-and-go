@@ -1,0 +1,51 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+	import type { HTMLSelectAttributes } from 'svelte/elements';
+
+	import Icon from '$lib/components/ui/Icon.svelte';
+
+	let {
+		// Deliberately undefined rather than '': Svelte initializes a select
+		// binding from the DOM when the bound value is undefined, so the
+		// control shows its first option. Defaulting to '' would instead force
+		// a value no option carries, and every select whose options do not
+		// include an empty one would render blank.
+		value = $bindable(),
+		invalid = false,
+		describedBy,
+		children,
+		...rest
+	}: {
+		value?: string | undefined;
+		invalid?: boolean;
+		describedBy?: string;
+		/** The <option> elements. */
+		children: Snippet;
+	} & Omit<HTMLSelectAttributes, 'value'> = $props();
+</script>
+
+<!--
+	The native <select>, deliberately. A custom listbox has to reimplement
+	type-ahead, the mobile picker, and the platform's own keyboard model, and
+	it is never as good as the one the operating system already ships. When a
+	select genuinely needs search or multi-selection, build that component for
+	that case rather than replacing every select in the application.
+-->
+<div class="relative">
+	<select
+		bind:value
+		aria-invalid={invalid || undefined}
+		aria-describedby={describedBy}
+		class="h-control-md w-full appearance-none rounded-md border bg-surface pr-9 pl-3 text-sm text-text transition-colors duration-fast ease-standard disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-text-subtle {invalid
+			? 'border-danger'
+			: 'border-control-line'}"
+		{...rest}
+	>
+		{@render children()}
+	</select>
+	<Icon
+		name="chevronDown"
+		class="pointer-events-none absolute end-3 top-1/2 size-4 -translate-y-1/2 text-text-subtle"
+	/>
+</div>

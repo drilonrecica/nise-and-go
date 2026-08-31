@@ -1,0 +1,99 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+	import type { HTMLAnchorAttributes, HTMLButtonAttributes } from 'svelte/elements';
+
+	import Spinner from '$lib/components/ui/Spinner.svelte';
+
+	type Variant = 'primary' | 'secondary' | 'ghost' | 'danger';
+	type Size = 'sm' | 'md' | 'lg';
+
+	type Shared = {
+		variant?: Variant;
+		size?: Size;
+		/** Show a spinner and refuse activation while a command is in flight. */
+		loading?: boolean;
+		/** What a screen reader is told while loading. */
+		loadingLabel?: string;
+		class?: string;
+		children: Snippet;
+	};
+
+	/**
+	 * Either a button or a link, never both. Passing `href` renders an anchor,
+	 * and the two prop sets are separate types so a button-only attribute
+	 * cannot be handed to a link, or the reverse.
+	 *
+	 * The distinction is not pedantry: a link that acts and a button that
+	 * navigates are the two most common accessibility defects in an
+	 * application like this one, and both are invisible until somebody tries
+	 * to middle-click, or tries to activate with the space bar.
+	 */
+	type Props =
+		| (Shared & { href: string } & Omit<HTMLAnchorAttributes, 'class'>)
+		| (Shared & { href?: undefined } & Omit<HTMLButtonAttributes, 'class'>);
+
+	let {
+		variant = 'secondary',
+		size = 'md',
+		loading = false,
+		loadingLabel = 'Working',
+		href,
+		class: className = '',
+		children,
+		...rest
+	}: Props = $props();
+
+	const base =
+		'relative inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium transition-colors duration-fast ease-standard disabled:pointer-events-none disabled:opacity-55 aria-disabled:pointer-events-none aria-disabled:opacity-55';
+
+	const variants: Record<Variant, string> = {
+		primary: 'bg-primary text-primary-text hover:bg-primary-hover active:bg-primary-active',
+		secondary:
+			'border border-control-line bg-surface text-text hover:bg-surface-muted active:bg-surface-muted',
+		ghost: 'text-text-muted hover:bg-surface-muted hover:text-text',
+		danger: 'bg-danger text-text-inverted hover:bg-danger-hover'
+	};
+
+	const sizes: Record<Size, string> = {
+		sm: 'h-control-sm px-2.5',
+		md: 'h-control-md px-3.5',
+		lg: 'h-control-lg px-5'
+	};
+
+	const classes = $derived(`${base} ${variants[variant]} ${sizes[size]} ${className}`);
+
+	// TypeScript narrows `href` but cannot narrow a rest binding that was
+	// destructured out of the same union, so the branch it has already proved
+	// has to be restated here. The public type above is what callers are
+	// checked against; these two are the same object seen from inside the
+	// branch that selected it.
+	const anchorProps = $derived(rest as Omit<HTMLAnchorAttributes, 'class'>);
+	const buttonProps = $derived(rest as Omit<HTMLButtonAttributes, 'class'>);
+</script>
+
+{#if href !== undefined}
+	<a {href} class={classes} {...anchorProps}>
+		{@render children()}
+	</a>
+{:else}
+	<!--
+		While loading, the label stays in the DOM and keeps its width — a button
+		that shrinks mid-request moves everything after it — and the busy state
+		is announced rather than only drawn.
+	-->
+	<button
+		type="button"
+		class={classes}
+		aria-busy={loading || undefined}
+		{...buttonProps}
+		disabled={loading || buttonProps.disabled}
+	>
+		<span class="contents" class:invisible={loading}>{@render children()}</span>
+		{#if loading}
+			<span class="absolute inset-0 flex items-center justify-center">
+				<Spinner label={loadingLabel} />
+			</span>
+		{/if}
+	</button>
+{/if}

@@ -1,0 +1,27 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import type { HTMLInputAttributes } from 'svelte/elements';
+
+	let {
+		value = $bindable(''),
+		invalid = false,
+		describedBy,
+		class: className = '',
+		...rest
+	}: {
+		value?: string;
+		invalid?: boolean;
+		describedBy?: string;
+		class?: string;
+	} & Omit<HTMLInputAttributes, 'value'> = $props();
+</script>
+
+<input
+	bind:value
+	aria-invalid={invalid || undefined}
+	aria-describedby={describedBy}
+	class="h-control-md w-full rounded-md border bg-surface px-3 text-sm text-text transition-colors duration-fast ease-standard disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-text-subtle {invalid
+		? 'border-danger'
+		: 'border-control-line'} {className}"
+	{...rest}
+/>

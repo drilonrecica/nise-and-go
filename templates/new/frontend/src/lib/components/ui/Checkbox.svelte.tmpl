@@ -1,0 +1,36 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import type { HTMLInputAttributes } from 'svelte/elements';
+
+	let {
+		checked = $bindable(false),
+		id,
+		label,
+		describedBy,
+		...rest
+	}: {
+		checked?: boolean;
+		id: string;
+		label: string;
+		describedBy?: string;
+	} & Omit<HTMLInputAttributes, 'checked' | 'id' | 'type'> = $props();
+</script>
+
+<!--
+	The native checkbox, sized and coloured with accent-color rather than
+	replaced by a styled span. A replacement has to reimplement the indeterminate
+	state, the platform's own focus and high-contrast rendering, and the way
+	forced-colors mode draws a checkmark — and the failure mode is a control
+	that is invisible in exactly the mode a person turned on to be able to see.
+-->
+<div class="flex items-start gap-2.5">
+	<input
+		{id}
+		type="checkbox"
+		bind:checked
+		aria-describedby={describedBy}
+		class="mt-0.5 size-4 shrink-0 rounded-xs border-control-line accent-primary"
+		{...rest}
+	/>
+	<label for={id} class="text-sm text-text">{label}</label>
+</div>

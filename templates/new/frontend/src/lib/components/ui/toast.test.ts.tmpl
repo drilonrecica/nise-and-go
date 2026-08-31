@@ -1,0 +1,62 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { defaultToastDuration, toaster } from './toast.svelte';
+
+afterEach(() => {
+	toaster.clear();
+	vi.useRealTimers();
+});
+
+describe('toaster', () => {
+	it('shows a toast and gives back an id that dismisses it', () => {
+		const id = toaster.success('Saved');
+		expect(toaster.toasts).toHaveLength(1);
+		expect(toaster.toasts[0]).toMatchObject({ id, tone: 'success', title: 'Saved' });
+
+		toaster.dismiss(id);
+		expect(toaster.toasts).toHaveLength(0);
+	});
+
+	it('removes a toast when its duration elapses', () => {
+		vi.useFakeTimers();
+		toaster.show('Copied');
+		expect(toaster.toasts).toHaveLength(1);
+
+		vi.advanceTimersByTime(defaultToastDuration - 1);
+		expect(toaster.toasts).toHaveLength(1);
+
+		vi.advanceTimersByTime(1);
+		expect(toaster.toasts).toHaveLength(0);
+	});
+
+	it('keeps a toast with duration 0 until it is dismissed', () => {
+		vi.useFakeTimers();
+		const id = toaster.show('Import running', { duration: 0 });
+
+		vi.advanceTimersByTime(defaultToastDuration * 10);
+		expect(toaster.toasts).toHaveLength(1);
+
+		toaster.dismiss(id);
+		expect(toaster.toasts).toHaveLength(0);
+	});
+
+	it('does not fire a timer for a toast that was already dismissed', () => {
+		vi.useFakeTimers();
+		const first = toaster.show('One');
+		toaster.show('Two');
+		toaster.dismiss(first);
+
+		vi.advanceTimersByTime(defaultToastDuration);
+		expect(toaster.toasts).toHaveLength(0);
+	});
+
+	it('keeps ids unique so a reused id cannot dismiss the wrong toast', () => {
+		const ids = [toaster.show('One'), toaster.show('Two'), toaster.show('Three')];
+		expect(new Set(ids).size).toBe(3);
+
+		toaster.dismiss(ids[1]);
+		expect(toaster.toasts.map((toast) => toast.title)).toEqual(['One', 'Three']);
+	});
+});
