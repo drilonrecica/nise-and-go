@@ -1,0 +1,166 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Prove the design tokens meet WCAG 2.2 AA, in both themes, on every pair a
+// component can actually put together.
+//
+// Contrast is the one accessibility property that a palette either has or
+// does not have, that no amount of careful component code can recover, and
+// that is trivially broken by a rebrand: somebody replaces one cobalt with
+// their own brand blue, every button still looks fine to them, and the
+// application is now unreadable for a chunk of its users. Checking it costs
+// one dependency-free script and runs in milliseconds, so it runs in
+// `pnpm check` beside the type checker.
+//
+// This is application-owned. When you rebrand, edit src/app.css and run this
+// until it passes — that is the intended workflow, and it is why the failure
+// message names the exact pair and the ratio it needs.
+//
+// Usage: node scripts/check-contrast.mjs [path/to/app.css]
+
+import { readFileSync } from 'node:fs';
+import process from 'node:process';
+
+const cssPath = process.argv[2] ?? 'src/app.css';
+
+/**
+ * The pairs that must hold, and why each threshold is what it is.
+ *
+ *   4.5 — WCAG 2.2 SC 1.4.3, normal-size text on its background.
+ *   3.0 — SC 1.4.11, the boundary of a user-interface component, and
+ *         SC 1.4.3's large-text allowance.
+ *
+ * A decorative rule is deliberately absent: `--line` separates things that
+ * are already distinguishable by their surfaces, so SC 1.4.11 does not apply
+ * to it. `--control-line` is the one that tells a person where an input is,
+ * and it is checked against every surface an input may sit on.
+ */
+const pairs = [
+	['text', 'canvas', 4.5],
+	['text', 'surface', 4.5],
+	['text', 'surface-muted', 4.5],
+	['text-muted', 'canvas', 4.5],
+	['text-muted', 'surface', 4.5],
+	['text-subtle', 'surface', 4.5],
+	['text-subtle', 'surface-muted', 4.5],
+
+	['primary-text', 'primary', 4.5],
+	['primary-text', 'primary-hover', 4.5],
+	['primary-text', 'primary-active', 4.5],
+	['primary-on-soft', 'primary-soft', 4.5],
+	['primary', 'canvas', 3.0],
+	['primary', 'surface', 3.0],
+
+	['success-text', 'success-soft', 4.5],
+	['warning-text', 'warning-soft', 4.5],
+	['danger-text', 'danger-soft', 4.5],
+	['info-text', 'info-soft', 4.5],
+
+	['text-inverted', 'success', 4.5],
+	['text-inverted', 'warning', 4.5],
+	['text-inverted', 'danger', 4.5],
+	['text-inverted', 'info', 4.5],
+
+	['control-line', 'canvas', 3.0],
+	['control-line', 'surface', 3.0],
+	['control-line', 'surface-muted', 3.0],
+
+	['ring', 'canvas', 3.0],
+	['ring', 'surface', 3.0],
+	['ring', 'surface-muted', 3.0]
+];
+
+/** The two theme blocks, named by the selector that introduces each. */
+const themes = [
+	{ name: 'light', selector: /:root,\s*\[data-theme='light'\]\s*\{([\s\S]*?)\n\}/ },
+	{ name: 'dark', selector: /\[data-theme='dark'\]\s*\{([\s\S]*?)\n\}/ }
+];
+
+const css = readFileSync(cssPath, 'utf8');
+
+/** Read the custom properties declared inside one theme block. */
+function tokens(block) {
+	const found = new Map();
+	for (const match of block.matchAll(/^\s*--([a-z0-9-]+):\s*([^;]+);/gim)) {
+		found.set(match[1], match[2].trim());
+	}
+	return found;
+}
+
+/** sRGB channels of #rgb, #rrggbb, or rgb(r g b / a) — alpha is refused. */
+function channels(value) {
+	const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value);
+	if (hex) {
+		const digits =
+			hex[1].length === 3
+				? hex[1]
+						.split('')
+						.map((d) => d + d)
+						.join('')
+				: hex[1];
+		return [0, 2, 4].map((i) => parseInt(digits.slice(i, i + 2), 16) / 255);
+	}
+	const rgb = /^rgb\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)\s*\)$/i.exec(value);
+	if (rgb) {
+		return [1, 2, 3].map((i) => Number(rgb[i]) / 255);
+	}
+	return null;
+}
+
+/** WCAG relative luminance. */
+function luminance(value) {
+	const rgb = channels(value);
+	if (rgb === null) return null;
+	const [r, g, b] = rgb.map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+	return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function ratio(foreground, background) {
+	const a = luminance(foreground);
+	const b = luminance(background);
+	if (a === null || b === null) return null;
+	const [high, low] = a > b ? [a, b] : [b, a];
+	return (high + 0.05) / (low + 0.05);
+}
+
+const failures = [];
+let checked = 0;
+
+for (const theme of themes) {
+	const block = theme.selector.exec(css);
+	if (block === null) {
+		failures.push(`${cssPath} has no ${theme.name} theme block; this script expects the generated structure`);
+		continue;
+	}
+	const declared = tokens(block[1]);
+	for (const [foreground, background, minimum] of pairs) {
+		const front = declared.get(foreground);
+		const back = declared.get(background);
+		if (front === undefined || back === undefined) {
+			failures.push(`${theme.name}: --${front === undefined ? foreground : background} is not declared`);
+			continue;
+		}
+		const measured = ratio(front, back);
+		if (measured === null) {
+			failures.push(
+				`${theme.name}: --${foreground} (${front}) on --${background} (${back}) is not an opaque color this script can measure`
+			);
+			continue;
+		}
+		checked++;
+		if (measured + 0.005 < minimum) {
+			failures.push(
+				`${theme.name}: --${foreground} (${front}) on --${background} (${back}) is ${measured.toFixed(2)}:1, needs ${minimum.toFixed(1)}:1`
+			);
+		}
+	}
+}
+
+if (failures.length > 0) {
+	for (const failure of failures) {
+		process.stderr.write(`${failure}\n`);
+	}
+	process.stderr.write(`\n${failures.length} contrast problem(s) in ${cssPath}.\n`);
+	process.exit(1);
+}
+
+process.stdout.write(`contrast: ${checked} token pairs meet WCAG 2.2 AA in both themes\n`);

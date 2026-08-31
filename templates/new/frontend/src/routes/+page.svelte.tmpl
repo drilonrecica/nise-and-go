@@ -14,24 +14,43 @@
 </svelte:head>
 
 <main class="mx-auto max-w-2xl px-6 py-16">
-	<h1 class="text-2xl font-semibold tracking-tight">{{.AppName}}</h1>
-	<p class="mt-3 text-sm opacity-70">
+	<h1 class="text-2xl font-semibold tracking-tight text-text">{{.AppName}}</h1>
+	<p class="mt-3 text-sm text-text-muted">
 		This page is served by the Go binary from the SvelteKit build embedded in it. Editing
-		<code>frontend/src/routes/+page.svelte</code> and running
-		<code>pnpm --dir frontend build</code> replaces it.
+		<code class="rounded-xs bg-surface-muted px-1 font-mono text-[0.8125rem]"
+			>frontend/src/routes/+page.svelte</code
+		>
+		and running
+		<code class="rounded-xs bg-surface-muted px-1 font-mono text-[0.8125rem]"
+			>pnpm --dir frontend build</code
+		> replaces it.
 	</p>
 
-	<h2 class="mt-10 text-sm font-semibold uppercase tracking-wide opacity-60">Health probes</h2>
-	<ul class="mt-3 space-y-2 text-sm">
-		{#each probes as probe (probe.path)}
-			<li>
-				<a class="underline underline-offset-4" href={probe.path}>{probe.path}</a>
-				<span class="opacity-60"> — {probe.meaning}</span>
-			</li>
-		{/each}
-	</ul>
+	<section
+		class="mt-10 rounded-lg border border-line bg-surface p-5 shadow-raised transition-shadow duration-base ease-standard"
+	>
+		<h2 class="text-xs font-semibold tracking-wide text-text-subtle uppercase">Health probes</h2>
+		<ul class="mt-3 space-y-2 text-sm">
+			{#each probes as probe (probe.path)}
+				<li>
+					<a
+						class="rounded-xs font-medium text-primary underline underline-offset-4 hover:text-primary-hover"
+						href={probe.path}>{probe.path}</a
+					>
+					<span class="text-text-muted"> — {probe.meaning}</span>
+				</li>
+			{/each}
+		</ul>
+	</section>
 
-	<p class="mt-10 text-sm opacity-70">
+	<p class="mt-6 text-sm text-text-muted">
+		Every color, radius, shadow, and duration on this page comes from a design token in
+		<code class="rounded-xs bg-surface-muted px-1 font-mono text-[0.8125rem]">src/app.css</code>.
+		Rebranding is editing that file; <code class="font-mono">pnpm check</code> proves both themes still
+		meet WCAG 2.2 AA.
+	</p>
+
+	<p class="mt-4 text-sm text-text-muted">
 		The application shell — navigation, authentication screens, tables, and the component set —
 		arrives with a later milestone. This route is the seam it replaces.
 	</p>

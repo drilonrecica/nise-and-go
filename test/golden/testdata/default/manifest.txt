@@ -39,14 +39,15 @@ deploy/README.md file 0644 8040eed460f74fbece44b0f5bf1080bf1d821f99d6a7119947028
 deploy/compose.yaml file 0644 a993cfffeb42db237179c3663f8e22e574580ef0c7ab74a008664b961c332933
 frontend dir 0755
 frontend/.gitignore file 0644 2dd21d60d8b83062584d4be22e8b314de402773497ce0041fccdd6968fbc34aa
-frontend/README.md file 0644 cf7ef90d14f95f57354bbf866cfdf5ef5a642c649a347e218dbb7cf6f8cf4a04
-frontend/package.json file 0644 b2555c9c8d27ecd1e7815b60e7144b7565cfade0090832b0ce2f9b3e53ffe2e3
+frontend/README.md file 0644 4bd3d0d6cbe2e03810cbc9f725e4f4489e0d4aa49963993e0d2203130fe2a72e
+frontend/package.json file 0644 af775389673f8b693e7cb57b57b10093e9794cde3966173be420dc6e8a247fd2
 frontend/scripts dir 0755
+frontend/scripts/check-contrast.mjs file 0644 00f14303678904bdfe17afd6770cfe527f8cdaa4dc56980fdfbcc2acbba1bc21
 frontend/scripts/check-runes.mjs file 0644 f95e911aebdf9dea61b46f1546f902dec5be6f800a70fe539bab17c3a4b47db8
 frontend/src dir 0755
-frontend/src/app.css file 0644 5015474a40107560eb09eb5bc3f28bef1beae96d7030fc2068f11253e7c58033
+frontend/src/app.css file 0644 fdbdd763c8b9822d8d1fe43391fcc970b954969d67ca1902a694baf39218113f
 frontend/src/app.d.ts file 0644 d231593a748a2379dc8248d2a06d2d8ef723c8e8f8a4a3b18291444dac38f861
-frontend/src/app.html file 0644 7e5338b791f818f9e4cbb2d84d9a2e04dc674415292da1061d6634cb206dbb18
+frontend/src/app.html file 0644 5d4fbe7bc5e68f20ee5731d289811a4c46de50f629e2588748ca44a78f3993b1
 frontend/src/lib dir 0755
 frontend/src/lib/api dir 0755
 frontend/src/lib/api/client.test.ts file 0644 5041790d4a2cbd6b159b6616147dea14380adbf8e1193bbae26e09af0c71e83c
@@ -55,7 +56,7 @@ frontend/src/lib/api/schema.d.ts file 0644 e3f7af578b9bb3b00cfc5875f783af95c6c4c
 frontend/src/routes dir 0755
 frontend/src/routes/+layout.svelte file 0644 7fd5a3d417470dc49c42f74fbfa39e12d138f22e5c879215d9738c2800c5d1a6
 frontend/src/routes/+layout.ts file 0644 e87dac774059cbb98b215cbd26e605048b59990262f3e11898f79dd6f79f9c29
-frontend/src/routes/+page.svelte file 0644 450d50da52e4e0210b94e2148b3c9cecca3211f3f23f0663fb19ffed2775c69e
+frontend/src/routes/+page.svelte file 0644 f7bf1c115052a4fa384843cc02728ef5949b74446d8ad493f6fcd1b3cd89b387
 frontend/static dir 0755
 frontend/static/favicon.svg file 0644 eb78958ea23231a46ef84123653ecbeb7eda847b779fa4e72981933e1e7a5285
 frontend/svelte.config.js file 0644 d290c5b3e673ab33a1b79e093db8acd30dac7cc3b56c90bd5452f1da0e2d3af1

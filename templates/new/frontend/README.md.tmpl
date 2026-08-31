@@ -40,6 +40,41 @@ empty `items` as `[]`, never `null`, and do not add a client-side envelope.
 suite is Node-only and covers the fetch wrapper. Browser component and
 Playwright coverage arrive with the application-shell milestone.
 
+## Design tokens
+
+Every color, radius, shadow, duration, and control height lives in
+`src/app.css` and nowhere else. Components write `bg-surface text-text-muted
+border-line`, never `bg-white text-zinc-600 border-zinc-200` — a color
+spelled the second way is one a rebrand cannot reach.
+
+Tokens are named by role. The distinction worth learning is `--line`, the
+decorative rule between things already distinguishable by their surfaces,
+versus `--control-line`, the boundary that tells a person where an input is.
+WCAG 2.2 SC 1.4.11 applies to the second and not the first, which is why only
+the second is held to 3:1.
+
+`@theme inline` publishes each role to Tailwind **by reference**. Keep the
+`inline`: without it Tailwind copies the current value at build time and both
+themes render as light.
+
+To rebrand, edit the two theme blocks at the top of `app.css` and run
+`pnpm check`. `scripts/check-contrast.mjs` proves 27 foreground/background
+pairs meet WCAG 2.2 AA in each theme and names any pair that does not,
+with the ratio it measured and the ratio it needs. Contrast is the one
+accessibility property no component code can recover, and the one a rebrand
+breaks without anyone noticing.
+
+`:focus-visible` is styled once, globally, on the ring token, so no component
+can ship without a focus indicator. Do not remove it per component.
+
+## Themes
+
+`<html>` always carries `data-theme="light"` or `data-theme="dark"` — never
+`"system"`, never absent. `app.css` keys both palettes and `color-scheme` off
+that attribute, so the attribute is the entire theme mechanism and there is no
+`prefers-color-scheme` copy of either palette to keep in sync. The static
+value in `app.html` is only the pre-JavaScript default.
+
 ## Runes only
 
 This application is Svelte 5 runes-only, and `pnpm check` refuses Svelte 4
