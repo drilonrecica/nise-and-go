@@ -20,16 +20,19 @@
 //   - runtime/pagination    authenticated versioned cursor tokens, key
 //     rotation, cursor request parsing, and the separate offset reporting
 //     contract
+//   - runtime/password      Argon2id hashing, versioned parameter sets,
+//     rehash detection, and parameter benchmarking
 //
 // The name runtime/internal is reserved for shared implementation. No such
 // package exists yet: every package above compiles against the standard library
-// alone. If one is added, the Go toolchain makes it invisible to applications,
+// alone, except runtime/password, which uses golang.org/x/crypto/argon2 because
+// Argon2id is not in the standard library. If one is added, the Go toolchain makes it invisible to applications,
 // and it will carry no compatibility promise.
 //
 // # Boundaries
 //
-// A runtime package may import the standard library and, should one ever exist,
-// runtime/internal. It may import another runtime package only along an edge
+// A runtime package may import the standard library, golang.org/x/crypto for
+// the one algorithm named above, and, should one ever exist, runtime/internal. It may import another runtime package only along an edge
 // named in ADR 0011;
 // today that is lifecycle depending on config, logging, and health. No runtime
 // package imports internal, cmd, templates, test, or examples.

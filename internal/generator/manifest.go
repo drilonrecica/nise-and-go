@@ -119,6 +119,7 @@ var templateFiles = []templateFile{
 	{Template: "internal/app/database.go.tmpl", Output: "internal/app/database.go", Owner: OwnerApp},
 	{Template: "internal/app/database_runtime.go.tmpl", Output: "internal/app/database_runtime.go", Owner: OwnerApp},
 	{Template: "internal/app/modes.go.tmpl", Output: "internal/app/modes.go", Owner: OwnerApp},
+	{Template: "internal/app/password.go.tmpl", Output: "internal/app/password.go", Owner: OwnerApp},
 	{Template: "internal/app/modules.gen.go.tmpl", Output: "internal/app/modules.gen.go", Owner: OwnerNise},
 	{Template: "internal/features/README.md.tmpl", Output: "internal/features/README.md", Owner: OwnerApp},
 	{Template: "internal/platform/config/config.go.tmpl", Output: "internal/platform/config/config.go", Owner: OwnerApp},
@@ -153,6 +154,8 @@ var templateFiles = []templateFile{
 	{Template: "internal/platform/httpapi/transport_test.go.tmpl", Output: "internal/platform/httpapi/transport_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/idempotency/idempotency.go.tmpl", Output: "internal/platform/idempotency/idempotency.go", Owner: OwnerApp},
 	{Template: "internal/platform/idempotency/idempotency_test.go.tmpl", Output: "internal/platform/idempotency/idempotency_test.go", Owner: OwnerApp},
+	{Template: "internal/platform/passwords/passwords.go.tmpl", Output: "internal/platform/passwords/passwords.go", Owner: OwnerApp},
+	{Template: "internal/platform/passwords/passwords_test.go.tmpl", Output: "internal/platform/passwords/passwords_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/webui/embedded/placeholder.html.tmpl", Output: "internal/platform/webui/embedded/placeholder.html", Owner: OwnerNise},
 	{Template: "internal/platform/webui/webui.go.tmpl", Output: "internal/platform/webui/webui.go", Owner: OwnerNise},
 }

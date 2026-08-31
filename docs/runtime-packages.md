@@ -2,7 +2,7 @@
 
 `runtime/` is the only Go API generated applications import. Everything else in the repository — `cmd/`, `internal/`, `templates/`, `test/`, `examples/` — is private and may change in any release.
 
-The package list and the boundary rules are fixed by [ADR 0011](adr/0011-runtime-public-api.md), as amended by [ADR 0015](adr/0015-use-case-owned-transactions.md) and [ADR 0016](adr/0016-authenticated-cursor-pagination.md). This page is the index and the status board.
+The package list and the boundary rules are fixed by [ADR 0011](adr/0011-runtime-public-api.md), as amended by [ADR 0015](adr/0015-use-case-owned-transactions.md), [ADR 0016](adr/0016-authenticated-cursor-pagination.md), and [ADR 0017](adr/0017-security-primitives-in-runtime.md). This page is the index and the status board.
 
 Import path prefix: `github.com/drilonrecica/nise-and-go/runtime/…` ([ADR 0007](adr/0007-module-path-and-owner.md)).
 
@@ -19,8 +19,9 @@ Import path prefix: `github.com/drilonrecica/nise-and-go/runtime/…` ([ADR 0007
 | `runtime/secure` | Security headers and Content Security Policy for the embedded frontend. | implemented | M2-012 |
 | `runtime/transaction` | Driver-independent use-case transaction lifecycle, rollback bounds, and closed isolation/access options. | implemented | M3-005 |
 | `runtime/pagination` | Authenticated versioned cursor tokens, key rotation, cursor parsing, and the separate offset reporting contract. | implemented | M4-007, M4-008 |
+| `runtime/password` | Argon2id hashing, versioned parameter sets, rehash detection, constant-cost dummy verification, and parameter benchmarking. | implemented | M5-004 |
 
-`runtime/internal/…` is reserved for shared implementation. No such package exists yet — every `runtime/` package to date compiles against the standard library alone. If one is added, the Go toolchain makes it invisible to applications, and it will carry no compatibility promise.
+`runtime/internal/…` is reserved for shared implementation. No such package exists yet. Every `runtime/` package compiles against the standard library alone, except `runtime/password`, which uses `golang.org/x/crypto/argon2` because Argon2id is not in the standard library and a hand-written password KDF is exactly the thing this project must not contain. If one is added, the Go toolchain makes it invisible to applications, and it will carry no compatibility promise.
 
 Compile-time modules live under `modules/`, are selected at generation time, and are recorded in the project recipe ([ADR 0010](adr/0010-project-recipe-format.md)). They are a separate public surface with the same stability policy.
 

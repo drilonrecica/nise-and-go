@@ -27,5 +27,6 @@ ADRs record consequential decisions, their context, and their tradeoffs. They pr
 - [0014: Keep sqlc configuration with each feature](0014-feature-colocated-sqlc.md)
 - [0015: Keep transaction ownership in use cases](0015-use-case-owned-transactions.md)
 - [0016: Authenticate pagination cursors and bind them to their query](0016-authenticated-cursor-pagination.md)
+- [0017: Security primitives belong to the runtime, security policy to the application](0017-security-primitives-in-runtime.md)
 
 New records copy [template.md](template.md) and use the next four-digit number. Do not rewrite an accepted ADR to hide a reversal; add a new ADR that supersedes it.

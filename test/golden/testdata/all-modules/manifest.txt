@@ -18,8 +18,8 @@ api/oapi-codegen.yaml file 0644 d309bcb97daca34cbe295ab8deeb503f7a9081599ec52ad2
 api/openapi.yaml file 0644 b005f50b6ebbe5139d3efa6920ab5b00eef5e967ddf6f2b709465459dafdc765
 cmd dir 0755
 cmd/myapp dir 0755
-cmd/myapp/main.go file 0644 63f3365d397387f6a33691be538d77a893a16e95ec1f674be2e8e4eef0a65c7a
-cmd/myapp/main_test.go file 0644 3f6d159818302b4e0443e8d8a98207d2e2510e7b1436483d53fd4d9be59516af
+cmd/myapp/main.go file 0644 7a4110e9b2e7073b25ca6e5d7e44095f2433833e42d6bb95ce7408c25a9de760
+cmd/myapp/main_test.go file 0644 9d12cf393a8085360521fd6949db1efb755d445261828ea4f70c490cb57392f6
 db dir 0755
 db/README.md file 0644 1e628486465083fcef776a87d31a9473859f29e7fb1b9e623306035620e5236d
 db/embed.gen.go file 0644 010c6a8323334efdddb37f021a05be6e886239dcfb0a582191db28944e29a0a2
@@ -54,7 +54,7 @@ frontend/svelte.config.js file 0644 d290c5b3e673ab33a1b79e093db8acd30dac7cc3b56c
 frontend/tsconfig.json file 0644 d8a3f998af73617b07026a41adfbf33f7004647bc4a6759c00d7cc8b06c29e2a
 frontend/vite.config.ts file 0644 57a86e48dcebe27e59bcfe9d7336f5329b32df27390426ef77826c3c65c4d69d
 frontend/vitest.config.ts file 0644 490ddf8c71d0f94c3a09775e0919bf8cf2a16ef3a244267954b06c62f8740f59
-go.mod file 0644 992cd8286e02ae25334928367e216b804312106218d023d080e21dbac6e2a648
+go.mod file 0644 5c40be901f9f80eb2fa6a5b40125a8a4cb14bc9480e3ce0fcc22ebd7940e4dde
 internal dir 0755
 internal/app dir 0755
 internal/app/app.go file 0644 cad394ec19cf955955401e64e3cc367fdff2b3a9e4b73849ef5ef21738a337e3
@@ -62,6 +62,7 @@ internal/app/database.go file 0644 0dda4beca6185845806aafa2f0211db9b8c8c832cbf9e
 internal/app/database_runtime.go file 0644 cebda86bbdf1a0094abe173b61e8785fc752dea884089bbddcaa8108598ff4d5
 internal/app/modes.go file 0644 0ce6c95c483fe4cf922ae6c44cd80ad6c5c5583d403b469161520633fef9875d
 internal/app/modules.gen.go file 0644 52ab6fe8acba04a0d3c54f654c34c051ae6d7c453720a52edeac2d882199fcc2
+internal/app/password.go file 0644 16a4418847794ac9752b4d27f9241a891e1bacbbe1a4f0d2fab9060bbad3541d
 internal/features dir 0755
 internal/features/README.md file 0644 e16f247b07414f63ca7ff3b17910caae0f8200b09fb95227e7c5f38c84b4d108
 internal/platform dir 0755
@@ -108,6 +109,9 @@ internal/platform/httpapi/transport_test.go file 0644 6a16f3907a2f2aba0bcd81f043
 internal/platform/idempotency dir 0755
 internal/platform/idempotency/idempotency.go file 0644 a0f8f5f4ccf5b0bcf6da17b577ad40f3e7a3863d4f96e9711f2700bb167e60f9
 internal/platform/idempotency/idempotency_test.go file 0644 82000189086ba82c3cec2ae2c3007c7f981ba91e20484551b3d9d35ab89e3ae2
+internal/platform/passwords dir 0755
+internal/platform/passwords/passwords.go file 0644 e87127a43ccbfae7ab1a04c9ba3fb97064bb3cdace34f648018a5b947c42d0b4
+internal/platform/passwords/passwords_test.go file 0644 353fa18bfc59d6b13927c551e6ecf5f9b951219a51d386c26ec464bc3065733e
 internal/platform/webui dir 0755
 internal/platform/webui/embedded dir 0755
 internal/platform/webui/embedded/placeholder.html file 0644 e39daa990ad2cd225e7d4491092d4d56600b509705c9d63c4c082a111cbcf772

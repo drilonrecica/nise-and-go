@@ -42,6 +42,7 @@ applications have their separate allowlist below.
 | `github.com/sqlc-dev/sqlc/cmd/sqlc` | Framework tool (`tool` directive) | Generates type-safe Go from SQL for the generated application's data layer. sqlc is the database default: queries are handwritten SQL colocated with the feature that owns them, and sqlc generates the typed Go for them, so there is no ORM, query builder, or schema DSL between the application and its SQL. Never imported by `runtime/`, `internal/`, or `cmd/` — invoked only as `go tool sqlc`. | Nise stops using sqlc as the generated-application query generator. |
 | `github.com/pressly/goose/v3/cmd/goose` | Framework tool (`tool` directive) | Runs and generates handwritten SQL migrations. goose is the migration runner because migrations are primarily handwritten SQL, embedded in the application binary while staying readable SQL in the repository, and applied as an explicit deployment step rather than on startup. Never imported by `runtime/`, `internal/`, or `cmd/` — invoked only as `go tool goose`. | Nise stops using goose as the migration runner. |
 | `github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen` | Framework tool (`tool` directive) | Generates strict chi server bindings from the authoritative OpenAPI document. Never imported by `runtime/`, `internal/`, or `cmd/` — invoked only as `go tool oapi-codegen`. | Nise stops treating OpenAPI as authoritative for generated server code. |
+| `golang.org/x/crypto/argon2` (`v0.54.0`) | Framework runtime (`runtime/password` only) | Argon2id is not in the Go standard library, and a hand-written password KDF is exactly the class of code this project must not contain. `golang.org/x/crypto` is maintained by the Go team, was already in the module graph as a transitive dependency, and is imported by exactly one package. Nothing else in `runtime/` imports it. | The standard library gains Argon2id, or Nise stops using Argon2id for password hashing. |
 
 The remaining 101 entries in `go.mod`'s `require (... // indirect)` block
 are transitive dependencies of the three tools above (for example
@@ -54,8 +55,12 @@ directive and rejected because of the dependency-graph weight it would add;
 see [toolchain.md](toolchain.md) for the measured evidence and the version-
 pin alternative used instead.
 
-**Framework runtime layer:** none. Zero runtime dependencies is the explicit
-target for M0, M1, and M2 (see the rule above).
+**Framework runtime layer:** `golang.org/x/crypto/argon2`, imported by
+`runtime/password` and by nothing else. Zero runtime dependencies was the
+explicit target for M0, M1, and M2 and was met; M5 spends it exactly once, on
+the one primitive the standard library does not provide and that must not be
+written by hand. Every other `runtime/` package still compiles against the
+standard library alone.
 
 **Framework tool layer:** the three `tool` directives listed above, plus
 `golangci-lint` pinned by version rather than by `tool` directive.
@@ -82,6 +87,7 @@ version; those entries name the package only.
 | `github.com/pressly/goose/v3` (`v3.27.3`, runtime plus generated-project `tool` directive) | Loads readable embedded SQL migrations through an instance-scoped provider. The generated migrator disables Goose's package-global registry, owns a dedicated pgx `database/sql` connection, and serializes explicit migration runs with PostgreSQL advisory locking. |
 | `github.com/sqlc-dev/sqlc/cmd/sqlc` (`v1.31.1`, generated-project `tool` directive) | Generates each feature's typed `store/` package from its handwritten SQL and feature-local config. Generated commands pass `--no-remote`; no hosted sqlc service is required. |
 | `github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen` (`v2.8.0`, generated-project `tool` directive) | Generates checked-in strict chi bindings from `api/openapi.yaml`. The application-owned config enables models, chi server, and strict server only; `make api-check` proves the output byte-for-byte without mutating it. |
+| `golang.org/x/crypto` (`v0.54.0`) | Reached through `runtime/password`, which is where the generated application's Argon2id hashing lives. The application does not import it directly. |
 | `github.com/riverqueue/river` | The background-job runner, used transactionally through pgx. Jobs are PostgreSQL-backed so a job can be enqueued in the same transaction as the business change that requires it — which is why there is no separate message broker in the denylist below. |
 | sqlc-generated query code | Output of `sqlc generate`; tool-owned complete `store/` directories, checked in and never hand-edited. |
 | goose migration files and runtime support | Handwritten SQL migrations run by Goose v3.27.3, embedded in the binary and applied as an explicit deployment step. |

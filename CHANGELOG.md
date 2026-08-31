@@ -27,6 +27,14 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   expires records on a bounded sweep. Adds the `invalid_idempotency_key`,
   `idempotency_conflict`, and `idempotency_key_reuse` Problem types.
 
+- Add the public `runtime/password` package: Argon2id hashing in the standard
+  PHC encoding, versioned parameter sets with rehash detection and explicit
+  retirement, constant-cost dummy verification for the unknown-account path,
+  and a parameter benchmark. Generated applications gain an application-owned
+  parameter history in `internal/platform/passwords` and a
+  `<app> password benchmark` command. Adds `golang.org/x/crypto` as the first
+  and only `runtime/` dependency outside the standard library.
+
 ### Fixed
 
 - Generated applications answered a request whose HTTP method is outside chi's
