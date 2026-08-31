@@ -104,6 +104,14 @@ Branch on `code`, not on the status. The server has one catalog of problems and 
 
 Field-level validation errors are not in the contract: the `Problem` schema is `additionalProperties: false` and carries no per-field member. Client-side field validation is Valibot's job, and the server remains authoritative.
 
+### End-to-end journeys
+
+`frontend/e2e/` drives a real browser against the real binary and a real database, because a journey proved against a mock is a journey proved against the mock. That is also why it is opt-in — `nise test --e2e`, `pnpm test:e2e` — rather than part of `pnpm check`: it needs a database and takes minutes.
+
+A journey earns a place here if its failure means nobody can use the application. It does not earn one because it is hard to unit test. Assertions are about what a person experiences — a form, a refusal that says what to do, a page they end up on — because the calls underneath are already covered by the transport tests, and what no unit test can see is that the pieces are wired to each other.
+
+Journeys run one at a time against one database: parallelism buys seconds and costs the ability to reason about a failure. The config builds and starts the application itself, or points at one already running through `APP_BASE_URL`. The authenticated journey reads its credentials from `E2E_EMAIL`/`E2E_PASSWORD` and skips with a reason when they are absent — an account is deployment-specific, and "a way to create an administrator from outside the application" is not a thing to build for a test.
+
 ### Two test suites
 
 | Suite | Where it runs | What belongs in it |

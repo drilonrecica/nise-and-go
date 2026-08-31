@@ -1,0 +1,58 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { expect, test } from '@playwright/test';
+
+// The journey without which nobody can use the application at all.
+//
+// It asserts what a person experiences — a form, a refusal that says what to
+// do, a shell they end up inside — rather than the calls underneath, because
+// the calls are already covered by the transport tests and the point of an
+// end-to-end test is the part no unit can see: that the pieces are wired to
+// each other.
+
+test.describe('signing in', () => {
+	test('sends somebody who is not signed in to the sign-in form', async ({ page }) => {
+		await page.goto('/');
+
+		// A protected route reached without a session is a redirect, not an
+		// empty shell full of failed requests.
+		await expect(page).toHaveURL(/\/sign-in/);
+		await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+	});
+
+	test('remembers where somebody was going', async ({ page }) => {
+		await page.goto('/settings');
+
+		// The destination travels as a parameter so the sign-in can send them
+		// back to it; it is validated on the way out, because a redirect
+		// target somebody else can choose is an open redirect.
+		await expect(page).toHaveURL(/next=%2Fsettings/);
+	});
+
+	test('refuses a wrong password without saying which part was wrong', async ({ page }) => {
+		await page.goto('/sign-in');
+		await page.getByLabel('Email').fill('nobody@example.test');
+		await page.getByLabel('Password').fill('not the right password');
+		await page.getByRole('button', { name: 'Sign in' }).click();
+
+		const alert = page.getByRole('alert');
+		await expect(alert).toBeVisible();
+		// One refusal for an unknown address, a wrong password, and a disabled
+		// account. A message that distinguished them would make this form a
+		// way to enumerate the directory.
+		await expect(alert).toContainText(/do not match/i);
+		await expect(page).toHaveURL(/\/sign-in/);
+	});
+
+	test('keeps the theme choice across a reload', async ({ page }) => {
+		await page.goto('/sign-in');
+		await page.getByRole('radio', { name: 'Dark' }).check();
+		await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+
+		await page.reload();
+		// The first-paint script in app.html is what makes this true before
+		// any module has run; without it a dark-mode reader gets a white flash
+		// on every cold load.
+		await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+	});
+});

@@ -27,8 +27,21 @@ const ACCEPT = `application/json, ${problemMediaType}`;
  * this script has to read it and echo it in a header — and that is the entire
  * mechanism: a form posted from another origin cannot set a request header.
  * See docs/sessions.md.
+ *
+ * There are two names because the server's cookie policy has two. The name is
+ * the session cookie's name plus `_csrf`, and the session cookie gives up its
+ * `__Host-` prefix when SESSION_COOKIE_INSECURE is set — a browser rejects
+ * `__Host-` without Secure, so the escape hatch has to rename the cookie as
+ * well as change the attribute. Production refuses that setting outright, so
+ * the second name only ever appears on a development origin that has already
+ * given the prefix up deliberately.
+ *
+ * The list is closed and matched exactly. Matching by suffix would accept a
+ * cookie a sibling subdomain planted, which is the entire thing `__Host-`
+ * exists to prevent. An application that sets SESSION_COOKIE_NAME to
+ * something else edits this list — it owns this file.
  */
-const CSRF_COOKIE = '__Host-session_csrf';
+const CSRF_COOKIE_NAMES = ['__Host-session_csrf', 'session_csrf'];
 const CSRF_HEADER = 'X-CSRF-Token';
 
 /** The header carrying a client-generated key for a sensitive command. */
@@ -311,19 +324,26 @@ export const api = createAPIClient();
 /**
  * Read the anti-forgery cookie.
  *
- * The name is matched exactly rather than by prefix: `__Host-session_csrf`
- * and a cookie called `x__Host-session_csrf` are different cookies, and
- * matching loosely is how a value an attacker could set gets echoed into the
- * header the server trusts.
+ * Names are matched exactly rather than by prefix or suffix:
+ * `__Host-session_csrf` and a cookie called `x__Host-session_csrf` are
+ * different cookies, and matching loosely is how a value an attacker could
+ * set gets echoed into the header the server trusts. The hardened name is
+ * preferred, so a document carrying both — a leftover from a policy change —
+ * uses the one the server would have written last.
  */
 export function readCSRFCookie(source: string | undefined = globalThis.document?.cookie): string | null {
 	if (!source) return null;
+	const present = new Map<string, string>();
 	for (const pair of source.split(';')) {
 		const separator = pair.indexOf('=');
 		if (separator < 0) continue;
-		if (pair.slice(0, separator).trim() !== CSRF_COOKIE) continue;
+		const name = pair.slice(0, separator).trim();
 		const value = pair.slice(separator + 1).trim();
-		return value === '' ? null : value;
+		if (value !== '' && !present.has(name)) present.set(name, value);
+	}
+	for (const name of CSRF_COOKIE_NAMES) {
+		const value = present.get(name);
+		if (value !== undefined) return value;
 	}
 	return null;
 }

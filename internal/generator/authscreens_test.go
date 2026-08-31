@@ -421,3 +421,56 @@ func TestGeneratedComponentTestFoundations(t *testing.T) {
 		}
 	}
 }
+
+// TestGeneratedEndToEndFoundation pins what the end-to-end suite is for and
+// what keeps it usable (Nise task M6-015).
+func TestGeneratedEndToEndFoundation(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, defaultOptions())
+
+	config, exists := content["frontend/playwright.config.ts"]
+	if !exists {
+		t.Fatal("generated project lacks frontend/playwright.config.ts")
+	}
+	for _, fragment := range []string{
+		"testDir: './e2e'",
+		// Journeys share one database, so they run one at a time.
+		"workers: 1",
+		"fullyParallel: false",
+		// A trace of the first retry is what makes a CI failure readable
+		// hours later.
+		"trace: 'on-first-retry'",
+		// Point it at a running instance, or let it build and start one.
+		"process.env.APP_BASE_URL",
+		"healthz/ready",
+	} {
+		if !strings.Contains(config, fragment) {
+			t.Errorf("playwright.config.ts lacks %q", fragment)
+		}
+	}
+
+	// The authenticated journey needs an account, which is deployment-specific,
+	// so it skips with a reason rather than inventing a way to create one from
+	// outside the application.
+	session := content["frontend/e2e/session.spec.ts"]
+	for _, fragment := range []string{
+		"process.env.E2E_EMAIL",
+		"test.skip(",
+		// The credential is in a cookie the page cannot read.
+		"expect(readable).not.toContain('session=')",
+	} {
+		if !strings.Contains(session, fragment) {
+			t.Errorf("e2e/session.spec.ts lacks %q", fragment)
+		}
+	}
+
+	// The suite is opt-in: it needs a database and takes minutes, so it is not
+	// part of the checks that run on every change.
+	if strings.Contains(content["frontend/package.json"], `"check": "pnpm run api:check && pnpm run messages:compile && pnpm run check:runes && pnpm run check:contrast && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && playwright`) {
+		t.Error("pnpm check runs the end-to-end suite; it needs a database and belongs behind nise test --e2e")
+	}
+	if !strings.Contains(content["frontend/package.json"], `"test:e2e": "playwright test"`) {
+		t.Error("frontend/package.json does not declare test:e2e, which nise test --e2e looks for")
+	}
+}

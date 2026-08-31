@@ -1,0 +1,49 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+import { defineConfig, devices } from '@playwright/test';
+
+// End-to-end tests are the slowest and most brittle layer of the pyramid, so
+// this suite covers *journeys* rather than coverage: the paths where a defect
+// means nobody can use the application at all. Everything else belongs in the
+// component suite, which runs in a browser too and takes seconds.
+//
+// It drives the real binary against a real database, which is the whole point
+// — a journey proved against a mock is a journey proved against the mock. That
+// also means it needs both, so it is deliberately not part of `pnpm check` and
+// is opt-in from `nise test --e2e`.
+//
+// APP_BASE_URL points the suite at an application that is already running.
+// Without it, the config starts one: `make dist` first, then the binary.
+const baseURL = process.env.APP_BASE_URL ?? 'http://127.0.0.1:8080';
+
+export default defineConfig({
+	testDir: './e2e',
+	// One retry locally is a flaky test hidden; in CI it is a flaky test that
+	// still blocks the merge but does not block it twice.
+	retries: process.env.CI ? 1 : 0,
+	// Journeys share one database, so they run one at a time. Parallelism here
+	// buys seconds and costs the ability to reason about why a run failed.
+	workers: 1,
+	fullyParallel: false,
+	// A test that only passes in CI because CI is slower is a test that will
+	// fail on somebody's laptop; the timeout is the same everywhere.
+	timeout: 30_000,
+	expect: { timeout: 5_000 },
+	reporter: process.env.CI ? [['github'], ['list']] : [['list']],
+	use: {
+		baseURL,
+		// A trace of the first retry is what makes a failure somebody can read
+		// six hours later in a CI log.
+		trace: 'on-first-retry',
+		screenshot: 'only-on-failure'
+	},
+	projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+	webServer: process.env.APP_BASE_URL
+		? undefined
+		: {
+				command: 'make -C .. dist && ../bin/{{.AppName}}',
+				url: `${baseURL}/healthz/ready`,
+				reuseExistingServer: !process.env.CI,
+				timeout: 180_000
+			}
+});

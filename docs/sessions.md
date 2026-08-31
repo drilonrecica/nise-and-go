@@ -233,7 +233,14 @@ exactly when the session does, and one session's token cannot verify against
 another. The derivation is one-way, so handing the value to the browser reveals
 nothing about the credential.
 
-It is delivered in `__Host-session_csrf`, which shares every attribute of the
+It is delivered in the session cookie's own name plus `_csrf` — normally
+`__Host-session_csrf`, and `session_csrf` where `SESSION_COOKIE_INSECURE` has
+given the prefix up, since a browser rejects `__Host-` without `Secure` and the
+escape hatch has to rename the cookie as well as change the attribute.
+Production refuses that setting outright. The generated client matches that
+closed pair of names exactly, preferring the hardened one; matching by suffix
+would accept a cookie a sibling subdomain planted, which is the entire thing
+`__Host-` exists to prevent. It shares every attribute of the
 session cookie **except** `HttpOnly` — the application's own script has to read
 it to echo it in a header, and that is the entire mechanism. Handing it to
 script costs nothing an attacker does not already have after cross-site

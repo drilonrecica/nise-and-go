@@ -20,6 +20,7 @@
     "test:browser": "pnpm run messages:compile && svelte-kit sync && vitest run --project browser",
     "test:component": "pnpm run messages:compile && svelte-kit sync && vitest run",
     "test:browser:install": "playwright install chromium",
+    "test:e2e": "playwright test",
     "api:generate": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts",
     "api:check": "openapi-typescript ../api/openapi.yaml -o src/lib/api/schema.d.ts --check"
   },
