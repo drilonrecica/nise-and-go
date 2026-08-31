@@ -178,3 +178,48 @@ func TestGeneratedFormConventions(t *testing.T) {
 		}
 	}
 }
+
+// TestGeneratedListStateLivesInTheURL pins the list contract (Nise task
+// M6-010): the URL is the state, one state has one URL, and the table renders
+// what the server sent.
+func TestGeneratedListStateLivesInTheURL(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, defaultOptions())
+
+	state, exists := content["frontend/src/lib/table/list-state.ts"]
+	if !exists {
+		t.Fatal("generated project lacks frontend/src/lib/table/list-state.ts")
+	}
+	for _, fragment := range []string{
+		"export function readListState(",
+		"export function listHref(",
+		"export function nextSort(",
+		"export function ariaSort(",
+		// Paging is the only change that keeps a cursor: the API refuses one
+		// presented against a different query.
+		"const paging = change.after !== undefined || change.before !== undefined;",
+		// One state, one URL.
+		"for (const name of [...Object.keys(next.filters)].sort()) {",
+	} {
+		if !strings.Contains(state, fragment) {
+			t.Errorf("list-state.ts lacks %q", fragment)
+		}
+	}
+
+	table := content["frontend/src/lib/components/ui/DataTable.svelte"]
+	for _, fragment := range []string{
+		// The server sorts, filters, and pages. A table that did any of it
+		// locally would make what a person sees disagree with the URL.
+		"manualSorting: true",
+		"manualFiltering: true",
+		"manualPagination: true",
+		// A sortable header is a link with a real href, and says its state.
+		"aria-sort={canSort ? ariaSort(sort, header.column.id) : undefined}",
+		"href={listHref(url, { sort: nextSort(sort, header.column.id) }, filters)}",
+	} {
+		if !strings.Contains(table, fragment) {
+			t.Errorf("DataTable.svelte lacks %q", fragment)
+		}
+	}
+}

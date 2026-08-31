@@ -40,7 +40,7 @@ deploy/compose.yaml file 0644 a993cfffeb42db237179c3663f8e22e574580ef0c7ab74a008
 frontend dir 0755
 frontend/.gitignore file 0644 2dd21d60d8b83062584d4be22e8b314de402773497ce0041fccdd6968fbc34aa
 frontend/README.md file 0644 77dae261d467ec50d4f68a39d1ecc30c02c35837bb26628096985db3236fbadc
-frontend/package.json file 0644 d9910b539d9ab817038c121667fa68f7bce37a1fd6a9b584366318db2ce92f90
+frontend/package.json file 0644 24a9bbb1cafbb2dc6da96c7065296151c047e765bcaa74a773161c0279aab298
 frontend/scripts dir 0755
 frontend/scripts/check-contrast.mjs file 0644 c918f83e166cf2f7f68b13619f7f0b2a29068d5717097d8a8ec2a4f4e2c3a714
 frontend/scripts/check-runes.mjs file 0644 f95e911aebdf9dea61b46f1546f902dec5be6f800a70fe539bab17c3a4b47db8
@@ -71,6 +71,7 @@ frontend/src/lib/components/ui/Badge.svelte file 0644 caf321871713a71af14435c45d
 frontend/src/lib/components/ui/Button.svelte file 0644 ac9c70e61f5ed1ea24dd003fb93ab0526aee68b70e9eb3ce567718515629e7be
 frontend/src/lib/components/ui/Checkbox.svelte file 0644 1022368bfe6b5ec55c9164292712492e110d6221c550e487f8745fafeddccd3f
 frontend/src/lib/components/ui/ConfirmDialog.svelte file 0644 97c0e52e5a0ae8fc348bc3ac5a2a03f6b5c0ccc1ad064219dbd0066f7bd93814
+frontend/src/lib/components/ui/DataTable.svelte file 0644 6e7480f96c3188071ae4e813164f3622107c792036cf3673d221cb0fabcb6875
 frontend/src/lib/components/ui/Dialog.svelte file 0644 0278321ebe59512fc1bcb0ab39fc791c6bf0e34ced364cb3affcd84b3c598c86
 frontend/src/lib/components/ui/Field.svelte file 0644 a4eae224e7af685cba83b2202ea3ed66fb76ec105f58e4f2b7ca9a683460996a
 frontend/src/lib/components/ui/Icon.svelte file 0644 88175bfa382279c4ebe682d0b755e78c8394468db9901165b0fa47f100d1a74a
@@ -85,7 +86,7 @@ frontend/src/lib/components/ui/Table.svelte file 0644 58ddc03ef56feccdbf4d578908
 frontend/src/lib/components/ui/Textarea.svelte file 0644 6d322e79416eb6d274b3e0a6abe9f5a89319dee69b6d3b3dab6d32244d5390bc
 frontend/src/lib/components/ui/Toaster.svelte file 0644 d188476e1b39c13a83f430ab999057ebc92ef549d175e9e4064acbb22f0098d9
 frontend/src/lib/components/ui/Tooltip.svelte file 0644 aa3ffc66eff1f31fdb3578e5c14b1aa90f623adf3df989120dbba17db61cae3a
-frontend/src/lib/components/ui/icons.ts file 0644 ed2440505082cb982a49aef71c5d41bee06e32f48fb094d6786e6079eac4134e
+frontend/src/lib/components/ui/icons.ts file 0644 29f25727fc552b9fe173abdd90c08d32265c800ab92538f7aebc5ddcf2b49b12
 frontend/src/lib/components/ui/toast.svelte.ts file 0644 15897dca12363f4b9d2f4ce622828a204beacdb3ddea6227e8295d5e3eca1a07
 frontend/src/lib/components/ui/toast.test.ts file 0644 ba724dfd6210ff64456d2b3ac9fe5081f8b35d395d9c78969fc7cb6b28976bc8
 frontend/src/lib/forms.svelte.ts file 0644 55b2795d063a7f51f054c4df4bb737e868f47fe689de111f0a781cad2d2aa739
@@ -95,6 +96,9 @@ frontend/src/lib/navigation.ts file 0644 6217362979c28c8b5e08003dba80883da036a06
 frontend/src/lib/session.svelte.ts file 0644 48d620ecb7d2f579e6c08a92fa364953de85b8be10cf214b4d78b095255b8fb9
 frontend/src/lib/session.test.ts file 0644 3fc15d4b7ceaddcbb7a8942a00980b0f1a7a446af4e94cce1c2b74aef94ddef6
 frontend/src/lib/shell.svelte.ts file 0644 961dc9564d95fbd8e3a38ec2964ebbfd878824e73523104f49dc76efd29184a2
+frontend/src/lib/table dir 0755
+frontend/src/lib/table/list-state.test.ts file 0644 1f00836e7bd086f7c683eee3782e1aa3225848a0142eb3f8529bbeed24f48228
+frontend/src/lib/table/list-state.ts file 0644 161cbafb8404c6212a864f6307f09e6dc594a4fd73d611e74e7f0ec2662ab320
 frontend/src/lib/theme.svelte.ts file 0644 fb6137bd519e6b284446db250b0804c4def2eaf3e50bd281ce7d6cb472e01a75
 frontend/src/lib/theme.test.ts file 0644 bfff480428c32f68af228a2b88606dabb8d9c20e5738bc93a49879e6799e20df
 frontend/src/routes dir 0755

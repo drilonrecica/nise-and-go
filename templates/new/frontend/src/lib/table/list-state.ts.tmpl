@@ -1,0 +1,193 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// The URL is the list's state.
+//
+// Search, sort, filters, and the page a person is on live in the query string
+// and nowhere else. That is not a preference about tidiness: it is what makes
+// a filtered list something somebody can bookmark, send to a colleague, and
+// reach again with the back button. State held in a component instead is state
+// that disappears on reload and cannot be shared, and it is the single most
+// common thing an operational application gets wrong.
+//
+// Everything here is a pure function over a URL, which is what lets it be
+// tested without a browser and reused by a load function, a component, and a
+// link alike.
+
+/** The query-string parameter names. They are the wire contract with the API. */
+export const listParams = {
+	search: 'q',
+	sort: 'sort',
+	limit: 'limit',
+	after: 'after',
+	before: 'before'
+} as const;
+
+/** A sort, as one column and a direction. */
+export interface Sort {
+	column: string;
+	direction: 'asc' | 'desc';
+}
+
+/** Everything a list page reads out of its URL. */
+export interface ListState {
+	/** The free-text search, or an empty string. */
+	search: string;
+	/** The sort, or null for the collection's own default order. */
+	sort: Sort | null;
+	/** The named filters that were present, with their values. */
+	filters: Record<string, string>;
+	/** The cursor this page was reached by, if any. */
+	after?: string;
+	before?: string;
+	/** The requested page size, when the URL asks for one. */
+	limit?: number;
+}
+
+/** What a change to a list's state may set. Undefined means "leave alone". */
+export interface ListChange {
+	search?: string;
+	sort?: Sort | null;
+	/** Merged over the current filters. An empty string removes one. */
+	filters?: Record<string, string>;
+	after?: string;
+	before?: string;
+	limit?: number;
+}
+
+/**
+ * Read a list's state out of a URL.
+ *
+ * `filters` names the filter parameters this list understands. Naming them is
+ * what keeps an unrelated parameter — a tracking tag, a fragment somebody
+ * pasted — out of the request sent to the API, and out of the cursor binding
+ * that the API derives from it.
+ */
+export function readListState(url: URL, filters: readonly string[] = []): ListState {
+	const query = url.searchParams;
+	const state: ListState = {
+		search: (query.get(listParams.search) ?? '').trim(),
+		sort: parseSort(query.get(listParams.sort)),
+		filters: {}
+	};
+	for (const name of filters) {
+		const value = query.get(name);
+		if (value !== null && value !== '') {
+			state.filters[name] = value;
+		}
+	}
+	const after = query.get(listParams.after);
+	const before = query.get(listParams.before);
+	// after and before are mutually exclusive on the wire, and a URL carrying
+	// both is one somebody edited. Reading neither is safer than guessing
+	// which they meant: the collection answers with its first page.
+	if (after && !before) state.after = after;
+	if (before && !after) state.before = before;
+
+	const limit = Number(query.get(listParams.limit));
+	if (Number.isInteger(limit) && limit > 0) state.limit = limit;
+
+	return state;
+}
+
+/**
+ * Build the href for a change to the list's state.
+ *
+ * Two rules make this more than string concatenation.
+ *
+ * A change to what is being listed — the search, the sort, a filter — drops
+ * the cursor. The API binds a cursor to the query it was issued for and
+ * refuses one presented against a different query, so carrying it across would
+ * turn every filter change into an error the person has to recover from.
+ * Paging is the only change that keeps one.
+ *
+ * Parameters are written in a fixed order and empty values are removed rather
+ * than left as `?q=`. Two identical states therefore produce one identical
+ * URL, which is what keeps the back button, the browser's history entries, and
+ * a cache key all agreeing about whether anything changed.
+ */
+export function listHref(url: URL, change: ListChange, filters: readonly string[] = []): string {
+	const current = readListState(url, filters);
+	const paging = change.after !== undefined || change.before !== undefined;
+
+	const next: ListState = {
+		search: change.search ?? current.search,
+		sort: change.sort === undefined ? current.sort : change.sort,
+		filters: { ...current.filters },
+		limit: change.limit ?? current.limit
+	};
+	for (const [name, value] of Object.entries(change.filters ?? {})) {
+		if (value === '') {
+			delete next.filters[name];
+		} else {
+			next.filters[name] = value;
+		}
+	}
+	if (paging) {
+		if (change.after) next.after = change.after;
+		if (change.before) next.before = change.before;
+	}
+
+	const query = new URLSearchParams();
+	if (next.search !== '') query.set(listParams.search, next.search);
+	for (const name of [...Object.keys(next.filters)].sort()) {
+		query.set(name, next.filters[name]);
+	}
+	if (next.sort) query.set(listParams.sort, formatSort(next.sort));
+	if (next.limit !== undefined) query.set(listParams.limit, String(next.limit));
+	if (next.after) query.set(listParams.after, next.after);
+	if (next.before) query.set(listParams.before, next.before);
+
+	const search = query.toString();
+	return search === '' ? url.pathname : `${url.pathname}?${search}`;
+}
+
+/**
+ * What clicking a sortable column header should do next.
+ *
+ * Ascending, then descending, then back to the collection's own order. The
+ * third state matters: without it there is no way back to the default, and the
+ * default is often the only order that means anything (most recent first).
+ */
+export function nextSort(current: Sort | null, column: string): Sort | null {
+	if (current?.column !== column) return { column, direction: 'asc' };
+	if (current.direction === 'asc') return { column, direction: 'desc' };
+	return null;
+}
+
+/**
+ * The `aria-sort` value for a column header.
+ *
+ * A sortable header that does not carry this is a header whose state is
+ * visible only as an arrow, which is no state at all for a screen reader.
+ */
+export function ariaSort(current: Sort | null, column: string): 'ascending' | 'descending' | 'none' {
+	if (current?.column !== column) return 'none';
+	return current.direction === 'asc' ? 'ascending' : 'descending';
+}
+
+/** The query parameters to send to the API for this state. */
+export function listQuery(state: ListState): Record<string, string | number | undefined> {
+	return {
+		[listParams.search]: state.search === '' ? undefined : state.search,
+		[listParams.sort]: state.sort ? formatSort(state.sort) : undefined,
+		[listParams.limit]: state.limit,
+		[listParams.after]: state.after,
+		[listParams.before]: state.before,
+		...state.filters
+	};
+}
+
+/** `column` ascending, `-column` descending. */
+function parseSort(raw: string | null): Sort | null {
+	if (!raw) return null;
+	const descending = raw.startsWith('-');
+	const column = descending ? raw.slice(1) : raw;
+	// A sort naming nothing is not a sort. Refusing it here is what stops a
+	// hand-edited URL from reaching the API as an empty sort parameter.
+	if (!/^[a-z][a-z0-9_]*$/i.test(column)) return null;
+	return { column, direction: descending ? 'desc' : 'asc' };
+}
+
+function formatSort(sort: Sort): string {
+	return sort.direction === 'desc' ? `-${sort.column}` : sort.column;
+}

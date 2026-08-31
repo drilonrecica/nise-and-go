@@ -123,6 +123,7 @@ from a project one convenience at a time.
 | Bundled package | Why it ships |
 |---|---|
 | `valibot` (`1.1.0`) | Form validation in the browser, so somebody typing an address without an "@" is told before they wait for a round trip. It is a courtesy and never a boundary: the server's strict decoding is authoritative, and `src/lib/forms.svelte.ts` says so. Chosen over Zod for size, since this one does ship to every visitor. |
+| `@tanstack/table-core` (`8.21.3`) | The column model behind `DataTable.svelte`: accessors, header groups, and cells. Sorting, filtering, and paging are the server's and every `manual*` option is on, so the table renders the page it was given and never reorders a row behind the API's back. The 8.x line rather than 9.x: 9's core delegates reactivity to a per-framework adapter feature, and constructing a table without one throws — verified — so 9 is unusable from a framework-agnostic Svelte wrapper until a Svelte adapter exists. |
 
 Everything else the file pins is a build or test tool.
 
