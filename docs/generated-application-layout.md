@@ -88,6 +88,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
     │   ├── app.go                     [app]   explicit constructor wiring; no container, no registry
     │   ├── database.go                [app]   explicit status/migrate application surface
     │   ├── database_runtime.go        [app]   pool and transaction-runner construction
+    │   ├── jobs.go                    [app]   where background job kinds are declared; starts empty
     │   ├── modes.go                   [app]   all, web, and worker process modes
     │   ├── modules.gen.go             [nise]  the selected compile-time modules, and nothing else
     │   └── secondfactor.go            [app]   the second-factor module's constructor call
@@ -131,7 +132,7 @@ Ownership is also readable from the path. The directory names `store/`, `openapi
         ├── passwords/                 [app]   this application's Argon2id parameter history
         ├── reauth/                    [app]   this application's reauthentication matrix
         ├── throttle/                  [app]   PostgreSQL-backed authentication rate limiting
-        ├── jobs/                      [app]   core: the River runner, queues, and registration
+        ├── jobs/                      [app]   core: the River client, its validated limits, and job registration
         ├── mail/
         │   ├── mail.go                [app]
         │   └── templates/             [app]   embedded text/template and html/template messages

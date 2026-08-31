@@ -1,0 +1,43 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package app
+
+import (
+	"{{.ModulePath}}/internal/platform/jobs"
+)
+
+// registerJobs declares every background job kind this application knows how
+// to run. It is the only place a job becomes runnable, and it is ordinary
+// code: no init() function registers a worker behind your back, nothing is
+// discovered by walking packages, and adding a job means adding a line here.
+//
+// A generated application starts with none, so a worker process reports
+// `works_jobs=false` in its startup line until the first one is added. That
+// is deliberate — an empty worker that says so is easier to reason about
+// than a placeholder job that does nothing.
+//
+// Adding one looks like this:
+//
+//	jobs.Register(registry, &SendInvitationWorker{Mailer: mailer})
+//
+// where SendInvitationWorker implements river.Worker[SendInvitationArgs] and
+// SendInvitationArgs implements river.JobArgs. The kind string that argument
+// type returns is what the queue stores, so it is a name, not a Go type
+// path: renaming the Go type must not change it, or jobs already enqueued
+// stop matching a worker.
+//
+// Two rules apply to every job registered here.
+//
+// A job must be safe to run twice. A process killed mid-job leaves the row
+// in the running state, and the next client to hold the leader lease rescues
+// it. There is no exactly-once delivery to opt into, in this system or any
+// other one worth trusting.
+//
+// A job must not assume the change that enqueued it is visible only to it.
+// Jobs enqueued with [jobs.Client.InsertTx] become visible exactly when
+// their transaction commits, which is the guarantee to rely on; anything
+// finer is a race.
+func registerJobs(registry *jobs.Registry) {
+	// Intentionally empty. See the doc comment above.
+	_ = registry
+}

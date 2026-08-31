@@ -1,0 +1,242 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package jobs is this application's background job system.
+//
+// The queue is PostgreSQL. There is no broker, no Redis, and no second
+// process to keep alive: River stores jobs in the same database the
+// application already depends on, which is what makes it possible to insert
+// a job inside the transaction that made the change requiring it. A job that
+// cannot exist unless its business change committed, and cannot fail to
+// exist once it did, is the property this package exists for; everything
+// else here is in service of it.
+//
+// Two types make up the surface.
+//
+// [Registry] is where job kinds are declared. A worker is registered once,
+// at startup, in application code a reader can follow — there is no init()
+// registration, no reflection over a package, and no discovery step. A kind
+// with no registered worker is a job that never runs, so the set of kinds
+// this process knows about is printed in its startup log rather than left to
+// be inferred.
+//
+// [Client] is the running system. Every process builds one, because every
+// process may need to enqueue. Only a process running in "all" or "worker"
+// mode ever calls [Client.Start], which is what separates enqueuing from
+// working: a web replica holds a client that has never fetched a job, and
+// scaling the web tier therefore does not scale job concurrency with it.
+package jobs
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+)
+
+// QueueDefault is the queue a job uses unless its own InsertOpts name
+// another.
+const QueueDefault = river.QueueDefault
+
+// Bounds on [Settings]. They are refusals, not clamps: a configuration that
+// says something impossible is a mistake an operator should see at startup,
+// not a value silently replaced by a different one.
+const (
+	// MaxWorkersLimit is an upper bound well above any sensible
+	// single-process worker count. It exists so that a typed-in extra zero
+	// fails at startup instead of exhausting the connection pool in
+	// production.
+	MaxWorkersLimit = 10_000
+	// MinPollInterval keeps a misconfiguration from turning the backstop
+	// poll into a hot loop against the database.
+	MinPollInterval = time.Second
+	// MaxPollInterval bounds how long a missed notification can delay a job.
+	MaxPollInterval = time.Hour
+)
+
+// Settings are the validated limits a [Client] works jobs under. Build one
+// with [NewSettings]; the zero value is rejected by [New].
+type Settings struct {
+	maxWorkers int
+	// pollInterval is how often the client looks for work it was not
+	// notified about. River learns about most jobs immediately through a
+	// PostgreSQL notification; polling is the backstop for a missed one, and
+	// the reason a dropped notification delays a job rather than losing it.
+	pollInterval time.Duration
+	valid        bool
+}
+
+// MaxWorkers is how many jobs one process runs at once.
+func (s Settings) MaxWorkers() int { return s.maxWorkers }
+
+// PollInterval is the backstop interval for finding work.
+func (s Settings) PollInterval() time.Duration { return s.pollInterval }
+
+// NewSettings validates the worker limits.
+//
+// maxWorkers is chosen against the database rather than against the CPU:
+// every running job holds work the pool has to serve, so a worker count far
+// above the pool size does not add throughput, it converts throughput into
+// connection waiting — which is harder to see and harder to explain.
+func NewSettings(maxWorkers int, pollInterval time.Duration) (Settings, error) {
+	if maxWorkers < 1 || maxWorkers > MaxWorkersLimit {
+		return Settings{}, fmt.Errorf("jobs: max workers must be between 1 and %d, found %d", MaxWorkersLimit, maxWorkers)
+	}
+	if pollInterval < MinPollInterval || pollInterval > MaxPollInterval {
+		return Settings{}, fmt.Errorf("jobs: poll interval must be between %s and %s, found %s", MinPollInterval, MaxPollInterval, pollInterval)
+	}
+	return Settings{maxWorkers: maxWorkers, pollInterval: pollInterval, valid: true}, nil
+}
+
+// Registry collects the job kinds this application knows how to run.
+//
+// It wraps River's own workers bundle rather than replacing it, so that
+// registering a worker stays one generic call with no type assertion and no
+// `any` anywhere in application code.
+type Registry struct {
+	workers *river.Workers
+	kinds   []string
+}
+
+// NewRegistry returns an empty registry.
+func NewRegistry() *Registry {
+	return &Registry{workers: river.NewWorkers()}
+}
+
+// Register adds one worker, for the job kind its argument type declares.
+//
+// It is a function rather than a method because Go does not permit type
+// parameters on methods, and the alternative — a Register taking `any` —
+// would move a mistake the compiler can catch to a panic at startup.
+func Register[T river.JobArgs](r *Registry, worker river.Worker[T]) {
+	var args T
+	river.AddWorker(r.workers, worker)
+	r.kinds = append(r.kinds, args.Kind())
+}
+
+// Kinds returns the registered job kinds, in registration order.
+func (r *Registry) Kinds() []string {
+	out := make([]string, len(r.kinds))
+	copy(out, r.kinds)
+	return out
+}
+
+// Client is this application's job system: always an inserter, and — once
+// [Client.Start] is called on a process whose registry had at least one kind
+// — a pool of workers as well.
+type Client struct {
+	river    *river.Client[pgx.Tx]
+	kinds    []string
+	settings Settings
+	works    bool
+}
+
+// New builds the job client.
+//
+// An empty registry is not an error. A generated application starts with no
+// job kinds, and a deployment that has not written one yet should still get
+// a client, a worker component, and a startup line reporting that it works
+// nothing — rather than a startup failure, or a nil client every caller has
+// to check. What such a client refuses is only to pretend: [Client.Works]
+// reports false and [Client.Start] fetches nothing.
+func New(pool *pgxpool.Pool, registry *Registry, settings Settings, logger *slog.Logger) (*Client, error) {
+	if pool == nil {
+		return nil, errors.New("jobs: a database pool is required")
+	}
+	if registry == nil {
+		return nil, errors.New("jobs: a registry is required")
+	}
+	if !settings.valid {
+		return nil, errors.New("jobs: settings must come from NewSettings")
+	}
+	if logger == nil {
+		return nil, errors.New("jobs: a logger is required")
+	}
+
+	cfg := &river.Config{Logger: logger}
+	works := len(registry.kinds) > 0
+	if works {
+		// Queues and Workers are set together or not at all: River treats a
+		// client with both as one that works jobs, and rejects one with only
+		// a queue. That coupling is why an empty registry produces an
+		// insert-only client rather than a client with an idle queue.
+		cfg.FetchPollInterval = settings.pollInterval
+		cfg.Queues = map[string]river.QueueConfig{QueueDefault: {MaxWorkers: settings.maxWorkers}}
+		cfg.Workers = registry.workers
+	}
+
+	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
+	if err != nil {
+		return nil, fmt.Errorf("jobs: building the job client: %w", err)
+	}
+	return &Client{river: client, kinds: registry.Kinds(), settings: settings, works: works}, nil
+}
+
+// Kinds returns the job kinds this client works. It is empty when the
+// application has registered none.
+func (c *Client) Kinds() []string { return c.kinds }
+
+// Works reports whether this client fetches and runs jobs, as opposed to
+// only inserting them.
+func (c *Client) Works() bool { return c.works }
+
+// MaxWorkers is how many jobs this client runs at once.
+func (c *Client) MaxWorkers() int { return c.settings.maxWorkers }
+
+// Insert enqueues one job outside any transaction.
+//
+// Prefer [Client.InsertTx] whenever the job exists because of a change this
+// application is making. An Insert next to a separate database write is two
+// operations that can disagree: the job can be enqueued for a change that
+// then fails, or a change can commit with no job to follow it up.
+func (c *Client) Insert(ctx context.Context, args river.JobArgs, opts *river.InsertOpts) error {
+	if _, err := c.river.Insert(ctx, args, opts); err != nil {
+		return fmt.Errorf("jobs: enqueuing %s: %w", args.Kind(), err)
+	}
+	return nil
+}
+
+// InsertTx enqueues one job inside tx.
+//
+// The job row is written by the same transaction as the business change, so
+// it becomes visible if and only if that change committed. This is the whole
+// reason the queue is the application's own database.
+func (c *Client) InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) error {
+	if _, err := c.river.InsertTx(ctx, tx, args, opts); err != nil {
+		return fmt.Errorf("jobs: enqueuing %s in transaction: %w", args.Kind(), err)
+	}
+	return nil
+}
+
+// Start begins fetching and working jobs, returning immediately. It does
+// nothing, successfully, on a client with no registered kinds.
+func (c *Client) Start(ctx context.Context) error {
+	if !c.works {
+		return nil
+	}
+	if err := c.river.Start(ctx); err != nil {
+		return fmt.Errorf("jobs: starting the job client: %w", err)
+	}
+	return nil
+}
+
+// Stop drains: no new job is fetched, and jobs already running are given
+// until ctx is done to finish.
+//
+// A job still running when ctx expires is left in the running state and
+// rescued by whichever client next holds the leader lease. That is the
+// reason every job this application writes must be safe to run twice.
+func (c *Client) Stop(ctx context.Context) error {
+	if !c.works {
+		return nil
+	}
+	if err := c.river.Stop(ctx); err != nil {
+		return fmt.Errorf("jobs: stopping the job client: %w", err)
+	}
+	return nil
+}

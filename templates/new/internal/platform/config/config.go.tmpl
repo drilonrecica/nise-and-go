@@ -24,6 +24,7 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/session"
 
 	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/jobs"
 	"{{.ModulePath}}/internal/platform/throttle"
 )
 
@@ -100,6 +101,11 @@ type Config struct {
 	// __Host- prefix and the Secure attribute. It exists for a development
 	// origin that is not localhost; production refuses it.
 	SessionCookieInsecure bool
+	// Jobs holds the validated background-worker limits. They apply only to
+	// a process running in "all" or "worker" mode; a web replica never
+	// fetches a job, so the numbers here are per worker process rather than
+	// per deployment.
+	Jobs jobs.Settings
 }
 
 // Addr is the host:port the HTTP server listens on.
@@ -148,6 +154,8 @@ func Load() (Config, []string, error) {
 	loginAttemptsPerAddress := l.Int("LOGIN_ATTEMPTS_PER_ADDRESS", rtconfig.Default("10"))
 	loginAttemptsPerClient := l.Int("LOGIN_ATTEMPTS_PER_CLIENT", rtconfig.Default("60"))
 	loginThrottleWindow := l.Duration("LOGIN_THROTTLE_WINDOW", rtconfig.Default("15m"))
+	jobMaxWorkers := l.Int("JOB_MAX_WORKERS", rtconfig.Default("10"))
+	jobPollInterval := l.Duration("JOB_POLL_INTERVAL", rtconfig.Default("5s"))
 	// The two cursor key variables are read into locals rather than kept as
 	// Config fields: once the ring is built, holding the raw material would
 	// only add a second place for it to escape from.
@@ -198,6 +206,12 @@ func Load() (Config, []string, error) {
 		return Config{}, warnings, err
 	}
 	cfg.Database = databaseSettings
+
+	jobSettings, err := jobs.NewSettings(jobMaxWorkers, time.Duration(jobPollInterval))
+	if err != nil {
+		return Config{}, warnings, err
+	}
+	cfg.Jobs = jobSettings
 	if cfg.DatabaseSlowQueryThreshold <= 0 {
 		return Config{}, warnings, errors.New("DB_SLOW_QUERY_THRESHOLD: must be greater than zero")
 	}

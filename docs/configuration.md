@@ -244,6 +244,28 @@ A client limit below the address limit warns at startup: several people behind
 one office address are one client, and a limit tight enough for a single account
 would lock out a building.
 
+## Generated background job settings
+
+See [background jobs](jobs.md).
+
+| Variable | Default | Constraint |
+|---|---:|---|
+| `JOB_MAX_WORKERS` | `10` | 1 through 10,000 |
+| `JOB_POLL_INTERVAL` | `5s` | 1s through 1h |
+
+Both apply to one worker process, not to a deployment: a process running in
+mode `web` builds a job client to enqueue with and never fetches, so these
+numbers do not scale with the web tier.
+
+Choose `JOB_MAX_WORKERS` against `DB_MAX_CONNS`, not against the CPU count.
+Every running job holds work the pool has to serve, so a worker count above the
+pool size converts throughput into connection waiting.
+
+Both are refused rather than clamped when out of range, for the same reason
+every other setting on this page is: an operator should learn at startup that a
+value was impossible, not discover later that it was quietly replaced with a
+different one.
+
 ## Generated session settings
 
 See [sessions](sessions.md) for the cookie and lifecycle contracts.

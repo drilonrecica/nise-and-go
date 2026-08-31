@@ -50,7 +50,7 @@ func TestAnUnselectedModuleContributesNothing(t *testing.T) {
 		"internal/features/mfa/queries/mfa.sql",
 		"internal/features/mfa/sqlc.yaml",
 		"internal/features/mfa/store/mfa.sql.go",
-		"db/migrations/00009_totp.sql",
+		"db/migrations/00010_totp.sql",
 	} {
 		if _, ok := with[path]; !ok {
 			t.Errorf("a project generated with the TOTP module lacks %s", path)
@@ -149,7 +149,7 @@ func TestGeneratedSecondFactorRefusesTheDangerousShortcuts(t *testing.T) {
 	with := planContent(t, totpOptions())
 
 	wants := map[string][]string{
-		"db/migrations/00009_totp.sql": {
+		"db/migrations/00010_totp.sql": {
 			"CREATE TABLE totp_secrets",
 			"CREATE TABLE recovery_codes",
 			"CREATE TABLE mfa_challenges",
