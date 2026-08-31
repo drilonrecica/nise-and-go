@@ -6,6 +6,7 @@
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import Field from '$lib/components/ui/Field.svelte';
 	import Input from '$lib/components/ui/Input.svelte';
 	import ProblemAlert from '$lib/components/ui/ProblemAlert.svelte';
@@ -198,6 +199,14 @@
 			<div class="mt-4 space-y-2" aria-busy="true">
 				<Skeleton class="h-10 w-full" />
 				<Skeleton class="h-10 w-full" />
+			</div>
+		{:else if sessions.length === 0}
+			<div class="mt-4">
+				<EmptyState
+					icon="user"
+					title="No other sessions"
+					description="This is the only browser signed in to this account."
+				/>
 			</div>
 		{:else}
 			<div class="mt-4">

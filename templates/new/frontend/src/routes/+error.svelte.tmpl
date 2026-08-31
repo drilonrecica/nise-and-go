@@ -1,0 +1,65 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+<script lang="ts">
+	import { page } from '$app/state';
+
+	import Button from '$lib/components/ui/Button.svelte';
+
+	// One boundary for every route. SvelteKit renders this for a load that
+	// threw and for a path no route matched, so "what does a broken page look
+	// like" has one answer rather than one per section.
+	//
+	// The three cases are separated because they ask the person to do three
+	// different things: sign in, ask somebody for access, or go back. A single
+	// "something went wrong" leaves all three stuck.
+	const known: Record<number, { title: string; detail: string }> = {
+		403: {
+			title: 'You do not have access to this',
+			detail: 'Ask an administrator if you think you should.'
+		},
+		404: {
+			title: 'That page does not exist',
+			detail: 'The link may be out of date, or the record may have been removed.'
+		},
+		401: {
+			title: 'Your session has ended',
+			detail: 'Sign in again to continue.'
+		}
+	};
+
+	const shown = $derived(
+		known[page.status] ?? {
+			title: 'Something went wrong',
+			detail: 'Try again, and tell an administrator if it keeps happening.'
+		}
+	);
+</script>
+
+<svelte:head>
+	<title>{shown.title} · {{.AppName}}</title>
+</svelte:head>
+
+<div class="flex min-h-dvh items-center justify-center bg-canvas px-4 text-text">
+	<div class="w-full max-w-md text-center">
+		<p class="font-mono text-sm text-text-subtle">{page.status}</p>
+		<h1 class="mt-2 text-xl font-semibold tracking-tight">{shown.title}</h1>
+		<p class="mt-2 text-sm text-text-muted">{shown.detail}</p>
+
+		<!--
+			The message SvelteKit carries is shown only when it is not the
+			default derived from the status code, which would repeat the
+			heading; nothing from a thrown value is rendered raw.
+		-->
+		{#if page.error?.message && page.error.message !== String(page.status)}
+			<p class="mt-4 rounded-md bg-surface-muted px-3 py-2 font-mono text-xs text-text-muted">
+				{page.error.message}
+			</p>
+		{/if}
+
+		<div class="mt-6 flex justify-center gap-2">
+			<Button href="/">Go to the overview</Button>
+			{#if page.status === 401}
+				<Button variant="primary" href="/sign-in">Sign in</Button>
+			{/if}
+		</div>
+	</div>
+</div>

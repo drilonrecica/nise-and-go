@@ -270,3 +270,46 @@ func TestGeneratedInternationalization(t *testing.T) {
 		t.Error("vite.config.ts enables the URL locale strategy")
 	}
 }
+
+// TestGeneratedInterfaceStates pins the five states every surface has to be
+// able to be in (Nise task M6-012), and the one distinction that keeps them
+// useful: they ask a person to do different things.
+func TestGeneratedInterfaceStates(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, defaultOptions())
+
+	// Loading, empty, and error each have a component; denied and not-found
+	// are statuses the one error boundary distinguishes.
+	for _, path := range []string{
+		"frontend/src/lib/components/ui/Skeleton.svelte",
+		"frontend/src/lib/components/ui/EmptyState.svelte",
+		"frontend/src/lib/components/ui/ProblemAlert.svelte",
+		"frontend/src/routes/+error.svelte",
+	} {
+		if _, exists := content[path]; !exists {
+			t.Errorf("generated project lacks %s", path)
+		}
+	}
+
+	boundary := content["frontend/src/routes/+error.svelte"]
+	for _, status := range []string{"403:", "404:", "401:"} {
+		if !strings.Contains(boundary, status) {
+			t.Errorf("+error.svelte does not distinguish status %s; sign in, ask for access, and go back are three different instructions", status)
+		}
+	}
+
+	// The account page renders all of loading, empty, error, and content, so
+	// the starter demonstrates the convention rather than only documenting it.
+	account := content["frontend/src/routes/(app)/account/+page.svelte"]
+	for _, fragment := range []string{
+		"<Skeleton",
+		"<EmptyState",
+		"<ProblemAlert",
+		"aria-busy=\"true\"",
+	} {
+		if !strings.Contains(account, fragment) {
+			t.Errorf("the account page lacks %q", fragment)
+		}
+	}
+}
