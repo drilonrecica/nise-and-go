@@ -85,6 +85,68 @@ and identical response bodies do not fix that.
 The dummy record is generated at policy construction, so two deployments never
 share one, and the cost is paid once rather than per request.
 
+## What a new password must satisfy
+
+| Rule | Value |
+|---|---|
+| Minimum length | 12 bytes |
+| Maximum length | 1024 bytes |
+| Not known-compromised | checked against the local list |
+| Not containing the account's own address | or its local part, when that is at least four characters |
+
+There are **no composition rules** — no required digit, no required symbol, no
+forbidden repeat. They measurably push people towards predictable substitutions
+of short words and towards writing the result down, while adding little an
+attacker's dictionary does not already cover. Length, a known-compromised check,
+and throttling are what actually help.
+
+These rules apply **wherever a password is chosen** — enrolment, a reset, a
+change — and **never on verification**. A rule tightened today must not lock out
+an account whose password was fine when it was set, and telling somebody their
+existing password is now invalid at the login prompt is how they end up in a
+reset loop.
+
+## Login
+
+Every failure returns one error: an address with no account, a wrong password,
+and a disabled account are indistinguishable to the caller. Each of them is a
+fact an unauthenticated caller would like to learn, and a login form is the
+cheapest place to ask — "no such account" enumerates the directory, and "your
+account is disabled" tells a former employee their password still works. Which
+one actually happened is on the returned `Outcome`, for the audit record.
+
+**Every failure path pays for one Argon2 evaluation**, including the one where
+no account exists, through `VerifyDummy`. Skipping it there turns response time
+into an account-existence oracle that identical response bodies do not fix. The
+account-status check runs *after* verification for the same reason.
+
+A stored hash this build cannot verify at all — a retired parameter set, a
+damaged record — is `unverifiable`, not a wrong password. It is logged as itself
+and still answered generically.
+
+### Rehash on login
+
+A successful verification against a superseded parameter set rewrites the stored
+hash before returning. This is the only moment the server legitimately holds the
+plaintext, so it is the only moment a record can be upgraded without asking
+anybody to change their password. A failed rewrite does not fail the login: the
+password was correct, and the record is merely still old.
+
+A *failed* login never rewrites anything, because the server does not hold a
+plaintext it can trust.
+
+### Changing and setting
+
+`ChangePassword` proves the current password first and then ends every other
+session the account holds. A password change is what somebody does when they
+think a credential has leaked; leaving the other sessions alive would make the
+gesture do nothing.
+
+`SetPassword` proves no current password. It is the enrolment and reset path,
+where something else — an invitation token, a reset token — has already
+established that the person may set one, and it ends *every* session. The two
+are named separately so a review can see which one a call site used.
+
 ## Known-compromised passwords
 
 A generated application refuses the passwords that appear at the top of every

@@ -135,6 +135,18 @@ func hashedPassword(t *testing.T, secret string) string {
 	return encoded
 }
 
+// passwordHash reads the stored hash directly, so a test can prove a rehash
+// actually rewrote the record rather than merely reporting that it did.
+func (h *harness) passwordHash(t *testing.T, userID string) string {
+	t.Helper()
+
+	var stored string
+	if err := h.pool.QueryRow(h.ctx, `SELECT password_hash FROM users WHERE id = $1`, userID).Scan(&stored); err != nil {
+		t.Fatalf("read the stored password hash: %v", err)
+	}
+	return stored
+}
+
 func (h *harness) account(t *testing.T, email string) Account {
 	t.Helper()
 

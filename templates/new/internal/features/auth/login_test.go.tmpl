@@ -1,0 +1,366 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/password"
+
+	"{{.ModulePath}}/internal/platform/passwords"
+)
+
+const goodPassword = "correct horse battery staple"
+
+// testPolicy builds a policy at the accepted floor, so a suite that verifies
+// dozens of passwords does not spend minutes proving nothing extra.
+func testPasswordPolicy(t *testing.T, current int, superseded ...int) *password.Policy {
+	t.Helper()
+
+	params := func(version int, iterations uint32) password.Params {
+		set, err := password.NewParams(version, password.MinMemoryKiB, iterations, 1)
+		if err != nil {
+			t.Fatalf("NewParams: %v", err)
+		}
+		return set
+	}
+	previous := make([]password.Params, 0, len(superseded))
+	for i, iterations := range superseded {
+		previous = append(previous, params(i+1, uint32(iterations)))
+	}
+	policy, err := password.NewPolicy(params(len(superseded)+1, uint32(current)), previous...)
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+	return policy
+}
+
+func testCredentials(t *testing.T, h *harness, policy *password.Policy) *Credentials {
+	t.Helper()
+
+	credentials, err := NewCredentials(h.accounts, h.sessions, policy)
+	if err != nil {
+		t.Fatalf("NewCredentials: %v", err)
+	}
+	return credentials
+}
+
+// enrol creates an account whose password is hashed with the given policy.
+func enrol(t *testing.T, h *harness, policy *password.Policy, email, secret string) Account {
+	t.Helper()
+
+	encoded, err := policy.Hash(secret)
+	if err != nil {
+		t.Fatalf("Hash: %v", err)
+	}
+	account, err := h.accounts.Create(h.ctx, email, encoded)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	return account
+}
+
+func TestAuthenticateIssuesASession(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	credentials := testCredentials(t, h, policy)
+	account := enrol(t, h, policy, "person@example.test", goodPassword)
+
+	login, err := credentials.Authenticate(h.ctx, "  PERSON@Example.Test ", goodPassword)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if login.Outcome != OutcomeSucceeded || login.Account.ID != account.ID {
+		t.Fatalf("login = %#v", login)
+	}
+	if login.Session.Token.IsZero() {
+		t.Fatal("no session token was issued")
+	}
+	if login.Rehashed {
+		t.Error("a current-parameter hash was rewritten")
+	}
+
+	// The issued session is a real one.
+	record, err := h.sessions.Authenticate(h.ctx, login.Session.Token.Value())
+	if err != nil {
+		t.Fatalf("the issued session does not authenticate: %v", err)
+	}
+	if record.UserID != account.ID {
+		t.Errorf("the session belongs to %q, want %q", record.UserID, account.ID)
+	}
+}
+
+func TestEveryFailureLooksTheSameToTheCaller(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	credentials := testCredentials(t, h, policy)
+	account := enrol(t, h, policy, "person@example.test", goodPassword)
+	disabled := enrol(t, h, policy, "gone@example.test", goodPassword)
+
+	admin := authorized(t, account.ID, "users.manage")
+	if err := h.accounts.SetStatus(admin, disabled.ID, StatusDisabled); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		email   string
+		secret  string
+		outcome Outcome
+	}{
+		{name: "no such account", email: "nobody@example.test", secret: goodPassword, outcome: OutcomeNoAccount},
+		{name: "wrong password", email: "person@example.test", secret: goodPassword + "!", outcome: OutcomeWrongPassword},
+		{name: "disabled account", email: "gone@example.test", secret: goodPassword, outcome: OutcomeDisabled},
+		{name: "malformed address", email: "not-an-address", secret: goodPassword, outcome: OutcomeNoAccount},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			login, err := credentials.Authenticate(h.ctx, tc.email, tc.secret)
+			// One error for every reason: which one happened is a fact an
+			// unauthenticated caller would like to learn, and a login form is
+			// the cheapest place to ask.
+			if !errors.Is(err, ErrInvalidCredentials) {
+				t.Fatalf("error = %v, want ErrInvalidCredentials", err)
+			}
+			if err.Error() != ErrInvalidCredentials.Error() {
+				t.Errorf("the message differs by reason: %q", err)
+			}
+			// The outcome is for the server's own record.
+			if login.Outcome != tc.outcome {
+				t.Errorf("outcome = %q, want %q", login.Outcome, tc.outcome)
+			}
+			if !login.Session.Token.IsZero() {
+				t.Error("a failed login issued a session")
+			}
+		})
+	}
+}
+
+func TestAnUnknownAddressCostsWhatARealOneCosts(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	// A policy heavy enough that skipping the hash would be obvious.
+	policy := testPasswordPolicy(t, 3)
+	credentials := testCredentials(t, h, policy)
+	enrol(t, h, policy, "person@example.test", goodPassword)
+
+	known := time.Now()
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword+"!"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("error = %v", err)
+	}
+	knownCost := time.Since(known)
+
+	unknown := time.Now()
+	if _, err := credentials.Authenticate(h.ctx, "nobody@example.test", goodPassword); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("error = %v", err)
+	}
+	unknownCost := time.Since(unknown)
+
+	// Timing on a shared machine is noisy, so this asserts the same order of
+	// magnitude: a path that skipped the hash would be microseconds against
+	// milliseconds.
+	if unknownCost*8 < knownCost {
+		t.Errorf("an unknown address cost %s against a known one's %s; response time answers whether an account exists", unknownCost, knownCost)
+	}
+}
+
+func TestSuccessfulLoginRehashesAnOutdatedRecord(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	old := testPasswordPolicy(t, 1)
+	current := testPasswordPolicy(t, 2, 1)
+	credentials := testCredentials(t, h, current)
+	account := enrol(t, h, old, "person@example.test", goodPassword)
+
+	stored := h.passwordHash(t, account.ID)
+
+	login, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !login.Rehashed {
+		t.Fatal("a superseded record was not rewritten")
+	}
+	rewritten := h.passwordHash(t, account.ID)
+	if rewritten == stored {
+		t.Fatal("the stored hash did not change")
+	}
+	if strings.Contains(rewritten, goodPassword) {
+		t.Fatal("the rewritten hash contains the password")
+	}
+
+	// The rewritten record verifies, and is no longer flagged.
+	again, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword)
+	if err != nil {
+		t.Fatalf("Authenticate after rehash: %v", err)
+	}
+	if again.Rehashed {
+		t.Error("the record was rewritten twice")
+	}
+
+	// A wrong password must not rewrite anything: the server does not hold a
+	// plaintext it can trust.
+	unchanged := h.passwordHash(t, account.ID)
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", "the wrong password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("error = %v", err)
+	}
+	if h.passwordHash(t, account.ID) != unchanged {
+		t.Error("a failed login rewrote the stored hash")
+	}
+}
+
+func TestARetiredParameterSetIsAStorageProblemNotAWrongPassword(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	retired := testPasswordPolicy(t, 1)
+	// The current policy does not list the retired set, so its records can no
+	// longer be verified at all.
+	current := testPasswordPolicy(t, 4)
+	credentials := testCredentials(t, h, current)
+	enrol(t, h, retired, "person@example.test", goodPassword)
+
+	login, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword)
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("error = %v, want the generic failure", err)
+	}
+	if login.Outcome != OutcomeUnverifiable {
+		t.Fatalf("outcome = %q, want %q", login.Outcome, OutcomeUnverifiable)
+	}
+}
+
+func TestChangePasswordEndsOtherSessions(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	credentials := testCredentials(t, h, policy)
+	account := enrol(t, h, policy, "person@example.test", goodPassword)
+	compromised, err := passwords.Compromised()
+	if err != nil {
+		t.Fatalf("Compromised: %v", err)
+	}
+
+	first, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	elsewhere, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	const nextPassword = "a different long passphrase"
+	if err := credentials.ChangePassword(h.ctx, account.ID, goodPassword, nextPassword, compromised, first.Session.Record.ID); err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+
+	// The session that made the change survives; every other one ends. A
+	// password change is what somebody does when they think a credential has
+	// leaked, and leaving the others alive would make the gesture do nothing.
+	if _, err := h.sessions.Authenticate(h.ctx, first.Session.Token.Value()); err != nil {
+		t.Errorf("the changing session was ended: %v", err)
+	}
+	if _, err := h.sessions.Authenticate(h.ctx, elsewhere.Token.Value()); err == nil {
+		t.Error("another session survived a password change")
+	}
+
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword); !errors.Is(err, ErrInvalidCredentials) {
+		t.Error("the old password still works")
+	}
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", nextPassword); err != nil {
+		t.Errorf("the new password does not work: %v", err)
+	}
+}
+
+func TestChangePasswordRefusesWhatThePolicyRefuses(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	credentials := testCredentials(t, h, policy)
+	account := enrol(t, h, policy, "person@example.test", goodPassword)
+	compromised, err := passwords.Compromised()
+	if err != nil {
+		t.Fatalf("Compromised: %v", err)
+	}
+
+	// Proving the current password is required first, and a wrong one gives
+	// the same generic failure a login does.
+	if err := credentials.ChangePassword(h.ctx, account.ID, "not the password", "a long enough replacement", compromised, ""); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("error = %v, want ErrInvalidCredentials", err)
+	}
+
+	// A list built for this test, so the compromised case does not depend on
+	// which long passwords happen to be in the shipped one.
+	breached, err := password.NewCommonList([]string{"a breached passphrase"})
+	if err != nil {
+		t.Fatalf("NewCommonList: %v", err)
+	}
+
+	refusals := []struct {
+		name        string
+		next        string
+		compromised password.Compromised
+		want        error
+	}{
+		{name: "too short", next: "short", compromised: compromised, want: passwords.ErrTooShort},
+		{name: "too long", next: strings.Repeat("x", passwords.MaxLength+1), compromised: compromised, want: passwords.ErrTooLong},
+		{name: "known compromised", next: "a breached passphrase", compromised: breached, want: passwords.ErrCompromised},
+		{name: "derived from the address", next: "person-is-my-password", compromised: compromised, want: passwords.ErrDerivedFromAddress},
+	}
+	for _, tc := range refusals {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := credentials.ChangePassword(h.ctx, account.ID, goodPassword, tc.next, tc.compromised, ""); !errors.Is(err, tc.want) {
+				t.Fatalf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+
+	// None of the refusals changed anything: the original password still
+	// works, which also proves no refusal reached the store.
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", goodPassword); err != nil {
+		t.Errorf("a refused change altered the stored password: %v", err)
+	}
+}
+
+func TestSetPasswordEndsEverySession(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	credentials := testCredentials(t, h, policy)
+	account := enrol(t, h, policy, "person@example.test", goodPassword)
+	compromised, err := passwords.Compromised()
+	if err != nil {
+		t.Fatalf("Compromised: %v", err)
+	}
+
+	existing, err := h.sessions.Issue(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	// The reset path proves no current password: something else has already
+	// established that the person may set one.
+	const nextPassword = "a replacement passphrase"
+	if err := credentials.SetPassword(h.ctx, account.ID, nextPassword, compromised); err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+	if _, err := h.sessions.Authenticate(h.ctx, existing.Token.Value()); err == nil {
+		t.Error("a session survived a password reset")
+	}
+	if _, err := credentials.Authenticate(h.ctx, "person@example.test", nextPassword); err != nil {
+		t.Errorf("the new password does not work: %v", err)
+	}
+	if err := credentials.SetPassword(h.ctx, account.ID, "short", compromised); !errors.Is(err, passwords.ErrTooShort) {
+		t.Errorf("SetPassword accepted a short password: %v", err)
+	}
+}
+
+func TestCredentialsRequireTheirDependencies(t *testing.T) {
+	t.Parallel()
+
+	policy := testPasswordPolicy(t, 1)
+	if _, err := NewCredentials(nil, nil, policy); err == nil {
+		t.Error("NewCredentials accepted nil use cases")
+	}
+	if _, err := NewCredentials(&Accounts{}, &Sessions{}, nil); err == nil {
+		t.Error("NewCredentials accepted a nil password policy")
+	}
+	_ = context.Background()
+}

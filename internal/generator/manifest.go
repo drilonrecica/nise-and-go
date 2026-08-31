@@ -178,6 +178,8 @@ var templateFiles = []templateFile{
 	{Template: "internal/features/audit/store/audit.sql.go.tmpl", Output: "internal/features/audit/store/audit.sql.go", Owner: OwnerNise, Raw: true},
 	{Template: "internal/features/auth/accounts.go.tmpl", Output: "internal/features/auth/accounts.go", Owner: OwnerApp},
 	{Template: "internal/features/auth/auth_test.go.tmpl", Output: "internal/features/auth/auth_test.go", Owner: OwnerApp},
+	{Template: "internal/features/auth/login.go.tmpl", Output: "internal/features/auth/login.go", Owner: OwnerApp},
+	{Template: "internal/features/auth/login_test.go.tmpl", Output: "internal/features/auth/login_test.go", Owner: OwnerApp},
 	{Template: "internal/features/auth/roles.go.tmpl", Output: "internal/features/auth/roles.go", Owner: OwnerApp},
 	{Template: "internal/features/auth/roles_test.go.tmpl", Output: "internal/features/auth/roles_test.go", Owner: OwnerApp},
 	{Template: "internal/features/auth/sessions.go.tmpl", Output: "internal/features/auth/sessions.go", Owner: OwnerApp},

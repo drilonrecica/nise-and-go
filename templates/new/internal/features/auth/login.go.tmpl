@@ -1,0 +1,218 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/password"
+
+	"{{.ModulePath}}/internal/platform/passwords"
+)
+
+// ErrInvalidCredentials is the only failure a login returns.
+//
+// It covers an address with no account, a wrong password, and a disabled
+// account, deliberately. Each of those is a fact an unauthenticated caller
+// would like to learn, and a login form is the cheapest place to ask: "no such
+// account" enumerates the directory, and "your account is disabled" tells a
+// former employee their password still works. Which one actually happened is in
+// the audit record.
+var ErrInvalidCredentials = errors.New("the address and password do not match an enabled account")
+
+// Outcome is what a login did, for the caller's audit record.
+type Outcome string
+
+const (
+	// OutcomeSucceeded means a session was issued.
+	OutcomeSucceeded Outcome = "succeeded"
+	// OutcomeNoAccount means the address matched nothing.
+	OutcomeNoAccount Outcome = "no_account"
+	// OutcomeWrongPassword means the password did not verify.
+	OutcomeWrongPassword Outcome = "wrong_password"
+	// OutcomeDisabled means the account exists and may not sign in.
+	OutcomeDisabled Outcome = "disabled"
+	// OutcomeUnverifiable means the stored hash could not be checked at all,
+	// which is a storage problem rather than a wrong password.
+	OutcomeUnverifiable Outcome = "unverifiable"
+)
+
+// Login is the result of an attempt.
+//
+// It always carries an Outcome, including on failure, so the caller can record
+// what happened without the response having said it.
+type Login struct {
+	// Outcome is what happened.
+	Outcome Outcome
+	// Account is the account that signed in. It is meaningful only when
+	// Outcome is OutcomeSucceeded.
+	Account Account
+	// Session is the issued session, meaningful on success only.
+	Session Issued
+	// Rehashed reports that the stored hash was written under superseded
+	// parameters and has been rewritten.
+	Rehashed bool
+}
+
+// Credentials is the use case that turns an address and a password into a
+// session.
+type Credentials struct {
+	accounts *Accounts
+	sessions *Sessions
+	policy   *password.Policy
+}
+
+// NewCredentials constructs the login use case.
+func NewCredentials(accounts *Accounts, sessions *Sessions, policy *password.Policy) (*Credentials, error) {
+	if accounts == nil || sessions == nil {
+		return nil, errors.New("auth: account and session use cases are required")
+	}
+	if policy == nil {
+		return nil, errors.New("auth: a password policy is required")
+	}
+	return &Credentials{accounts: accounts, sessions: sessions, policy: policy}, nil
+}
+
+// Authenticate verifies an address and password and issues a session.
+//
+// Every failure path costs one Argon2 evaluation, including the one where no
+// account exists. Skipping the hash there is what turns response time into an
+// account-existence oracle, and no amount of identical response bodies fixes
+// that.
+//
+// A successful verification against a superseded parameter set rewrites the
+// stored hash before returning. This is the only moment the server legitimately
+// holds the plaintext, so it is the only moment the record can be upgraded
+// without asking anybody to change their password.
+func (c *Credentials) Authenticate(ctx context.Context, email, secret string) (Login, error) {
+	credential, err := c.accounts.FindCredentialByEmail(ctx, email)
+	if err != nil {
+		if errors.Is(err, ErrAccountNotFound) || errors.Is(err, ErrEmail) {
+			// Pay the same cost the real path pays, then give the same
+			// answer it gives.
+			c.policy.VerifyDummy(secret)
+			return Login{Outcome: OutcomeNoAccount}, ErrInvalidCredentials
+		}
+		return Login{}, err
+	}
+
+	verification, err := c.policy.Verify(credential.PasswordHash, secret)
+	if err != nil {
+		// A stored hash this build cannot check — a retired parameter set,
+		// or a damaged record — is not a wrong password. It is logged as
+		// itself and still answered generically.
+		logging.FromContext(ctx).Error("stored password hash could not be verified",
+			slog.String("error_type", fmt.Sprintf("%T", err)))
+		return Login{Outcome: OutcomeUnverifiable}, ErrInvalidCredentials
+	}
+	if !verification.Match {
+		return Login{Outcome: OutcomeWrongPassword, Account: credential.Account}, ErrInvalidCredentials
+	}
+	// The status check is after verification, on purpose: checking it first
+	// would let a caller distinguish a disabled account from a wrong password
+	// by how long the answer took.
+	if credential.Status != StatusActive {
+		return Login{Outcome: OutcomeDisabled, Account: credential.Account}, ErrInvalidCredentials
+	}
+
+	result := Login{Outcome: OutcomeSucceeded, Account: credential.Account}
+	if verification.NeedsRehash {
+		if err := c.rehash(ctx, credential.ID, secret); err != nil {
+			// A failed upgrade must not fail the login: the password was
+			// correct, and the record is merely still old.
+			logging.FromContext(ctx).Error("rehashing a password at login",
+				slog.String("error_type", fmt.Sprintf("%T", err)))
+		} else {
+			result.Rehashed = true
+		}
+	}
+
+	issued, err := c.sessions.Issue(ctx, credential.ID)
+	if err != nil {
+		return Login{}, fmt.Errorf("issuing the session: %w", err)
+	}
+	result.Session = issued
+	return result, nil
+}
+
+// rehash rewrites a stored hash under the current parameters.
+func (c *Credentials) rehash(ctx context.Context, userID, secret string) error {
+	encoded, err := c.policy.Hash(secret)
+	if err != nil {
+		return err
+	}
+	return c.accounts.UpdatePasswordHash(ctx, userID, encoded)
+}
+
+// ChangePassword replaces an account's password after proving the current one.
+//
+// It ends every other session the account holds. A password change is what
+// somebody does when they think a credential has leaked, and leaving the other
+// sessions alive would make that gesture do nothing.
+func (c *Credentials) ChangePassword(ctx context.Context, userID, current, next string, compromised password.Compromised, keepSessionID string) error {
+	account, err := c.accounts.FindByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	credential, err := c.accounts.FindCredentialByEmail(ctx, account.Email)
+	if err != nil {
+		return err
+	}
+
+	verification, err := c.policy.Verify(credential.PasswordHash, current)
+	if err != nil || !verification.Match {
+		return ErrInvalidCredentials
+	}
+	if err := passwords.Check(ctx, next, account.Email, compromised); err != nil {
+		return err
+	}
+
+	encoded, err := c.policy.Hash(next)
+	if err != nil {
+		return err
+	}
+	if err := c.accounts.UpdatePasswordHash(ctx, userID, encoded); err != nil {
+		return err
+	}
+
+	if keepSessionID == "" {
+		_, err = c.sessions.RevokeAllForUser(ctx, userID, "password changed")
+	} else {
+		_, err = c.sessions.RevokeOtherSessions(ctx, userID, keepSessionID, "password changed")
+	}
+	if err != nil {
+		return fmt.Errorf("ending other sessions after a password change: %w", err)
+	}
+	return nil
+}
+
+// SetPassword stores a password without proving a previous one.
+//
+// It is the enrollment and reset path, where there is no current password to
+// prove and something else — an invitation token, a reset token — has already
+// established that the person may set one. It is named separately from
+// ChangePassword so that a review can see which of the two a call site used.
+func (c *Credentials) SetPassword(ctx context.Context, userID, secret string, compromised password.Compromised) error {
+	account, err := c.accounts.FindByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if err := passwords.Check(ctx, secret, account.Email, compromised); err != nil {
+		return err
+	}
+	encoded, err := c.policy.Hash(secret)
+	if err != nil {
+		return err
+	}
+	if err := c.accounts.UpdatePasswordHash(ctx, userID, encoded); err != nil {
+		return err
+	}
+	if _, err := c.sessions.RevokeAllForUser(ctx, userID, "password set"); err != nil {
+		return fmt.Errorf("ending sessions after setting a password: %w", err)
+	}
+	return nil
+}
