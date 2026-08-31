@@ -52,6 +52,25 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 
+	if len(args) > 0 && args[0] == "admin" {
+		email, jsonOutput, err := parseAdminArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		result, err := app.RunBootstrap(ctx, email)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			if err := json.NewEncoder(stdout).Encode(result); err != nil {
+				return fmt.Errorf("encoding bootstrap result: %w", err)
+			}
+			return nil
+		}
+		_, err = fmt.Fprintln(stdout, result.String())
+		return err
+	}
+
 	if len(args) > 0 && args[0] == "password" {
 		request, jsonOutput, err := parsePasswordArgs(args[1:])
 		if err != nil {
@@ -78,9 +97,38 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("parse process flags: %w", err)
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected argument %q; use db migrate, db status, or password benchmark", fs.Arg(0))
+		return fmt.Errorf("unexpected argument %q; use db migrate, db status, password benchmark, or admin bootstrap", fs.Arg(0))
 	}
 	return app.Run(ctx, *mode)
+}
+
+// parseAdminArgs parses the administrator command surface.
+//
+// There is one action, and it works only on an empty directory: registration is
+// closed, so this is how a deployment gets its first account and it stops
+// working the moment it has one.
+func parseAdminArgs(args []string) (email string, jsonOutput bool, err error) {
+	if len(args) == 0 {
+		return "", false, fmt.Errorf("admin action is required; use admin bootstrap --email <address>")
+	}
+	if args[0] != "bootstrap" {
+		return "", false, fmt.Errorf("unknown admin action %q; use admin bootstrap", args[0])
+	}
+
+	fs := flag.NewFlagSet("admin bootstrap", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.StringVar(&email, "email", "", "address to invite as the first administrator")
+	fs.BoolVar(&jsonOutput, "json", false, "write one JSON result")
+	if err := fs.Parse(args[1:]); err != nil {
+		return "", false, fmt.Errorf("parse admin bootstrap flags: %w", err)
+	}
+	if fs.NArg() != 0 {
+		return "", false, fmt.Errorf("admin bootstrap takes no positional arguments, found %q", fs.Arg(0))
+	}
+	if email == "" {
+		return "", false, fmt.Errorf("admin bootstrap requires --email")
+	}
+	return email, jsonOutput, nil
 }
 
 // parsePasswordArgs parses the password command surface. Only one action

@@ -34,7 +34,42 @@ type harness struct {
 	accounts     *Accounts
 	sessions     *Sessions
 	transactorOf *database.Transactor
+	clock        func() time.Time
 	advance      func(time.Duration)
+}
+
+// userCount and invitationCount read the tables directly, so a test can prove
+// that a refused operation wrote nothing.
+func (h *harness) userCount(t *testing.T) int64 {
+	t.Helper()
+	return h.countRows(t, `SELECT count(*) FROM users`)
+}
+
+func (h *harness) invitationCount(t *testing.T) int64 {
+	t.Helper()
+	return h.countRows(t, `SELECT count(*) FROM invitations`)
+}
+
+func (h *harness) countRows(t *testing.T, query string) int64 {
+	t.Helper()
+
+	var total int64
+	if err := h.pool.QueryRow(h.ctx, query).Scan(&total); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	return total
+}
+
+// invitationDigest reads the stored digest, so a test can prove the token
+// itself was never written.
+func (h *harness) invitationDigest(t *testing.T, invitationID string) string {
+	t.Helper()
+
+	var digest []byte
+	if err := h.pool.QueryRow(h.ctx, `SELECT token_digest FROM invitations WHERE id = $1`, invitationID).Scan(&digest); err != nil {
+		t.Fatalf("read the stored invitation digest: %v", err)
+	}
+	return string(digest)
 }
 
 // transactor returns the harness's transaction runner, for a use case the
@@ -95,6 +130,7 @@ func newHarness(t *testing.T, lifetime session.Lifetime) *harness {
 		return current
 	}
 	h := &harness{ctx: ctx, pool: pool, transactorOf: transactor}
+	h.clock = clock
 	h.advance = func(d time.Duration) {
 		mu.Lock()
 		defer mu.Unlock()

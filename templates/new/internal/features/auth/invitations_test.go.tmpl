@@ -1,0 +1,460 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/password"
+
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/passwords"
+)
+
+func testInvitations(t *testing.T, h *harness, policy *password.Policy) *Invitations {
+	t.Helper()
+
+	credentials := testCredentials(t, h, policy)
+	compromised, err := passwords.Compromised()
+	if err != nil {
+		t.Fatalf("Compromised: %v", err)
+	}
+	invitations, err := NewInvitations(
+		h.transactor(t), credentials, testRoles(t, h), compromised,
+		DefaultInvitationLifetime,
+		WithClock(h.clock),
+	)
+	if err != nil {
+		t.Fatalf("NewInvitations: %v", err)
+	}
+	return invitations
+}
+
+func TestInvitationTokenShapeAndRedaction(t *testing.T) {
+	t.Parallel()
+
+	token, err := NewInvitationToken()
+	if err != nil {
+		t.Fatalf("NewInvitationToken: %v", err)
+	}
+	if !strings.HasPrefix(token.Value(), InvitationTokenPrefix+"_") {
+		t.Fatalf("token = %q, want the invitation prefix", token.Value())
+	}
+	// The prefix is what stops an invitation token from ever being mistaken
+	// for a session token, in a log or in a lookup.
+	if strings.HasPrefix(token.Value(), "ns1_") {
+		t.Fatal("an invitation token is shaped like a session token")
+	}
+	if len(token.Digest()) != 32 {
+		t.Fatalf("digest is %d bytes", len(token.Digest()))
+	}
+	if token.String() != "[REDACTED]" || token.GoString() != "[REDACTED]" {
+		t.Error("the token is printable")
+	}
+	encoded, err := token.MarshalJSON()
+	if err != nil || strings.Contains(string(encoded), token.Value()) {
+		t.Errorf("MarshalJSON = %s, %v", encoded, err)
+	}
+
+	parsed, err := ParseInvitationToken(token.Value())
+	if err != nil || parsed.Value() != token.Value() {
+		t.Fatalf("ParseInvitationToken: %v", err)
+	}
+	rejected := []string{
+		"", "not-a-token", token.Value()[:len(token.Value())-1], token.Value() + "A",
+		"ns1_" + strings.TrimPrefix(token.Value(), InvitationTokenPrefix+"_"),
+		strings.Repeat("a", MaxInvitationTokenBytes+1),
+	}
+	for _, raw := range rejected {
+		if _, err := ParseInvitationToken(raw); !errors.Is(err, ErrInvitationToken) {
+			t.Errorf("ParseInvitationToken(%q) error = %v", raw, err)
+		}
+	}
+}
+
+func TestInvitationRoundTrip(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	invitations := testInvitations(t, h, policy)
+	admin := h.account(t, "admin@example.test")
+	manager := authorized(t, admin.ID, authorization.UsersManage, authorization.UsersRead)
+
+	invitation, token, err := invitations.Create(manager, "New.Person@Example.Test", []string{authorization.RoleAuditor}, admin.ID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if invitation.Email != "new.person@example.test" {
+		t.Fatalf("invitation address = %q, want the normalized form", invitation.Email)
+	}
+	if !invitation.ExpiresAt.Equal(fixedNow.Add(DefaultInvitationLifetime)) {
+		t.Errorf("ExpiresAt = %s", invitation.ExpiresAt)
+	}
+
+	// The token is returned once and stored only as a digest.
+	if h.invitationDigest(t, invitation.ID) == token.Value() {
+		t.Fatal("the invitation token was stored")
+	}
+
+	open, err := invitations.Open(manager, 10)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if len(open) != 1 || open[0].ID != invitation.ID || open[0].InvitedBy != admin.ID {
+		t.Fatalf("open invitations = %#v", open)
+	}
+
+	const chosen = "a chosen long passphrase"
+	account, err := invitations.Accept(h.ctx, token.Value(), chosen)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if account.Email != "new.person@example.test" || account.Status != StatusActive {
+		t.Fatalf("account = %#v", account)
+	}
+
+	// The promised role was granted.
+	granted, _, err := testRoles(t, h).Permissions(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Permissions: %v", err)
+	}
+	if !granted.Has(authorization.AuditRead) {
+		t.Errorf("the invited role was not granted: %v", granted.All())
+	}
+
+	// The new account can sign in with the password it chose.
+	credentials := testCredentials(t, h, policy)
+	if _, err := credentials.Authenticate(h.ctx, "new.person@example.test", chosen); err != nil {
+		t.Errorf("the invited account cannot sign in: %v", err)
+	}
+
+	// The invitation is closed, and following the link again does nothing.
+	if _, err := invitations.Accept(h.ctx, token.Value(), chosen); !errors.Is(err, ErrInvitationNotFound) {
+		t.Errorf("a second acceptance: error = %v, want ErrInvitationNotFound", err)
+	}
+	open, err = invitations.Open(manager, 10)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if len(open) != 0 {
+		t.Errorf("an accepted invitation is still outstanding: %#v", open)
+	}
+}
+
+func TestEveryUnusableInvitationLooksTheSame(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	invitations := testInvitations(t, h, policy)
+	admin := h.account(t, "admin@example.test")
+	manager := authorized(t, admin.ID, authorization.UsersManage)
+
+	unknown, err := NewInvitationToken()
+	if err != nil {
+		t.Fatalf("NewInvitationToken: %v", err)
+	}
+	_, revokedToken, err := invitations.Create(manager, "revoked@example.test", nil, admin.ID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	revoked, _, err := invitations.Create(manager, "second@example.test", nil, admin.ID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	_ = revoked
+
+	// Distinguishing these would let somebody with a guessed link learn which
+	// guesses were close.
+	tests := map[string]func() string{
+		"a token nobody issued": func() string { return unknown.Value() },
+		"a malformed token":     func() string { return "inv1_not-base64!" },
+		"a withdrawn invitation": func() string {
+			list, err := invitations.Open(authorized(t, admin.ID, authorization.UsersRead), 10)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			for _, invitation := range list {
+				if invitation.Email == "revoked@example.test" {
+					if err := invitations.Revoke(manager, invitation.ID); err != nil {
+						t.Fatalf("Revoke: %v", err)
+					}
+				}
+			}
+			return revokedToken.Value()
+		},
+	}
+	for name, tokenOf := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := invitations.Accept(h.ctx, tokenOf(), "a long enough passphrase"); !errors.Is(err, ErrInvitationNotFound) {
+				t.Fatalf("error = %v, want ErrInvitationNotFound", err)
+			}
+		})
+	}
+}
+
+func TestAnExpiredInvitationIsUnusable(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	invitations := testInvitations(t, h, policy)
+	admin := h.account(t, "admin@example.test")
+	manager := authorized(t, admin.ID, authorization.UsersManage)
+
+	_, token, err := invitations.Create(manager, "late@example.test", nil, admin.ID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	h.advance(DefaultInvitationLifetime - time.Minute)
+	if _, err := invitations.Accept(h.ctx, token.Value(), "a long enough passphrase"); err != nil {
+		t.Fatalf("an invitation inside its lifetime was refused: %v", err)
+	}
+
+	_, second, err := invitations.Create(manager, "later@example.test", nil, admin.ID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	h.advance(DefaultInvitationLifetime)
+	if _, err := invitations.Accept(h.ctx, second.Value(), "a long enough passphrase"); !errors.Is(err, ErrInvitationNotFound) {
+		t.Fatalf("an expired invitation was accepted: %v", err)
+	}
+}
+
+func TestAcceptRefusesAWeakPasswordWithoutSpendingTheInvitation(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	invitations := testInvitations(t, h, policy)
+	admin := h.account(t, "admin@example.test")
+	manager := authorized(t, admin.ID, authorization.UsersManage)
+
+	_, token, err := invitations.Create(manager, "person@example.test", nil, admin.ID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// The password rules run before anything is written, so a refused
+	// password leaves the link usable rather than burning it.
+	if _, err := invitations.Accept(h.ctx, token.Value(), "short"); !errors.Is(err, passwords.ErrTooShort) {
+		t.Fatalf("error = %v, want ErrTooShort", err)
+	}
+	if _, err := invitations.Accept(h.ctx, token.Value(), "password12345"); !errors.Is(err, passwords.ErrCompromised) {
+		t.Fatalf("error = %v, want ErrCompromised", err)
+	}
+	if got := h.userCount(t); got != 1 {
+		t.Fatalf("%d accounts exist; a refused acceptance created one", got)
+	}
+
+	account, err := invitations.Accept(h.ctx, token.Value(), "a long enough passphrase")
+	if err != nil {
+		t.Fatalf("Accept after refusals: %v", err)
+	}
+	if account.Email != "person@example.test" {
+		t.Fatalf("account = %#v", account)
+	}
+}
+
+func TestOneInvitationCreatesAtMostOneAccount(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 1)
+	invitations := testInvitations(t, h, policy)
+	admin := h.account(t, "admin@example.test")
+	manager := authorized(t, admin.ID, authorization.UsersManage)
+
+	_, token, err := invitations.Create(manager, "person@example.test", nil, admin.ID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	const attempts = 4
+	var (
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		succeeded int
+	)
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := invitations.Accept(h.ctx, token.Value(), "a long enough passphrase"); err == nil {
+				mu.Lock()
+				succeeded++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if succeeded != 1 {
+		t.Fatalf("%d concurrent acceptances succeeded, want exactly 1", succeeded)
+	}
+	if got := h.userCount(t); got != 2 {
+		t.Fatalf("%d accounts exist, want the administrator and one invited account", got)
+	}
+}
+
+func TestEnrollmentIsClosedByDefault(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	invitations := testInvitations(t, h, policy)
+	admin := h.account(t, "admin@example.test")
+
+	// Creating, withdrawing, and listing invitations all require a
+	// permission. Without one there is no way into the directory at all.
+	contexts := map[string]context.Context{
+		"no authority":         h.ctx,
+		"the wrong permission": authorized(t, admin.ID, authorization.AuditRead),
+	}
+	for name, ctx := range contexts {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := invitations.Create(ctx, "person@example.test", nil, admin.ID); !errors.Is(err, authorization.ErrDenied) {
+				t.Errorf("Create: error = %v, want ErrDenied", err)
+			}
+			if err := invitations.Revoke(ctx, "3f2504e0-4f89-11d3-9a0c-0305e82c3301"); !errors.Is(err, authorization.ErrDenied) {
+				t.Errorf("Revoke: error = %v, want ErrDenied", err)
+			}
+			if _, err := invitations.Open(ctx, 10); !errors.Is(err, authorization.ErrDenied) {
+				t.Errorf("Open: error = %v, want ErrDenied", err)
+			}
+		})
+	}
+}
+
+func TestCreateRefusesUndeclaredRolesAndExistingAddresses(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	invitations := testInvitations(t, h, policy)
+	admin := h.account(t, "admin@example.test")
+	manager := authorized(t, admin.ID, authorization.UsersManage)
+
+	// An invitation promising a role that does not exist would silently grant
+	// nothing when accepted.
+	if _, _, err := invitations.Create(manager, "person@example.test", []string{"superuser"}, admin.ID); !errors.Is(err, ErrUnknownRole) {
+		t.Errorf("error = %v, want ErrUnknownRole", err)
+	}
+	// Inviting an address that already has an account would fail on
+	// acceptance, after the person had already chosen a password.
+	if _, _, err := invitations.Create(manager, "admin@example.test", nil, admin.ID); !errors.Is(err, ErrAccountExists) {
+		t.Errorf("error = %v, want ErrAccountExists", err)
+	}
+	if _, _, err := invitations.Create(manager, "not-an-address", nil, admin.ID); !errors.Is(err, ErrEmail) {
+		t.Errorf("error = %v, want ErrEmail", err)
+	}
+
+	if _, _, err := invitations.Create(manager, "person@example.test", nil, admin.ID); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// One outstanding invitation per address: two live links, one of which
+	// quietly stops working, is not a feature.
+	if _, _, err := invitations.Create(manager, "Person@example.test", nil, admin.ID); !errors.Is(err, ErrInvitationExists) {
+		t.Errorf("error = %v, want ErrInvitationExists", err)
+	}
+}
+
+func TestBootstrapOnlyWorksOnAnEmptyDirectory(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	invitations := testInvitations(t, h, policy)
+
+	invitation, token, err := invitations.Bootstrap(h.ctx, "first@example.test")
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if len(invitation.Roles) != 1 || invitation.Roles[0] != authorization.RoleAdministrator {
+		t.Fatalf("the bootstrap invitation promises %v", invitation.Roles)
+	}
+
+	account, err := invitations.Accept(h.ctx, token.Value(), "a chosen bootstrap passphrase")
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	granted, _, err := testRoles(t, h).Permissions(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Permissions: %v", err)
+	}
+	if !granted.Has(authorization.RolesManage) {
+		t.Fatalf("the first administrator cannot manage roles: %v", granted.All())
+	}
+
+	// Once anybody exists, the path is closed. It is the only unauthenticated
+	// way to create an account, so it must stay shut afterwards.
+	if _, _, err := invitations.Bootstrap(h.ctx, "second@example.test"); !errors.Is(err, ErrDirectoryNotEmpty) {
+		t.Fatalf("error = %v, want ErrDirectoryNotEmpty", err)
+	}
+}
+
+func TestRerunningTheBootstrapInvalidatesTheEarlierLink(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	invitations := testInvitations(t, h, policy)
+
+	// Rerunning is allowed while the directory is empty: a bootstrap token
+	// that could be issued only once would brick a deployment whose operator
+	// lost it, with nobody able to revoke or reissue.
+	_, first, err := invitations.Bootstrap(h.ctx, "first@example.test")
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	_, second, err := invitations.Bootstrap(h.ctx, "second@example.test")
+	if err != nil {
+		t.Fatalf("second Bootstrap: %v", err)
+	}
+
+	// The earlier link must not survive. It would still work after the first
+	// administrator accepted and the directory stopped being empty, which is
+	// a second unauthenticated route in.
+	if _, err := invitations.Accept(h.ctx, first.Value(), "a chosen bootstrap passphrase"); !errors.Is(err, ErrInvitationNotFound) {
+		t.Fatalf("the earlier bootstrap link still worked: %v", err)
+	}
+	if _, err := invitations.Accept(h.ctx, second.Value(), "a chosen bootstrap passphrase"); err != nil {
+		t.Fatalf("the newest bootstrap link did not work: %v", err)
+	}
+	if got := h.userCount(t); got != 1 {
+		t.Fatalf("%d accounts were created, want 1", got)
+	}
+}
+
+func TestSweepRemovesOnlyUnusedExpiredInvitations(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	policy := testPasswordPolicy(t, 2)
+	invitations := testInvitations(t, h, policy)
+	admin := h.account(t, "admin@example.test")
+	manager := authorized(t, admin.ID, authorization.UsersManage)
+
+	_, accepted, err := invitations.Create(manager, "accepted@example.test", nil, admin.ID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := invitations.Accept(h.ctx, accepted.Value(), "a long enough passphrase"); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if _, _, err := invitations.Create(manager, "unused@example.test", nil, admin.ID); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	h.advance(DefaultInvitationLifetime + time.Hour)
+	removed, err := invitations.Sweep(h.ctx, 100)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("swept %d invitations, want the one nobody used", removed)
+	}
+	// The accepted one stays: it is the record of how that account came to
+	// exist.
+	if got := h.invitationCount(t); got != 1 {
+		t.Fatalf("%d invitations remain, want the accepted one", got)
+	}
+	if _, err := invitations.Sweep(h.ctx, 0); err == nil {
+		t.Error("Sweep accepted an unbounded batch")
+	}
+}
+
+func TestNewInvitationsValidatesItsInputs(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewInvitations(nil, nil, nil, nil, DefaultInvitationLifetime); err == nil {
+		t.Error("NewInvitations accepted nil dependencies")
+	}
+}

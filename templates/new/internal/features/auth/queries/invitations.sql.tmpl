@@ -1,0 +1,71 @@
+-- CreateInvitation stores one invitation. Only the token digest is written;
+-- the token itself is returned to the caller once and never stored.
+-- name: CreateInvitation :one
+INSERT INTO invitations (email, token_digest, roles, invited_by, created_at, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, email, roles, invited_by, created_at, expires_at;
+
+-- FindInvitationByTokenDigest resolves a presented invitation. It is locked
+-- FOR UPDATE so two people following the same link cannot both create an
+-- account from it.
+-- name: FindInvitationByTokenDigest :one
+SELECT id, email, roles, created_at, expires_at, accepted_at, revoked_at
+FROM invitations
+WHERE token_digest = $1
+FOR UPDATE;
+
+-- MarkInvitationAccepted closes an invitation. The guard makes acceptance
+-- happen at most once even if the same link is followed twice.
+-- name: MarkInvitationAccepted :execrows
+UPDATE invitations
+SET accepted_at = $2,
+    accepted_user_id = $3
+WHERE id = $1
+  AND accepted_at IS NULL
+  AND revoked_at IS NULL;
+
+-- RevokeInvitation withdraws an outstanding invitation.
+-- name: RevokeInvitation :execrows
+UPDATE invitations
+SET revoked_at = $2
+WHERE id = $1
+  AND accepted_at IS NULL
+  AND revoked_at IS NULL;
+
+-- RevokeAllOpenInvitations withdraws every outstanding invitation. The
+-- bootstrap path uses it: rerunning the bootstrap must not leave an earlier
+-- administrator link alive, because that link would still work after the
+-- directory stopped being empty.
+-- name: RevokeAllOpenInvitations :execrows
+UPDATE invitations
+SET revoked_at = $1
+WHERE accepted_at IS NULL
+  AND revoked_at IS NULL;
+
+-- ListOpenInvitations shows what is outstanding, which is the question an
+-- administrator reviewing access actually asks.
+-- name: ListOpenInvitations :many
+SELECT id, email, roles, invited_by, created_at, expires_at
+FROM invitations
+WHERE accepted_at IS NULL
+  AND revoked_at IS NULL
+ORDER BY created_at DESC
+LIMIT $1;
+
+-- DeleteExpiredInvitations sweeps invitations nobody used, in bounded batches.
+-- name: DeleteExpiredInvitations :execrows
+DELETE FROM invitations
+WHERE id IN (
+    SELECT expiring.id
+    FROM invitations AS expiring
+    WHERE expiring.accepted_at IS NULL
+      AND expiring.expires_at <= sqlc.arg('cutoff')::timestamptz
+    ORDER BY expiring.expires_at
+    LIMIT sqlc.arg('sweep_limit')::int
+);
+
+-- CountUsers answers whether the directory is empty, which is the one
+-- condition under which the first administrator may be created without an
+-- invitation.
+-- name: CountUsers :one
+SELECT count(*) FROM users;

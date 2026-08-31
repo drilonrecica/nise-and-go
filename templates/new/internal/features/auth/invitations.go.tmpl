@@ -1,0 +1,505 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/drilonrecica/nise-and-go/runtime/password"
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/features/auth/store"
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/passwords"
+)
+
+// The invitation token's shape.
+//
+// It is a distinct type from a session token, not a reuse of one, and the
+// distinction is the point: if both were the same type, a lookup that consulted
+// the wrong table would compile. A credential that can be presented in two
+// places is a credential that will be.
+const (
+	// InvitationTokenPrefix begins every invitation token.
+	InvitationTokenPrefix = "inv1"
+	// InvitationSecretBytes is the amount of randomness in one.
+	InvitationSecretBytes = 32
+	// MaxInvitationTokenBytes bounds an accepted token string.
+	MaxInvitationTokenBytes = 128
+	// MaxInvitationRoles bounds how many roles one invitation may promise.
+	MaxInvitationRoles = 16
+	// MinInvitationLifetime and MaxInvitationLifetime bound how long an
+	// invitation stays usable. The minimum stops a mistyped configuration
+	// from issuing links that expire before they arrive; the maximum stops an
+	// invitation from becoming a permanent way into the directory.
+	MinInvitationLifetime = time.Hour
+	MaxInvitationLifetime = 30 * 24 * time.Hour
+	// DefaultInvitationLifetime is what an application gets without deciding.
+	DefaultInvitationLifetime = 7 * 24 * time.Hour
+	// MaxListedInvitations bounds one page of outstanding invitations.
+	MaxListedInvitations = 500
+	// MaxInvitationSweep bounds one expiry sweep.
+	MaxInvitationSweep = 5000
+)
+
+// Errors the invitation use case reports.
+var (
+	// ErrInvitationToken reports a value that is not a well-formed invitation
+	// token. Like a session token's, it does not say which rule failed.
+	ErrInvitationToken = errors.New("value is not a well-formed invitation token")
+	// ErrInvitationNotFound reports a token matching no outstanding
+	// invitation, including one already accepted, revoked, or expired. The
+	// cases are deliberately indistinguishable to whoever presented it.
+	ErrInvitationNotFound = errors.New("no outstanding invitation matches")
+	// ErrInvitationExists reports an address that already has an outstanding
+	// invitation.
+	ErrInvitationExists = errors.New("that address already has an outstanding invitation")
+	// ErrInvitationLifetime reports a lifetime outside the permitted bounds.
+	ErrInvitationLifetime = errors.New("invitation lifetime is outside the permitted bounds")
+	// ErrDirectoryNotEmpty reports a bootstrap attempted on a directory that
+	// already has accounts.
+	ErrDirectoryNotEmpty = errors.New("the directory already has accounts, so the bootstrap path is closed")
+)
+
+// InvitationToken is a one-time bearer value that lets its holder create one
+// account.
+//
+// It is unprintable through every formatting and serialization path, with one
+// explicit accessor, for the same reason a session token is.
+type InvitationToken struct {
+	value string
+}
+
+// NewInvitationToken mints a token from the system's random source.
+func NewInvitationToken() (InvitationToken, error) {
+	secret := make([]byte, InvitationSecretBytes)
+	if _, err := rand.Read(secret); err != nil {
+		return InvitationToken{}, fmt.Errorf("generating an invitation token: %w", err)
+	}
+	return InvitationToken{value: InvitationTokenPrefix + "_" + base64.RawURLEncoding.EncodeToString(secret)}, nil
+}
+
+// ParseInvitationToken validates a token presented by a client. A well-formed
+// token is not an outstanding one; the caller still has to find its digest.
+func ParseInvitationToken(raw string) (InvitationToken, error) {
+	if len(raw) > MaxInvitationTokenBytes {
+		return InvitationToken{}, ErrInvitationToken
+	}
+	prefix, secret, found := strings.Cut(raw, "_")
+	if !found || prefix != InvitationTokenPrefix {
+		return InvitationToken{}, ErrInvitationToken
+	}
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(secret)
+	if err != nil || len(decoded) != InvitationSecretBytes {
+		return InvitationToken{}, ErrInvitationToken
+	}
+	return InvitationToken{value: raw}, nil
+}
+
+// Value returns the token to put in the invitation link. It is the only
+// accessor that reveals it.
+func (t InvitationToken) Value() string { return t.value }
+
+// Digest returns what the server stores.
+func (t InvitationToken) Digest() []byte {
+	sum := sha256.Sum256([]byte(t.value))
+	return sum[:]
+}
+
+// IsZero reports whether t is the unconstructed zero value.
+func (t InvitationToken) IsZero() bool { return t.value == "" }
+
+// String, GoString, MarshalJSON, MarshalText, and LogValue all redact.
+func (t InvitationToken) String() string               { return "[REDACTED]" }
+func (t InvitationToken) GoString() string             { return "[REDACTED]" }
+func (t InvitationToken) MarshalJSON() ([]byte, error) { return json.Marshal("[REDACTED]") }
+func (t InvitationToken) MarshalText() ([]byte, error) { return []byte("[REDACTED]"), nil }
+func (t InvitationToken) LogValue() slog.Value         { return slog.StringValue("[REDACTED]") }
+
+// Invitation is one outstanding invitation, without its token.
+type Invitation struct {
+	ID        string
+	Email     string
+	Roles     []string
+	InvitedBy string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
+// Invitations creates, withdraws, and accepts invitations.
+type Invitations struct {
+	transactor  *database.Transactor
+	credentials *Credentials
+	roles       *Roles
+	compromised password.Compromised
+	lifetime    time.Duration
+	now         func() time.Time
+}
+
+// NewInvitations constructs the enrollment use case.
+func NewInvitations(
+	transactor *database.Transactor,
+	credentials *Credentials,
+	roles *Roles,
+	compromised password.Compromised,
+	lifetime time.Duration,
+	options ...SessionsOption,
+) (*Invitations, error) {
+	if transactor == nil || credentials == nil || roles == nil {
+		return nil, errors.New("auth: the transactor, login, and role use cases are required")
+	}
+	if lifetime < MinInvitationLifetime || lifetime > MaxInvitationLifetime {
+		return nil, fmt.Errorf("%w: %s is outside %s..%s", ErrInvitationLifetime, lifetime, MinInvitationLifetime, MaxInvitationLifetime)
+	}
+	invitations := &Invitations{
+		transactor:  transactor,
+		credentials: credentials,
+		roles:       roles,
+		compromised: compromised,
+		lifetime:    lifetime,
+		now:         time.Now,
+	}
+	clock := &Sessions{now: invitations.now}
+	for _, option := range options {
+		option(clock)
+	}
+	invitations.now = clock.now
+	return invitations, nil
+}
+
+// Lifetime returns how long an issued invitation stays usable.
+func (i *Invitations) Lifetime() time.Duration { return i.lifetime }
+
+// Create issues an invitation. The caller must hold users.manage.
+//
+// The token is returned once, in the result, and nowhere else. Whatever sends
+// the invitation link is the last thing that can see it.
+func (i *Invitations) Create(ctx context.Context, email string, roles []string, invitedBy string) (Invitation, InvitationToken, error) {
+	if err := authorization.Require(ctx, authorization.UsersManage); err != nil {
+		return Invitation{}, InvitationToken{}, err
+	}
+
+	var (
+		invitation Invitation
+		token      InvitationToken
+	)
+	err := i.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		normalized, err := NormalizeEmail(email)
+		if err != nil {
+			return err
+		}
+		// Inviting an address that already has an account is refused rather
+		// than accepted and silently useless: the link would fail on
+		// acceptance, after the person had already chosen a password.
+		if _, err := store.New(tx).FindUserByEmail(ctx, store.FindUserByEmailParams{Email: normalized}); err == nil {
+			return ErrAccountExists
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("checking for an existing account: %w", err)
+		}
+		invitation, token, err = i.createWithin(ctx, tx, email, roles, invitedBy)
+		return err
+	})
+	if err != nil {
+		return Invitation{}, InvitationToken{}, err
+	}
+	return invitation, token, nil
+}
+
+// Bootstrap issues the first administrator's invitation, and only on an empty
+// directory.
+//
+// It is how a deployment gets its first account without a self-service sign-up
+// path existing at all. The emptiness check and the insert share one
+// transaction, so two concurrent bootstraps cannot both succeed.
+//
+// Rerunning it is allowed while the directory is still empty, because a
+// bootstrap token that could be issued only once would brick a deployment whose
+// operator lost it, with nobody able to revoke or reissue. What rerunning must
+// not do is leave the earlier link alive: that link would still work after the
+// first administrator accepted and the directory stopped being empty, which is
+// a second unauthenticated route in. So every outstanding invitation is
+// withdrawn first, and only the newest link works.
+func (i *Invitations) Bootstrap(ctx context.Context, email string) (Invitation, InvitationToken, error) {
+	var (
+		invitation Invitation
+		token      InvitationToken
+	)
+	err := i.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := store.New(tx)
+		accounts, err := queries.CountUsers(ctx)
+		if err != nil {
+			return fmt.Errorf("counting accounts: %w", err)
+		}
+		if accounts > 0 {
+			return ErrDirectoryNotEmpty
+		}
+		if _, err := queries.RevokeAllOpenInvitations(ctx, store.RevokeAllOpenInvitationsParams{
+			RevokedAt: timestamp(i.now().UTC()),
+		}); err != nil {
+			return fmt.Errorf("withdrawing earlier invitations: %w", err)
+		}
+		// The insert shares this transaction with the emptiness check, so two
+		// concurrent bootstraps cannot both find an empty directory.
+		invitation, token, err = i.createWithin(ctx, tx, email, []string{authorization.RoleAdministrator}, "")
+		return err
+	})
+	if err != nil {
+		return Invitation{}, InvitationToken{}, err
+	}
+	return invitation, token, nil
+}
+
+func (i *Invitations) createWithin(ctx context.Context, tx pgx.Tx, email string, roles []string, invitedBy string) (Invitation, InvitationToken, error) {
+	normalized, err := NormalizeEmail(email)
+	if err != nil {
+		return Invitation{}, InvitationToken{}, err
+	}
+	declared, err := i.checkRoles(roles)
+	if err != nil {
+		return Invitation{}, InvitationToken{}, err
+	}
+	token, err := NewInvitationToken()
+	if err != nil {
+		return Invitation{}, InvitationToken{}, err
+	}
+	now := i.now().UTC()
+	var inviter pgtype.UUID
+	if invitedBy != "" {
+		if inviter, err = parseUUID(invitedBy); err != nil {
+			return Invitation{}, InvitationToken{}, ErrAccountNotFound
+		}
+	}
+	row, err := store.New(tx).CreateInvitation(ctx, store.CreateInvitationParams{
+		Email:       normalized,
+		TokenDigest: token.Digest(),
+		Roles:       declared,
+		InvitedBy:   inviter,
+		CreatedAt:   timestamp(now),
+		ExpiresAt:   timestamp(now.Add(i.lifetime)),
+	})
+	if err != nil {
+		if isUniqueViolation(err) {
+			return Invitation{}, InvitationToken{}, ErrInvitationExists
+		}
+		return Invitation{}, InvitationToken{}, fmt.Errorf("creating the invitation: %w", err)
+	}
+	return Invitation{
+		ID:        uuidString(row.ID),
+		Email:     row.Email,
+		Roles:     row.Roles,
+		InvitedBy: uuidString(row.InvitedBy),
+		CreatedAt: row.CreatedAt.Time.UTC(),
+		ExpiresAt: row.ExpiresAt.Time.UTC(),
+	}, token, nil
+}
+
+// Accept turns an invitation into an account with a password.
+//
+// It is the one unauthenticated write in this feature, and every part of it
+// happens in one transaction: the invitation is locked, the account is created,
+// its roles are granted, and the invitation is closed. Any failure leaves none
+// of it.
+//
+// Every reason an invitation cannot be used — unknown, expired, already
+// accepted, withdrawn — is the same error. Distinguishing them would let
+// somebody with a guessed link learn which guesses were close.
+func (i *Invitations) Accept(ctx context.Context, rawToken, secret string) (Account, error) {
+	token, err := ParseInvitationToken(rawToken)
+	if err != nil {
+		return Account{}, ErrInvitationNotFound
+	}
+	now := i.now().UTC()
+
+	var account Account
+	err = i.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		queries := store.New(tx)
+		row, err := queries.FindInvitationByTokenDigest(ctx, store.FindInvitationByTokenDigestParams{
+			TokenDigest: token.Digest(),
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrInvitationNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("resolving the invitation: %w", err)
+		}
+		if row.AcceptedAt.Valid || row.RevokedAt.Valid || !now.Before(row.ExpiresAt.Time) {
+			return ErrInvitationNotFound
+		}
+
+		// The password rules are checked before anything is written, so a
+		// refused password leaves the invitation usable.
+		if err := passwords.Check(ctx, secret, row.Email, i.compromised); err != nil {
+			return err
+		}
+		encoded, err := i.credentials.policy.Hash(secret)
+		if err != nil {
+			return err
+		}
+
+		created, err := queries.CreateUser(ctx, store.CreateUserParams{
+			Email:        row.Email,
+			PasswordHash: encoded,
+			CreatedAt:    timestamp(now),
+		})
+		if err != nil {
+			if isUniqueViolation(err) {
+				return ErrAccountExists
+			}
+			return fmt.Errorf("creating the account: %w", err)
+		}
+
+		for _, role := range row.Roles {
+			if _, err := queries.GrantRole(ctx, store.GrantRoleParams{
+				UserID:    created.ID,
+				Role:      role,
+				GrantedAt: timestamp(now),
+				GrantedBy: pgtype.UUID{},
+			}); err != nil {
+				return fmt.Errorf("granting an invited role: %w", err)
+			}
+		}
+
+		closed, err := queries.MarkInvitationAccepted(ctx, store.MarkInvitationAcceptedParams{
+			ID:             row.ID,
+			AcceptedAt:     timestamp(now),
+			AcceptedUserID: created.ID,
+		})
+		if err != nil {
+			return fmt.Errorf("closing the invitation: %w", err)
+		}
+		if closed == 0 {
+			// Somebody else accepted it between the lock and here. The lock
+			// makes this unreachable; failing loudly is better than assuming
+			// it stays that way.
+			return ErrInvitationNotFound
+		}
+		account = Account{ID: uuidString(created.ID), Email: created.Email, Status: created.Status}
+		return nil
+	})
+	if err != nil {
+		return Account{}, err
+	}
+	return account, nil
+}
+
+// Revoke withdraws an outstanding invitation. The caller must hold
+// users.manage.
+func (i *Invitations) Revoke(ctx context.Context, invitationID string) error {
+	if err := authorization.Require(ctx, authorization.UsersManage); err != nil {
+		return err
+	}
+	id, err := parseUUID(invitationID)
+	if err != nil {
+		return ErrInvitationNotFound
+	}
+	now := i.now().UTC()
+
+	return i.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		revoked, err := store.New(tx).RevokeInvitation(ctx, store.RevokeInvitationParams{
+			ID:        id,
+			RevokedAt: timestamp(now),
+		})
+		if err != nil {
+			return fmt.Errorf("revoking the invitation: %w", err)
+		}
+		if revoked == 0 {
+			return ErrInvitationNotFound
+		}
+		return nil
+	})
+}
+
+// Open lists outstanding invitations. The caller must hold users.read.
+func (i *Invitations) Open(ctx context.Context, limit int) ([]Invitation, error) {
+	if err := authorization.Require(ctx, authorization.UsersRead); err != nil {
+		return nil, err
+	}
+	if limit < 1 || limit > MaxListedInvitations {
+		limit = MaxListedInvitations
+	}
+
+	var invitations []Invitation
+	err := i.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := store.New(tx).ListOpenInvitations(ctx, store.ListOpenInvitationsParams{Limit: int32(limit)})
+		if err != nil {
+			return fmt.Errorf("listing invitations: %w", err)
+		}
+		invitations = make([]Invitation, 0, len(rows))
+		for _, row := range rows {
+			invitations = append(invitations, Invitation{
+				ID:        uuidString(row.ID),
+				Email:     row.Email,
+				Roles:     row.Roles,
+				InvitedBy: uuidString(row.InvitedBy),
+				CreatedAt: row.CreatedAt.Time.UTC(),
+				ExpiresAt: row.ExpiresAt.Time.UTC(),
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return invitations, nil
+}
+
+// Sweep removes invitations nobody used, in bounded batches. Accepted ones stay:
+// they are the record of how an account came to exist.
+func (i *Invitations) Sweep(ctx context.Context, limit int) (int64, error) {
+	if limit < 1 || limit > MaxInvitationSweep {
+		return 0, fmt.Errorf("invitation sweep limit %d is outside 1..%d", limit, MaxInvitationSweep)
+	}
+	now := i.now().UTC()
+
+	var removed int64
+	err := i.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		removed, err = store.New(tx).DeleteExpiredInvitations(ctx, store.DeleteExpiredInvitationsParams{
+			Cutoff:     timestamp(now),
+			SweepLimit: int32(limit),
+		})
+		if err != nil {
+			return fmt.Errorf("sweeping expired invitations: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+// checkRoles validates every promised role against the catalog, so an
+// invitation cannot promise something that does not exist and will not silently
+// grant nothing when it is accepted.
+func (i *Invitations) checkRoles(roles []string) ([]string, error) {
+	if len(roles) > MaxInvitationRoles {
+		return nil, fmt.Errorf("%w: %d roles, maximum is %d", ErrUnknownRole, len(roles), MaxInvitationRoles)
+	}
+	declared := make([]string, 0, len(roles))
+	for _, role := range roles {
+		if _, ok := i.roles.Catalog().Role(role); !ok {
+			return nil, fmt.Errorf("%w: %q", ErrUnknownRole, role)
+		}
+		if slices.Contains(declared, role) {
+			continue
+		}
+		declared = append(declared, role)
+	}
+	slices.Sort(declared)
+	return declared, nil
+}

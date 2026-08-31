@@ -1,0 +1,120 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package app
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"{{.ModulePath}}/internal/features/auth"
+	"{{.ModulePath}}/internal/platform/authorization"
+	"{{.ModulePath}}/internal/platform/config"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/passwords"
+)
+
+// BootstrapResult is the stable output of the first-administrator command.
+type BootstrapResult struct {
+	Email     string   `json:"email"`
+	Roles     []string `json:"roles"`
+	ExpiresAt string   `json:"expires_at"`
+	// Token is the invitation token, printed once. It is the whole point of
+	// the command and the only place it will ever exist.
+	Token string `json:"token"`
+}
+
+// String renders the operator-readable report.
+//
+// The token is on its own line, unadorned, so a copy-paste cannot pick up
+// punctuation, and the surrounding text says plainly that it is a credential.
+func (r BootstrapResult) String() string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "invited %s as %s, valid until %s\n\n", r.Email, strings.Join(r.Roles, ", "), r.ExpiresAt)
+	out.WriteString("invitation token (shown once; treat it as a password):\n")
+	out.WriteString(r.Token)
+	out.WriteString("\n\nGive it to that person over a channel you trust. Anyone holding it can\n")
+	out.WriteString("create the first administrator account.")
+	return out.String()
+}
+
+// RunBootstrap issues the first administrator's invitation.
+//
+// It works only on an empty directory. Registration is otherwise closed: there
+// is no self-service sign-up path, so this command is how a deployment gets its
+// first account, and it stops working the moment it has one.
+func RunBootstrap(ctx context.Context, email string) (BootstrapResult, error) {
+	cfg, _, err := config.Load()
+	if err != nil {
+		return BootstrapResult{}, fmt.Errorf("loading configuration: %w", err)
+	}
+	pool, err := database.Open(ctx, cfg.DatabaseURL.Reveal(), cfg.DatabasePassword.Reveal(), cfg.Database, database.OpenOptions{})
+	if err != nil {
+		return BootstrapResult{}, fmt.Errorf("opening the database: %w", err)
+	}
+	defer pool.Close()
+
+	invitations, err := newInvitations(pool, cfg)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	invitation, token, err := invitations.Bootstrap(ctx, email)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	return BootstrapResult{
+		Email: invitation.Email,
+		Roles: invitation.Roles,
+		// RFC 3339 rather than a friendlier layout: it is unambiguous, it
+		// sorts, and a reference-time literal in generated source reads like
+		// an embedded timestamp to anything scanning for one.
+		ExpiresAt: invitation.ExpiresAt.Format(time.RFC3339),
+		Token:     token.Value(),
+	}, nil
+}
+
+// newInvitations wires the enrollment use case from a pool and configuration.
+// It is the same graph Run builds, kept in one function so the command and the
+// server cannot drift into wiring it differently.
+func newInvitations(pool *pgxpool.Pool, cfg config.Config) (*auth.Invitations, error) {
+	transactor, err := database.NewTransactor(pool)
+	if err != nil {
+		return nil, fmt.Errorf("building the transaction runner: %w", err)
+	}
+	accounts, err := auth.NewAccounts(transactor)
+	if err != nil {
+		return nil, fmt.Errorf("building the account use case: %w", err)
+	}
+	sessions, err := auth.NewSessions(transactor, cfg.SessionLifetime)
+	if err != nil {
+		return nil, fmt.Errorf("building the session use case: %w", err)
+	}
+	policy, err := passwords.Policy()
+	if err != nil {
+		return nil, fmt.Errorf("building the password policy: %w", err)
+	}
+	credentials, err := auth.NewCredentials(accounts, sessions, policy)
+	if err != nil {
+		return nil, fmt.Errorf("building the login use case: %w", err)
+	}
+	catalog, err := authorization.Catalog()
+	if err != nil {
+		return nil, fmt.Errorf("building the permission catalog: %w", err)
+	}
+	roles, err := auth.NewRoles(transactor, catalog)
+	if err != nil {
+		return nil, fmt.Errorf("building the role use case: %w", err)
+	}
+	compromised, err := passwords.Compromised()
+	if err != nil {
+		return nil, fmt.Errorf("loading the known-compromised password list: %w", err)
+	}
+	invitations, err := auth.NewInvitations(transactor, credentials, roles, compromised, auth.DefaultInvitationLifetime)
+	if err != nil {
+		return nil, fmt.Errorf("building the enrollment use case: %w", err)
+	}
+	return invitations, nil
+}

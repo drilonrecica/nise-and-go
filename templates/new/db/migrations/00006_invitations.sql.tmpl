@@ -1,0 +1,51 @@
+-- Generated once by nise; owned by this application. Nise will not overwrite it.
+--
+-- Registration is closed. An account exists because somebody with users.manage
+-- invited it, or because the first-administrator bootstrap created it on an
+-- empty directory. There is no self-service sign-up path, and adding one is a
+-- deliberate decision an application makes, not a default it inherits.
+
+-- +goose Up
+CREATE TABLE invitations (
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    email            text NOT NULL,
+    -- Only the digest, for the same reason sessions store only a digest: a
+    -- leak of this table must not hand anybody a working invitation.
+    token_digest     bytea NOT NULL,
+    -- The roles the accepted account is granted. They are validated against
+    -- the catalog when the invitation is created, so an invitation cannot
+    -- promise a role that does not exist.
+    roles            text[] NOT NULL DEFAULT '{}',
+    invited_by       uuid,
+    created_at       timestamptz NOT NULL,
+    expires_at       timestamptz NOT NULL,
+    accepted_at      timestamptz,
+    accepted_user_id uuid,
+    revoked_at       timestamptz,
+    CONSTRAINT invitations_email_normalized CHECK (email = lower(email)),
+    CONSTRAINT invitations_email_shape CHECK (position('@' IN email) > 1),
+    CONSTRAINT invitations_email_length CHECK (char_length(email) BETWEEN 3 AND 320),
+    CONSTRAINT invitations_token_digest_length CHECK (octet_length(token_digest) = 32),
+    CONSTRAINT invitations_lifetime CHECK (expires_at > created_at),
+    CONSTRAINT invitations_acceptance CHECK (
+        (accepted_at IS NULL AND accepted_user_id IS NULL)
+        OR (accepted_at IS NOT NULL AND accepted_user_id IS NOT NULL)
+    ),
+    -- An invitation is either accepted or revoked, never both. Allowing both
+    -- would make "was this account created by an invitation somebody later
+    -- withdrew" unanswerable.
+    CONSTRAINT invitations_terminal_state CHECK (accepted_at IS NULL OR revoked_at IS NULL),
+    CONSTRAINT invitations_roles_bounded CHECK (cardinality(roles) <= 16)
+);
+
+CREATE UNIQUE INDEX invitations_token_digest_key ON invitations (token_digest);
+
+-- One outstanding invitation per address. Two live invitations to the same
+-- person is not a feature; it is two links, one of which quietly stops working.
+CREATE UNIQUE INDEX invitations_open_email_key ON invitations (email)
+    WHERE accepted_at IS NULL AND revoked_at IS NULL;
+
+CREATE INDEX invitations_expires_at_idx ON invitations (expires_at);
+
+-- +goose Down
+DROP TABLE invitations;

@@ -92,6 +92,14 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   password change and set paths that end other sessions. Adds a length-only
   password policy with the local compromised check and an
   address-derivation refusal.
+- Add invitation-controlled enrollment: an `invitations` migration storing only
+  the token digest, creation validated against the role catalog and refused for
+  addresses that already have an account, one outstanding invitation per
+  address, acceptance in a single locked transaction so concurrent follows of
+  one link create exactly one account, one indistinguishable error for every
+  unusable invitation, a bounded expiry sweep that keeps accepted records, and
+  an `<app> admin bootstrap` command that works only on an empty directory and
+  withdraws earlier links when rerun.
 
 ### Fixed
 
