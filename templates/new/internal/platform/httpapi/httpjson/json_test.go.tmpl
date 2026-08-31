@@ -3,6 +3,7 @@
 package httpjson
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -230,4 +231,73 @@ func TestWrite(t *testing.T) {
 	if invalid.Body.Len() != 0 || invalid.Header().Get("Content-Type") != "" {
 		t.Fatalf("invalid media type committed a response: headers %v, body %q", invalid.Header(), invalid.Body.String())
 	}
+}
+
+// FuzzDecode drives the strict decoder with arbitrary bodies and media types.
+//
+// The property is not "these inputs are rejected" — a fuzzer will not
+// rediscover the table above. It is that every outcome is one this package
+// declared: a decode that succeeded produced a value from a body that really
+// was one strict JSON object, and a decode that failed did so through one of
+// the four exported sentinels rather than an unclassified error a transport
+// layer would have to map to 500.
+func FuzzDecode(f *testing.F) {
+	seeds := []struct {
+		contentType string
+		body        string
+	}{
+		{"application/json", `{"name":"a","count":1}`},
+		{"application/json; charset=utf-8", `{"name":"a","count":1}`},
+		{"application/json", `{"name":"a","NAME":"b"}`},
+		{"application/json", `{"name":"a","count":1,"extra":true}`},
+		{"application/json", `{"name":`},
+		{"application/json", `{} {}`},
+		{"application/json", `   `},
+		{"application/json", ``},
+		{"application/json", strings.Repeat("[", MaxJSONNestingDepth+1) + strings.Repeat("]", MaxJSONNestingDepth+1)},
+		{"application/json", `{"name":"\ud800"}`},
+		{"text/plain", `{"name":"a","count":1}`},
+		{"", `{"name":"a","count":1}`},
+		{"application/json-patch+json", `{"name":"a","count":1}`},
+		{"application/json", "\x00\x01\x02"},
+	}
+	for _, seed := range seeds {
+		f.Add(seed.contentType, seed.body)
+	}
+
+	f.Fuzz(func(t *testing.T, contentType, body string) {
+		if strings.ContainsAny(contentType, "\r\n\x00") {
+			// net/http would never deliver such a header value.
+			return
+		}
+		type payload struct {
+			Name  string `json:"name"`
+			Count int    `json:"count"`
+		}
+
+		request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		if contentType != "" {
+			request.Header.Set("Content-Type", contentType)
+		}
+		var value payload
+		err := Decode(httptest.NewRecorder(), request, "application/json", &value)
+
+		switch {
+		case err == nil:
+			if strings.TrimSpace(body) == "" {
+				t.Fatalf("Decode accepted an empty body without reporting io.EOF")
+			}
+			var again payload
+			if reErr := json.Unmarshal([]byte(body), &again); reErr != nil {
+				t.Fatalf("Decode accepted a body the standard decoder rejects: %v (%q)", reErr, body)
+			}
+		case errors.Is(err, io.EOF):
+			if strings.TrimSpace(body) != "" {
+				t.Fatalf("Decode reported an absent body for %q", body)
+			}
+		case errors.Is(err, ErrInvalidJSON), errors.Is(err, ErrUnsupportedMediaType), errors.Is(err, ErrRequestBodyTooLarge):
+		default:
+			t.Fatalf("Decode returned an unclassified error for %q: %v", body, err)
+		}
+	})
 }

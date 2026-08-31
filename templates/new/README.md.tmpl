@@ -224,6 +224,15 @@ without it, and `CURSOR_RETIRED_KEYS` rotates it without breaking outstanding
 cursors. `runtime/pagination` owns the token; `api.go` owns the per-collection
 binding, page issuing, and `400` mapping.
 
+`internal/platform/httpapi/transport_test.go` is the end-to-end contract over
+the real handler: routing, negotiation, strict input, pagination, idempotency,
+and response bounds, plus a fuzz target that holds every API response to a
+status in range, the security headers, valid request identity, the Problem
+media type on failure, and no Go implementation detail in the body. A request
+whose method is outside chi's own table is dispatched into the matching
+surface's core rather than answered before the chain runs, so an unusual verb
+cannot produce the one response with no security headers.
+
 A command worth not repeating takes an `Idempotency-Key` header.
 `internal/platform/idempotency` writes its record in the same transaction as
 the command, so a rolled-back command leaves no claim and a visible record is

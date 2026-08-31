@@ -23,7 +23,9 @@ func TestGeneratedProjectDefinesVersionedAPIRouterCore(t *testing.T) {
 		"RegisterAPI func(chi.Router)",
 		"secure.NewDocumentPolicy",
 		"secure.NewAPIPolicy",
-		`root.Mount("/api/v1", newCoreHandler(d, apiPolicy, d.Middleware.API, api, problem.HTTPHandler(problem.InternalServerError()), true))`,
+		`apiCore := newCoreHandler(d, apiPolicy, d.Middleware.API, api, problem.HTTPHandler(problem.InternalServerError()), true)`,
+		"root.Mount(APIPathPrefix, apiCore)",
+		"root.MethodNotAllowed(unsupportedMethod(apiCore, documentCore))",
 		"newCoreHandler",
 	} {
 		if !strings.Contains(content["internal/platform/httpapi/router.go"], fragment) {

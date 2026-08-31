@@ -23,6 +23,26 @@ chain would return an API error without API security headers or request
 instrumentation. Adding a wildcard fallback route was also rejected because
 it would convert a known route's wrong-method response from `405` to `404`.
 
+## Methods chi does not know
+
+chi dispatches by an internal table of HTTP methods. A request whose method is
+not in that table — WebDAV's `PROPFIND`, an invented `PURGE`, or the single
+character `0` — is answered by `Mux.routeHTTP` **before** any mounted handler
+runs. Left alone, that would be the only response the server produces with no
+security headers, no Content-Security-Policy, no request or correlation ID, no
+log line, and no metric, reachable by anyone willing to send an unusual verb.
+
+The root dispatcher therefore installs an unsupported-method handler that sends
+the request into the matching surface's own core. The core's inner router
+reaches the same unknown-method branch one level down, so each surface still
+produces its own `405` — an RFC 9457 Problem for the API, chi's plain response
+for the document surface — this time with every invariant the rest of the
+server holds. The API `405` still reports the methods the path does allow,
+because the handler restores the routing path the way chi's own `Mount` does.
+
+The boundary test is a path-segment test, not a string prefix: `/api/v10`
+remains a document path here exactly as it does for a known method.
+
 ## Fixed middleware order
 
 Both sibling chains use the same core order, outermost first:
@@ -71,7 +91,13 @@ surface, and putting behavior there would erase the independently testable
 security boundary.
 
 The generated `internal/platform/httpapi/router_test.go` locks the ordering,
-separate policies, exact prefix behavior, request-scoped panic logging, and
-metrics behavior. Because `router.go` and its test are application-owned,
+separate policies, exact prefix behavior, unknown-method dispatch,
+request-scoped panic logging, and metrics behavior.
+`internal/platform/httpapi/transport_test.go` is the end-to-end contract over
+the same handler: routes, method and content negotiation, strict input, both
+pagination contracts, idempotency key handling, the response bound, and a fuzz
+target that holds every response on the API surface to a status in range, the
+security headers, valid request identity, the Problem media type on failure,
+and no Go implementation detail in the body. Because `router.go` and its test are application-owned,
 projects may deliberately change this contract together when their needs
 diverge from the golden profile.

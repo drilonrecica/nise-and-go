@@ -1,0 +1,753 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpapi
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/pagination"
+	"github.com/drilonrecica/nise-and-go/runtime/secure"
+
+	"{{.ModulePath}}/internal/platform/httpapi/httpjson"
+	"{{.ModulePath}}/internal/platform/httpapi/openapigen"
+	"{{.ModulePath}}/internal/platform/httpapi/problem"
+	"{{.ModulePath}}/internal/platform/idempotency"
+)
+
+// This file is the end-to-end transport contract: every assertion below goes
+// through the real handler New builds, with its real security headers, request
+// identity, recovery, metrics, and Problem writer. The unit suites next to it
+// check each policy in isolation; this one checks that they are actually wired
+// together, in the right order, on the path a client takes.
+//
+// The probe routes exist only here. They are the smallest surface that
+// exercises strict decoding, both pagination contracts, idempotency key
+// handling, and the response bound through one chain — without inventing
+// public endpoints in api/openapi.yaml. Delete them once real domain
+// operations cover the same ground, and keep the assertions.
+
+const (
+	probeCommandPath = "/api/v1/probe/commands"
+	probeCursorPath  = "/api/v1/probe/widgets"
+	probeReportPath  = "/api/v1/probe/reports"
+)
+
+type probeCommandBody struct {
+	Name   string `json:"name"`
+	Amount int    `json:"amount"`
+}
+
+// transportProbe is one handler set mounted through the real /api/v1 seam.
+type transportProbe struct {
+	cursors      *pagination.Codec
+	limits       pagination.Limits
+	reportLimits pagination.ReportLimits
+	oversized    bool
+}
+
+func (p *transportProbe) register(r chi.Router) {
+	r.Post("/probe/commands", p.command)
+	r.Get("/probe/widgets", p.widgets)
+	r.Get("/probe/reports", p.reports)
+}
+
+// command exercises the strict decoder, the idempotency header, and the
+// bounded response writer on one route.
+func (p *transportProbe) command(w http.ResponseWriter, r *http.Request) {
+	key, err := idempotencyKey(r)
+	if err != nil {
+		problem.Handler(idempotencyProblem(err))(w, r, err)
+		return
+	}
+
+	var body probeCommandBody
+	if err := httpjson.Decode(w, r, "application/json", &body); err != nil {
+		requestTransportError(w, r, err)
+		return
+	}
+	if _, err := idempotencyFingerprint(r, body); err != nil {
+		problem.Handler(problem.InternalServerError())(w, r, err)
+		return
+	}
+
+	if p.oversized {
+		body.Name = strings.Repeat("x", int(httpjson.MaxResponseBodyBytes))
+	}
+	if err := httpjson.Write(w, http.StatusOK, map[string]any{"name": body.Name, "key": key}); err != nil {
+		problem.Handler(problem.InternalServerError())(w, r, err)
+	}
+}
+
+// widgets exercises cursor parsing, query binding, and page issuing.
+func (p *transportProbe) widgets(w http.ResponseWriter, r *http.Request) {
+	binding := cursorBinding(r, "/probe/widgets")
+	page, err := p.cursors.ParsePage(binding, r.URL.Query(), p.limits)
+	if err != nil {
+		problem.Handler(paginationProblem(err))(w, r, err)
+		return
+	}
+
+	// A fixed result set: rows "1".."3" read forward from the cursor, so the
+	// issued cursors are real ones a later request can return.
+	start := 1
+	if page.HasCursor {
+		parsed, convErr := strconv.Atoi(page.Cursor.Values[0])
+		if convErr != nil {
+			problem.Handler(problem.InvalidPagination())(w, r, convErr)
+			return
+		}
+		start = parsed + 1
+	}
+	boundaries := pageBoundaries{
+		First:       []string{strconv.Itoa(start)},
+		Last:        []string{strconv.Itoa(start + 1)},
+		HasMore:     start+1 < 9,
+		HasPrevious: start > 1,
+	}
+	metadata, err := issueCursorPage(p.cursors, binding, boundaries)
+	if err != nil {
+		problem.Handler(problem.InternalServerError())(w, r, err)
+		return
+	}
+	if err := httpjson.Write(w, http.StatusOK, newAPIRootCursorCollection(nil, metadata)); err != nil {
+		problem.Handler(problem.InternalServerError())(w, r, err)
+	}
+}
+
+// reports exercises the separate offset contract on the same chain.
+func (p *transportProbe) reports(w http.ResponseWriter, r *http.Request) {
+	report, err := pagination.ParseReport(r.URL.Query(), p.reportLimits)
+	if err != nil {
+		problem.Handler(paginationProblem(err))(w, r, err)
+		return
+	}
+	totals, err := report.Totals(51)
+	if err != nil {
+		problem.Handler(problem.InternalServerError())(w, r, err)
+		return
+	}
+	if err := httpjson.Write(w, http.StatusOK, newAPIRootReportCollection(nil, issueReportPage(totals))); err != nil {
+		problem.Handler(problem.InternalServerError())(w, r, err)
+	}
+}
+
+func newTransportProbe(t *testing.T) (http.Handler, *transportProbe) {
+	t.Helper()
+
+	limits, err := pagination.NewLimits(25, 100)
+	if err != nil {
+		t.Fatalf("NewLimits: %v", err)
+	}
+	reportLimits, err := pagination.NewReportLimits(50, 200, 100000)
+	if err != nil {
+		t.Fatalf("NewReportLimits: %v", err)
+	}
+	probe := &transportProbe{
+		cursors:      testCursorCodec(t),
+		limits:       limits,
+		reportLimits: reportLimits,
+	}
+
+	deps, _, _ := routerTestDeps(t)
+	apiServer, err := NewServer(probe.cursors)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	deps.RegisterAPI = func(r chi.Router) {
+		apiServer.Register(r)
+		probe.register(r)
+	}
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return handler, probe
+}
+
+// transportRequest is one probe exchange: a method, a target, optional headers
+// and body, and the response the whole chain produced.
+type transportRequest struct {
+	method  string
+	target  string
+	headers map[string]string
+	body    string
+}
+
+func (c transportRequest) do(handler http.Handler) *httptest.ResponseRecorder {
+	var reader *strings.Reader
+	if c.body != "" {
+		reader = strings.NewReader(c.body)
+	}
+	var request *http.Request
+	if reader != nil {
+		request = httptest.NewRequest(c.method, c.target, reader)
+	} else {
+		request = httptest.NewRequest(c.method, c.target, nil)
+	}
+	for name, value := range c.headers {
+		request.Header.Set(name, value)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func jsonRequest(method, target, body string) transportRequest {
+	return transportRequest{
+		method: method,
+		target: target,
+		headers: map[string]string{
+			"Content-Type":         "application/json",
+			idempotency.HeaderName: "01J00000000000000000000001",
+		},
+		body: body,
+	}
+}
+
+// decodeProblem reads a Problem body and fails if the response was not one.
+func decodeProblem(t *testing.T, response *httptest.ResponseRecorder) openapigen.Problem {
+	t.Helper()
+
+	if got := response.Header().Get("Content-Type"); got != problem.MediaType {
+		t.Fatalf("Content-Type = %q, want %q (body %q)", got, problem.MediaType, response.Body.String())
+	}
+	var body openapigen.Problem
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode problem: %v (body %q)", err, response.Body.String())
+	}
+	if body.Status != int32(response.Code) {
+		t.Errorf("problem status %d does not match HTTP status %d", body.Status, response.Code)
+	}
+	return body
+}
+
+// assertAPIResponseInvariants holds for every response the API chain
+// produces, successful or not. They are checked on each case rather than once,
+// because a middleware that is skipped only on the failure path is exactly the
+// defect this suite exists to catch.
+func assertAPIResponseInvariants(t *testing.T, response *httptest.ResponseRecorder) {
+	t.Helper()
+
+	policy, err := secure.NewAPIPolicy(secure.Development)
+	if err != nil {
+		t.Fatalf("NewAPIPolicy: %v", err)
+	}
+	if got := response.Header().Get(secure.HeaderCSP); got != policy.ContentSecurityPolicy() {
+		t.Errorf("CSP = %q, want the API policy", got)
+	}
+	for _, header := range []string{logging.DefaultRequestIDHeader, logging.DefaultCorrelationIDHeader} {
+		value := response.Header().Get(header)
+		if value == "" {
+			t.Errorf("%s is missing", header)
+			continue
+		}
+		if !logging.ValidID(value) {
+			t.Errorf("%s = %q, which is not a valid identifier", header, value)
+		}
+	}
+	if response.Code < 100 || response.Code > 599 {
+		t.Errorf("status %d is outside 100..599", response.Code)
+	}
+}
+
+func TestTransportContractRoutesAndNegotiation(t *testing.T) {
+	t.Parallel()
+
+	handler, _ := newTransportProbe(t)
+
+	tests := []struct {
+		name       string
+		request    transportRequest
+		wantStatus int
+		wantCode   string
+		wantAllow  string
+	}{
+		{
+			name:       "the API index is a direct resource",
+			request:    transportRequest{method: http.MethodGet, target: "/api/v1/"},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "an unmatched API path is a Problem, not the single-page application",
+			request:    transportRequest{method: http.MethodGet, target: "/api/v1/not-in-openapi"},
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "a known path with the wrong method reports what is allowed",
+			request:    transportRequest{method: http.MethodDelete, target: probeCursorPath},
+			wantStatus: http.StatusMethodNotAllowed,
+			wantCode:   "method_not_allowed",
+			wantAllow:  http.MethodGet,
+		},
+		{
+			name:       "a deeply nested unmatched path is still a Problem",
+			request:    transportRequest{method: http.MethodGet, target: "/api/v1/a/b/c/d/e"},
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "a traversal attempt does not escape the API subtree",
+			request:    transportRequest{method: http.MethodGet, target: "/api/v1/../../etc/passwd"},
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			response := tc.request.do(handler)
+			assertAPIResponseInvariants(t, response)
+			if response.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", response.Code, tc.wantStatus, response.Body.String())
+			}
+			if tc.wantCode != "" {
+				if got := decodeProblem(t, response).Code; got != tc.wantCode {
+					t.Errorf("problem code = %q, want %q", got, tc.wantCode)
+				}
+			}
+			if tc.wantAllow != "" {
+				if got := response.Header().Get("Allow"); got != tc.wantAllow {
+					t.Errorf("Allow = %q, want %q", got, tc.wantAllow)
+				}
+			}
+		})
+	}
+}
+
+func TestTransportContractStrictInput(t *testing.T) {
+	t.Parallel()
+
+	handler, _ := newTransportProbe(t)
+	deep := strings.Repeat(`[`, httpjson.MaxJSONNestingDepth+1) + strings.Repeat(`]`, httpjson.MaxJSONNestingDepth+1)
+
+	tests := []struct {
+		name       string
+		request    transportRequest
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "a well-formed body is accepted",
+			request:    jsonRequest(http.MethodPost, probeCommandPath, `{"name":"ok","amount":1}`),
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "malformed JSON",
+			request:    jsonRequest(http.MethodPost, probeCommandPath, `{"name":`),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_request",
+		},
+		{
+			name:       "an unknown field",
+			request:    jsonRequest(http.MethodPost, probeCommandPath, `{"name":"ok","amount":1,"extra":true}`),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_request",
+		},
+		{
+			name:       "a duplicate key",
+			request:    jsonRequest(http.MethodPost, probeCommandPath, `{"name":"a","name":"b","amount":1}`),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_request",
+		},
+		{
+			name:       "a case-folded duplicate key",
+			request:    jsonRequest(http.MethodPost, probeCommandPath, `{"name":"a","NAME":"b","amount":1}`),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_request",
+		},
+		{
+			name:       "a trailing second value",
+			request:    jsonRequest(http.MethodPost, probeCommandPath, `{"name":"a","amount":1} {"name":"b","amount":2}`),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_request",
+		},
+		{
+			name:       "nesting beyond the container limit",
+			request:    jsonRequest(http.MethodPost, probeCommandPath, deep),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_request",
+		},
+		{
+			name: "a body beyond the request limit",
+			request: jsonRequest(http.MethodPost, probeCommandPath,
+				`{"name":"`+strings.Repeat("x", int(httpjson.MaxRequestBodyBytes))+`","amount":1}`),
+			wantStatus: http.StatusRequestEntityTooLarge,
+			wantCode:   "request_body_too_large",
+		},
+		{
+			name: "a body with the wrong media type",
+			request: transportRequest{
+				method: http.MethodPost,
+				target: probeCommandPath,
+				headers: map[string]string{
+					"Content-Type":         "text/plain",
+					idempotency.HeaderName: "01J00000000000000000000001",
+				},
+				body: `{"name":"ok","amount":1}`,
+			},
+			wantStatus: http.StatusUnsupportedMediaType,
+			wantCode:   "unsupported_media_type",
+		},
+		{
+			name: "a body with no media type at all",
+			request: transportRequest{
+				method:  http.MethodPost,
+				target:  probeCommandPath,
+				headers: map[string]string{idempotency.HeaderName: "01J00000000000000000000001"},
+				body:    `{"name":"ok","amount":1}`,
+			},
+			wantStatus: http.StatusUnsupportedMediaType,
+			wantCode:   "unsupported_media_type",
+		},
+		{
+			name: "a charset parameter is still the declared media type",
+			request: transportRequest{
+				method: http.MethodPost,
+				target: probeCommandPath,
+				headers: map[string]string{
+					"Content-Type":         "application/json; charset=utf-8",
+					idempotency.HeaderName: "01J00000000000000000000001",
+				},
+				body: `{"name":"ok","amount":1}`,
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "a missing idempotency key is refused before the body is read",
+			request: transportRequest{
+				method:  http.MethodPost,
+				target:  probeCommandPath,
+				headers: map[string]string{"Content-Type": "application/json"},
+				body:    `{"name":"ok","amount":1}`,
+			},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_idempotency_key",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			response := tc.request.do(handler)
+			assertAPIResponseInvariants(t, response)
+			if response.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", response.Code, tc.wantStatus, response.Body.String())
+			}
+			if tc.wantCode == "" {
+				if got := response.Header().Get("Content-Type"); got != "application/json" {
+					t.Errorf("Content-Type = %q, want application/json", got)
+				}
+				return
+			}
+			body := decodeProblem(t, response)
+			if body.Code != tc.wantCode {
+				t.Errorf("problem code = %q, want %q", body.Code, tc.wantCode)
+			}
+			// No failure body may quote what the client sent back at it, or
+			// name a Go type, package, or path.
+			for _, forbidden := range []string{"json:", "cannot unmarshal", "probeCommandBody", "httpjson", "/api/v1/probe"} {
+				if strings.Contains(response.Body.String(), forbidden) {
+					t.Errorf("problem body exposed %q: %q", forbidden, response.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestTransportContractCursorPagination(t *testing.T) {
+	t.Parallel()
+
+	handler, _ := newTransportProbe(t)
+
+	first := transportRequest{method: http.MethodGet, target: probeCursorPath + "?status=open"}.do(handler)
+	assertAPIResponseInvariants(t, first)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first page status = %d, want 200 (body %q)", first.Code, first.Body.String())
+	}
+	var page openapigen.APIRootCursorCollection
+	if err := json.Unmarshal(first.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode first page: %v", err)
+	}
+	if page.Items == nil {
+		t.Error("items decoded as null; the contract says an array")
+	}
+	if !page.Page.HasMore || page.Page.NextCursor == nil {
+		t.Fatalf("first page = %#v, want a next cursor", page.Page)
+	}
+	if page.Page.PrevCursor != nil {
+		t.Error("the first page offered a previous cursor")
+	}
+
+	next := *page.Page.NextCursor
+	second := transportRequest{
+		method: http.MethodGet,
+		target: probeCursorPath + "?status=open&after=" + url.QueryEscape(next),
+	}.do(handler)
+	assertAPIResponseInvariants(t, second)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second page status = %d, want 200 (body %q)", second.Code, second.Body.String())
+	}
+
+	tests := []struct {
+		name     string
+		target   string
+		wantCode string
+	}{
+		{name: "a cursor from a different filter", target: probeCursorPath + "?status=closed&after=" + url.QueryEscape(next), wantCode: "invalid_pagination"},
+		{name: "a next cursor replayed backwards", target: probeCursorPath + "?status=open&before=" + url.QueryEscape(next), wantCode: "invalid_pagination"},
+		{name: "a forged cursor", target: probeCursorPath + "?status=open&after=" + url.QueryEscape(next+"x"), wantCode: "invalid_pagination"},
+		{name: "a cursor that is not a token", target: probeCursorPath + "?status=open&after=../../etc/passwd", wantCode: "invalid_pagination"},
+		{name: "after and before together", target: probeCursorPath + "?after=" + url.QueryEscape(next) + "&before=" + url.QueryEscape(next), wantCode: "invalid_pagination"},
+		{name: "a limit beyond the maximum", target: probeCursorPath + "?limit=1000", wantCode: "invalid_pagination"},
+		{name: "a limit of zero", target: probeCursorPath + "?limit=0", wantCode: "invalid_pagination"},
+		{name: "a non-numeric limit", target: probeCursorPath + "?limit=all", wantCode: "invalid_pagination"},
+		{name: "a repeated limit", target: probeCursorPath + "?limit=5&limit=10", wantCode: "invalid_pagination"},
+		{name: "an empty limit", target: probeCursorPath + "?limit=", wantCode: "invalid_pagination"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			response := transportRequest{method: http.MethodGet, target: tc.target}.do(handler)
+			assertAPIResponseInvariants(t, response)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %q)", response.Code, response.Body.String())
+			}
+			if got := decodeProblem(t, response).Code; got != tc.wantCode {
+				t.Errorf("problem code = %q, want %q", got, tc.wantCode)
+			}
+			if strings.Contains(response.Body.String(), "nc1.") {
+				t.Errorf("problem body echoed a cursor: %q", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestTransportContractReportPagination(t *testing.T) {
+	t.Parallel()
+
+	handler, _ := newTransportProbe(t)
+
+	response := transportRequest{method: http.MethodGet, target: probeReportPath + "?page=2&size=25"}.do(handler)
+	assertAPIResponseInvariants(t, response)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", response.Code, response.Body.String())
+	}
+	var report openapigen.APIRootReportCollection
+	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	if report.Page.Page != 2 || report.Page.Size != 25 || report.Page.Total != 51 || report.Page.TotalPages != 3 || !report.Page.HasMore {
+		t.Fatalf("report page = %#v", report.Page)
+	}
+
+	tests := []struct {
+		name     string
+		target   string
+		wantCode string
+	}{
+		{name: "page zero", target: probeReportPath + "?page=0", wantCode: "invalid_pagination"},
+		{name: "page beyond the ceiling", target: probeReportPath + "?page=100001", wantCode: "invalid_pagination"},
+		{name: "size beyond the maximum", target: probeReportPath + "?size=201", wantCode: "invalid_pagination"},
+		{name: "a page past the offset ceiling", target: probeReportPath + "?page=100000&size=200", wantCode: "report_too_deep"},
+		{name: "report and cursor parameters together", target: probeReportPath + "?page=1&after=nc1.a.b.c", wantCode: "invalid_pagination"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := transportRequest{method: http.MethodGet, target: tc.target}.do(handler)
+			assertAPIResponseInvariants(t, got)
+			if got.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %q)", got.Code, got.Body.String())
+			}
+			if code := decodeProblem(t, got).Code; code != tc.wantCode {
+				t.Errorf("problem code = %q, want %q", code, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestTransportContractBoundsTheResponse(t *testing.T) {
+	t.Parallel()
+
+	handler, probe := newTransportProbe(t)
+	probe.oversized = true
+
+	response := jsonRequest(http.MethodPost, probeCommandPath, `{"name":"ok","amount":1}`).do(handler)
+	assertAPIResponseInvariants(t, response)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: an oversized response must fail before headers commit", response.Code)
+	}
+	body := decodeProblem(t, response)
+	if body.Code != "internal_server_error" {
+		t.Errorf("problem code = %q, want internal_server_error", body.Code)
+	}
+	if int64(response.Body.Len()) >= httpjson.MaxResponseBodyBytes {
+		t.Errorf("the oversized body reached the client: %d bytes", response.Body.Len())
+	}
+}
+
+// FuzzTransportSurface drives the whole API chain with arbitrary requests. It
+// asserts the properties that must hold for every one of them: no panic, a
+// status in range, a response identified as either the API's success media
+// type or its Problem media type, security headers and request identity
+// present, and no Go implementation detail in the body.
+func FuzzTransportSurface(f *testing.F) {
+	handler, _ := newTransportProbe(&testing.T{})
+
+	seeds := []struct {
+		method      string
+		target      string
+		contentType string
+		key         string
+		body        string
+	}{
+		{http.MethodGet, "/api/v1/", "", "", ""},
+		{http.MethodGet, "/api/v1/probe/widgets?status=open&limit=10", "", "", ""},
+		{http.MethodGet, "/api/v1/probe/widgets?after=nc1.aaaa.bbbb.cccc", "", "", ""},
+		{http.MethodGet, "/api/v1/probe/reports?page=1&size=10", "", "", ""},
+		{http.MethodGet, "/api/v1/probe/reports?page=99999&size=200", "", "", ""},
+		{http.MethodPost, probeCommandPath, "application/json", "01J00000000000000000000001", `{"name":"a","amount":1}`},
+		{http.MethodPost, probeCommandPath, "application/json", "01J00000000000000000000001", `{"name":"a","NAME":"b"}`},
+		{http.MethodPost, probeCommandPath, "application/json", "", `{}`},
+		{http.MethodPost, probeCommandPath, "text/plain", "01J00000000000000000000001", "not json"},
+		{http.MethodPut, "/api/v1/probe/widgets", "", "", ""},
+		{http.MethodGet, "/api/v1/%2e%2e/%2e%2e/etc/passwd", "", "", ""},
+		{http.MethodGet, "/api/v1/\x00", "", "", ""},
+	}
+	for _, seed := range seeds {
+		f.Add(seed.method, seed.target, seed.contentType, seed.key, seed.body)
+	}
+
+	f.Fuzz(func(t *testing.T, method, target, contentType, key, body string) {
+		request, err := safeRequest(method, target, contentType, key, body)
+		if err != nil {
+			// net/http itself refuses the input; there is nothing for the
+			// application chain to be responsible for.
+			return
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+
+		if response.Code < 100 || response.Code > 599 {
+			t.Fatalf("status %d is outside 100..599", response.Code)
+		}
+		if response.Header().Get(secure.HeaderCSP) == "" {
+			t.Fatalf("%s %q produced a response with no Content-Security-Policy", method, target)
+		}
+		for _, header := range []string{logging.DefaultRequestIDHeader, logging.DefaultCorrelationIDHeader} {
+			value := response.Header().Get(header)
+			if value == "" || !logging.ValidID(value) {
+				t.Fatalf("%s %q produced %s = %q", method, target, header, value)
+			}
+		}
+		// The media-type contract is the API surface's. The document,
+		// health, and operator surfaces keep their own established formats,
+		// so a request that never reaches /api/v1 is held only to the
+		// invariants above.
+		if _, underAPI := apiPathRemainder(request.URL.Path); !underAPI {
+			return
+		}
+		mediaType, _, _ := strings.Cut(response.Header().Get("Content-Type"), ";")
+		mediaType = strings.TrimSpace(mediaType)
+		switch {
+		case response.Code >= 400:
+			if mediaType != problem.MediaType {
+				t.Fatalf("%s %q failed with Content-Type %q, want %q", method, target, mediaType, problem.MediaType)
+			}
+			var reported openapigen.Problem
+			if err := json.Unmarshal(response.Body.Bytes(), &reported); err != nil {
+				t.Fatalf("%s %q produced an undecodable Problem: %v", method, target, err)
+			}
+			if reported.Status != int32(response.Code) {
+				t.Fatalf("Problem status %d does not match HTTP status %d", reported.Status, response.Code)
+			}
+		case mediaType != "" && mediaType != "application/json":
+			t.Fatalf("%s %q succeeded with Content-Type %q", method, target, mediaType)
+		}
+		for _, forbidden := range []string{"goroutine ", "runtime error", "internal/platform"} {
+			if strings.Contains(response.Body.String(), forbidden) {
+				t.Fatalf("%s %q leaked %q: %q", method, target, forbidden, response.Body.String())
+			}
+		}
+	})
+}
+
+// safeRequest builds a probe request, reporting the inputs net/http refuses
+// outright so the fuzz body does not treat them as application failures.
+func safeRequest(method, target, contentType, key, body string) (*http.Request, error) {
+	if !validMethodToken(method) {
+		return nil, errors.New("method is not an HTTP token")
+	}
+	if !strings.HasPrefix(target, "/") || strings.ContainsAny(target, " \t\r\n") {
+		return nil, errors.New("target is not an origin-form path")
+	}
+	if _, err := url.ParseRequestURI(target); err != nil {
+		return nil, err
+	}
+
+	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	for name, value := range map[string]string{
+		"Content-Type":         contentType,
+		idempotency.HeaderName: key,
+	} {
+		if value == "" || strings.ContainsAny(value, "\r\n\x00") {
+			continue
+		}
+		request.Header.Set(name, value)
+	}
+	return request, nil
+}
+
+// validMethodToken reports whether method is a token as RFC 9110 defines one.
+// httptest.NewRequest panics on anything else, which is net/http refusing the
+// input rather than this application mishandling it.
+func validMethodToken(method string) bool {
+	if method == "" {
+		return false
+	}
+	const punctuation = "!#$%&'*+-.^_`|~"
+	for i := range len(method) {
+		char := method[i]
+		switch {
+		case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z', char >= '0' && char <= '9':
+		case strings.IndexByte(punctuation, char) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// TestTransportContractIsDeterministic runs the same exchange repeatedly. A
+// contract that only usually holds is not one.
+func TestTransportContractIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	handler, _ := newTransportProbe(t)
+	deadline := time.Now().Add(2 * time.Second)
+	previous := ""
+	for i := 0; i < 25 && time.Now().Before(deadline); i++ {
+		response := transportRequest{method: http.MethodGet, target: "/api/v1/no-such-route"}.do(handler)
+		body := decodeProblem(t, response)
+		// Request identity changes per request by design; everything else in
+		// the public body must not.
+		current := body.Type + "|" + body.Title + "|" + body.Detail + "|" + body.Code + "|" + strconv.Itoa(int(body.Status))
+		if previous != "" && current != previous {
+			t.Fatalf("problem varied between identical requests: %q then %q", previous, current)
+		}
+		previous = current
+	}
+}

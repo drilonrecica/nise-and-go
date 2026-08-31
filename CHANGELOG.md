@@ -27,6 +27,16 @@ The format is based on Keep a Changelog. Tags use semantic-versioning format fro
   expires records on a bounded sweep. Adds the `invalid_idempotency_key`,
   `idempotency_conflict`, and `idempotency_key_reuse` Problem types.
 
+### Fixed
+
+- Generated applications answered a request whose HTTP method is outside chi's
+  own method table — `PROPFIND`, `PURGE`, or any other unusual verb — with a
+  bare `405` produced before the middleware chain ran: no security headers, no
+  Content-Security-Policy, no request or correlation ID, no log line, and no
+  metric. Such requests are now dispatched into the matching surface's core and
+  answered with that surface's ordinary `405`. Found by the new transport fuzz
+  target.
+
 ## Release policy
 
 - Entries describe user-visible changes, not every commit.
