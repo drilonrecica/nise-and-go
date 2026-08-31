@@ -15,6 +15,7 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/session"
 
 	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/database"
 	"{{.ModulePath}}/internal/platform/database/dbtest"
 	"{{.ModulePath}}/internal/platform/passwords"
@@ -512,7 +513,13 @@ func TestDisabledAccountStopsAuthenticating(t *testing.T) {
 		t.Fatalf("Authenticate: %v", err)
 	}
 
-	if err := h.accounts.SetStatus(h.ctx, account.ID, StatusDisabled); err != nil {
+	// Disabling an account requires users.manage, checked in the use case
+	// rather than at whatever route reaches it.
+	admin := authorized(t, account.ID, authorization.UsersManage)
+	if err := h.accounts.SetStatus(h.ctx, account.ID, StatusDisabled); !errors.Is(err, authorization.ErrDenied) {
+		t.Fatalf("an unauthorized status change was allowed: %v", err)
+	}
+	if err := h.accounts.SetStatus(admin, account.ID, StatusDisabled); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
 	h.advance(10 * time.Minute)
@@ -529,13 +536,13 @@ func TestDisabledAccountStopsAuthenticating(t *testing.T) {
 		t.Fatalf("last_seen_at = %s; a disabled account's session was touched", lastSeen.UTC())
 	}
 
-	if err := h.accounts.SetStatus(h.ctx, account.ID, StatusActive); err != nil {
+	if err := h.accounts.SetStatus(admin, account.ID, StatusActive); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
 	if _, err := h.sessions.Authenticate(h.ctx, issued.Token.Value()); err != nil {
 		t.Fatalf("re-enabling did not restore the session: %v", err)
 	}
-	if err := h.accounts.SetStatus(h.ctx, account.ID, "deleted"); !errors.Is(err, ErrStatus) {
+	if err := h.accounts.SetStatus(admin, account.ID, "deleted"); !errors.Is(err, ErrStatus) {
 		t.Errorf("an undefined status was accepted: %v", err)
 	}
 }

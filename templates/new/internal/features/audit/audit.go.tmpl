@@ -35,6 +35,7 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/transaction"
 
 	"{{.ModulePath}}/internal/features/audit/store"
+	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/database"
 )
 
@@ -310,11 +311,15 @@ func (r *Recorder) params(ctx context.Context, event Event) (store.AppendAuditEv
 	return params, detail, nil
 }
 
-// List returns one page of records, newest first.
+// List returns one page of records, newest first. The caller must hold
+// audit.read.
 //
 // after is the position the previous page ended on; its zero value starts at
 // the newest record.
 func (r *Recorder) List(ctx context.Context, filter Filter, after Position, limit int) ([]Record, error) {
+	if err := authorization.Require(ctx, authorization.AuditRead); err != nil {
+		return nil, err
+	}
 	params, err := listParams(filter, after, limit)
 	if err != nil {
 		return nil, err
@@ -343,7 +348,11 @@ func (r *Recorder) List(ctx context.Context, filter Filter, after Position, limi
 }
 
 // Count returns how many records match a filter, for a reporting page's total.
+// The caller must hold audit.read.
 func (r *Recorder) Count(ctx context.Context, filter Filter) (int64, error) {
+	if err := authorization.Require(ctx, authorization.AuditRead); err != nil {
+		return 0, err
+	}
 	params, err := listParams(filter, Position{}, DefaultPageSize)
 	if err != nil {
 		return 0, err
@@ -373,6 +382,10 @@ func (r *Recorder) Count(ctx context.Context, filter Filter) (int64, error) {
 
 // Sweep deletes records older than retention, in bounded batches, and reports
 // how many it removed.
+//
+// It is deliberately unchecked: it runs from a scheduled job, where there is no
+// authenticated caller to check. What bounds it is the retention floor below,
+// which no configuration can lower.
 //
 // retention is refused below MinRetention. That bound is the point of this
 // method's existence rather than a plain delete: a sweep that could be pointed

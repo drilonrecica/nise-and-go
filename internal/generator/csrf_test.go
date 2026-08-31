@@ -70,15 +70,19 @@ func TestGeneratedProjectRefusesCrossSiteStateChanges(t *testing.T) {
 		}
 	}
 
-	// The guard must run inside the resolver on both surfaces, so the session
-	// its token check binds to is the one already resolved for the request.
+	// The guard must run inside the session resolver on both surfaces, so the
+	// session its token check binds to is the one already resolved for the
+	// request. The positions are compared rather than the whole literal, so
+	// adding another middleware to the slot does not break this contract.
 	app := content["internal/app/app.go"]
-	for _, slot := range []string{
-		"API:      []httpapi.Middleware{sessionResolver.Middleware, apiGuard.Middleware}",
-		"Document: []httpapi.Middleware{sessionResolver.Middleware, documentGuard.Middleware}",
-	} {
-		if !strings.Contains(app, slot) {
-			t.Errorf("the application wiring lacks %q", slot)
+	for _, guard := range []string{"apiGuard.Middleware", "documentGuard.Middleware"} {
+		session := strings.Index(app, "sessionResolver.Middleware")
+		position := strings.Index(app, guard)
+		if session < 0 || position < 0 {
+			t.Fatalf("the application wiring lacks the session resolver or %s", guard)
+		}
+		if session > position {
+			t.Errorf("%s runs before the session resolver", guard)
 		}
 	}
 

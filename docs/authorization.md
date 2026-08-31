@@ -67,6 +67,80 @@ and an invalid or zero-valued permission is never reported as held, so a caller
 that forgot to resolve someone's permissions authorizes nothing rather than
 everything.
 
+## Enforcement is in the use case
+
+```go
+func (r *Roles) Grant(ctx context.Context, userID, role, grantedBy string) error {
+        if err := authorization.Require(ctx, authorization.RolesManage); err != nil {
+                return err
+        }
+        …
+}
+```
+
+`Require` takes a context, not a permission set. A use case that accepted the
+caller's permissions as an argument would be exactly as trustworthy as its least
+careful call site, and "pass in what you are allowed to do" is not an
+authorization check.
+
+It denies in every direction with no path that allows otherwise:
+
+| Situation | Result |
+|---|---|
+| No authority resolved (the middleware did not run) | denied, `unresolved` |
+| Authority resolved for no account | denied, `no_session` |
+| Authenticated, permission not held | denied, `not_granted` |
+| Permission the catalog does not declare | denied |
+| The zero permission | denied |
+| `RequireAll` with no permissions | denied |
+
+`RequireAll()` with an empty list is a denial rather than a permission everyone
+holds, so a use case that lost its permission list does not silently become
+public.
+
+Every denial matches `errors.Is(err, authorization.ErrDenied)`, so a handler
+writes one check and cannot accidentally treat one reason differently from
+another. The `DeniedError` behind it carries the permission, the account, and
+the reason for the log and the audit record — never for the response, which is
+one `403 permission_denied` naming nothing. "You are not allowed, and by the way
+that record exists" is the leak a 403 was supposed to prevent.
+
+### The bootstrap path
+
+`Roles.GrantAsSystem` assigns a role with no check. It exists for the two
+moments where there is no authenticated caller to check: enrolling the first
+administrator, and a migration assigning a role the application has just
+introduced. It is named that way so a review sees it and an audit can grep for
+it.
+
+`Roles.Grants` is likewise unchecked, because it is what the resolver calls to
+find out what the caller may do — requiring a permission there would need a
+permission resolved first. Reading *another* account's roles through an HTTP
+surface is `Holders`, which is checked.
+
+Recording an audit event is not checked either: anything worth auditing must be
+recordable by whatever did it. *Reading* the log requires `audit.read`.
+
+## Resolution happens once
+
+`authorization.Resolver` is middleware that resolves the authenticated caller's
+permissions into the request context, once. Once per request rather than once
+per check is not only about cost: two checks in one request that consulted the
+database separately could disagree, and a use case would be authorized for its
+first write and not its second.
+
+It never rejects a request. Deciding what a caller may do is the use case's job;
+a middleware that refused would put the decision where no handler's reader can
+see it. What it guarantees is the opposite — a request reaching a handler either
+carries authority that was actually resolved, or carries none.
+
+A resolution failure produces **empty authority**, which denies everything, and
+is logged. Failing the request instead would turn a transient database problem
+into an error on a page that may have needed no permission at all.
+
+The context key is unexported, so nothing outside the package can put authority
+into a request.
+
 ## Stale grants
 
 A `user_roles` row naming a role the catalog no longer declares contributes

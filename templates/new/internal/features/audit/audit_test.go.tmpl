@@ -15,11 +15,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/drilonrecica/nise-and-go/runtime/authz"
 	"github.com/drilonrecica/nise-and-go/runtime/forwarded"
 	"github.com/drilonrecica/nise-and-go/runtime/logging"
 	"github.com/drilonrecica/nise-and-go/runtime/transaction"
 
 	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/database"
 	"{{.ModulePath}}/internal/platform/database/dbtest"
 )
@@ -118,6 +120,22 @@ func requestContext(t *testing.T, parent context.Context) context.Context {
 	return logging.WithCorrelationID(ctx, "correlation_456")
 }
 
+// reader returns a context holding audit.read, which the query API requires.
+// Building one for every read is the point: the context that does not hold it
+// is what a caller gets by not thinking about it, and that context is denied.
+func reader(t *testing.T) context.Context {
+	t.Helper()
+
+	granted, err := authz.NewSet(authorization.AuditRead)
+	if err != nil {
+		t.Fatalf("NewSet: %v", err)
+	}
+	return authorization.WithGrants(context.Background(), authorization.Grants{
+		UserID:      actorID,
+		Permissions: granted,
+	})
+}
+
 func loginEvent() Event {
 	return Event{
 		Action:      "session.created",
@@ -153,7 +171,7 @@ func TestRecordStoresWhatTheRequestCarried(t *testing.T) {
 		t.Errorf("detail = %v", stored.Detail)
 	}
 
-	listed, err := h.recorder.List(h.ctx, Filter{}, Position{}, 10)
+	listed, err := h.recorder.List(reader(t), Filter{}, Position{}, 10)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -314,7 +332,8 @@ func TestListFiltersAndPagesNewestFirst(t *testing.T) {
 		t.Fatalf("Record: %v", err)
 	}
 
-	all, err := h.recorder.List(h.ctx, Filter{}, Position{}, 10)
+	read := reader(t)
+	all, err := h.recorder.List(read, Filter{}, Position{}, 10)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -326,7 +345,7 @@ func TestListFiltersAndPagesNewestFirst(t *testing.T) {
 	seen := map[int64]struct{}{}
 	position := Position{}
 	for range 6 {
-		page, err := h.recorder.List(h.ctx, Filter{}, position, 2)
+		page, err := h.recorder.List(read, Filter{}, position, 2)
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
@@ -354,7 +373,7 @@ func TestListFiltersAndPagesNewestFirst(t *testing.T) {
 	}
 	for name, filter := range filters {
 		t.Run(name, func(t *testing.T) {
-			records, err := h.recorder.List(h.ctx, filter, Position{}, 10)
+			records, err := h.recorder.List(read, filter, Position{}, 10)
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
@@ -364,7 +383,7 @@ func TestListFiltersAndPagesNewestFirst(t *testing.T) {
 		})
 	}
 
-	total, err := h.recorder.Count(h.ctx, Filter{Action: "session.created"})
+	total, err := h.recorder.Count(read, Filter{Action: "session.created"})
 	if err != nil {
 		t.Fatalf("Count: %v", err)
 	}
@@ -411,6 +430,40 @@ func TestSweepCannotBePointedAtRecentEvidence(t *testing.T) {
 	}
 	if got := h.count(t); got != 1 {
 		t.Fatalf("%d records remain, want the recent one", got)
+	}
+}
+
+func TestReadingTheLogDeniesByDefault(t *testing.T) {
+	h := newHarness(t)
+	ctx := requestContext(t, h.ctx)
+	if _, err := h.recorder.Record(ctx, loginEvent()); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	// Recording is not checked — anything worth auditing must be recordable
+	// by whatever did it — but reading is, and denies by default.
+	if _, err := h.recorder.List(h.ctx, Filter{}, Position{}, 10); !errors.Is(err, authorization.ErrDenied) {
+		t.Errorf("List: error = %v, want ErrDenied", err)
+	}
+	if _, err := h.recorder.Count(h.ctx, Filter{}); !errors.Is(err, authorization.ErrDenied) {
+		t.Errorf("Count: error = %v, want ErrDenied", err)
+	}
+
+	granted, err := authz.NewSet(authorization.UsersManage)
+	if err != nil {
+		t.Fatalf("NewSet: %v", err)
+	}
+	wrong := authorization.WithGrants(context.Background(), authorization.Grants{UserID: actorID, Permissions: granted})
+	if _, err := h.recorder.List(wrong, Filter{}, Position{}, 10); !errors.Is(err, authorization.ErrDenied) {
+		t.Errorf("the wrong permission read the log: %v", err)
+	}
+
+	records, err := h.recorder.List(reader(t), Filter{}, Position{}, 10)
+	if err != nil {
+		t.Fatalf("List with audit.read: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("listed %d records", len(records))
 	}
 }
 

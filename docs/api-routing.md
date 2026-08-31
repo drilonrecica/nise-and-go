@@ -85,9 +85,10 @@ in slice order, with the first entry outermost, but the entire slot remains
 inside the fixed core. A nil entry fails router construction rather than
 panicking on the first request.
 
-The generated application uses both slots for two middlewares: the session
-resolver, which attaches a request-scoped identity and rejects nothing, and the
-anti-forgery guard, which refuses cross-site state changes. Both run on both
+The generated application uses both slots for three middlewares, in order: the
+session resolver, which attaches a request-scoped identity; the authorization
+resolver, which attaches that identity's permissions once; and the anti-forgery
+guard, which refuses cross-site state changes. Only the last rejects anything. Both run on both
 surfaces — request identity is not an API-only concern, and two copies of it
 would eventually disagree about who is asking — and the guard runs inside the
 resolver so the session it checks a token against is the one already resolved

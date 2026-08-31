@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -11,6 +12,23 @@ import (
 	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/database"
 )
+
+// authorized returns a context carrying the authority a checked use case
+// requires. Every call below that grants or reads roles has to build one,
+// which is the point: an unauthorized context is what the default-deny tests
+// use, and it is the one a caller gets by not thinking about it.
+func authorized(t *testing.T, userID string, permissions ...authz.Permission) context.Context {
+	t.Helper()
+
+	granted, err := authz.NewSet(permissions...)
+	if err != nil {
+		t.Fatalf("NewSet: %v", err)
+	}
+	return authorization.WithGrants(context.Background(), authorization.Grants{
+		UserID:      userID,
+		Permissions: granted,
+	})
+}
 
 func testRoles(t *testing.T, h *harness) *Roles {
 	t.Helper()
@@ -32,7 +50,8 @@ func TestGrantAndRevokeRoles(t *testing.T) {
 	account := h.account(t, "person@example.test")
 	granter := h.account(t, "admin@example.test")
 
-	if err := roles.Grant(h.ctx, account.ID, authorization.RoleAuditor, granter.ID); err != nil {
+	admin := authorized(t, granter.ID, authorization.RolesManage, authorization.RolesRead)
+	if err := roles.Grant(admin, account.ID, authorization.RoleAuditor, granter.ID); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 	grants, err := roles.Grants(h.ctx, account.ID)
@@ -44,7 +63,7 @@ func TestGrantAndRevokeRoles(t *testing.T) {
 	}
 
 	// Re-granting keeps the original record of who first gave the privilege.
-	if err := roles.Grant(h.ctx, account.ID, authorization.RoleAuditor, account.ID); err != nil {
+	if err := roles.Grant(admin, account.ID, authorization.RoleAuditor, account.ID); err != nil {
 		t.Fatalf("re-Grant: %v", err)
 	}
 	grants, err = roles.Grants(h.ctx, account.ID)
@@ -55,10 +74,10 @@ func TestGrantAndRevokeRoles(t *testing.T) {
 		t.Fatalf("re-granting rewrote the record: %#v", grants)
 	}
 
-	if err := roles.Revoke(h.ctx, account.ID, authorization.RoleAuditor); err != nil {
+	if err := roles.Revoke(admin, account.ID, authorization.RoleAuditor); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if err := roles.Revoke(h.ctx, account.ID, authorization.RoleAuditor); !errors.Is(err, ErrGrantNotFound) {
+	if err := roles.Revoke(admin, account.ID, authorization.RoleAuditor); !errors.Is(err, ErrGrantNotFound) {
 		t.Fatalf("a second revocation error = %v, want ErrGrantNotFound", err)
 	}
 	grants, err = roles.Grants(h.ctx, account.ID)
@@ -78,19 +97,20 @@ func TestGrantRefusesUndeclaredRolesAndUnknownAccounts(t *testing.T) {
 	// A grant of a role the catalog does not declare would create a row that
 	// authorizes nothing, and nobody would notice until the permission it was
 	// meant to carry was checked.
-	if err := roles.Grant(h.ctx, account.ID, "superuser", ""); !errors.Is(err, ErrUnknownRole) {
+	admin := authorized(t, account.ID, authorization.RolesManage, authorization.RolesRead)
+	if err := roles.Grant(admin, account.ID, "superuser", ""); !errors.Is(err, ErrUnknownRole) {
 		t.Errorf("error = %v, want ErrUnknownRole", err)
 	}
-	if err := roles.Grant(h.ctx, account.ID, "", ""); !errors.Is(err, ErrUnknownRole) {
+	if err := roles.Grant(admin, account.ID, "", ""); !errors.Is(err, ErrUnknownRole) {
 		t.Errorf("an empty role was accepted: %v", err)
 	}
-	if err := roles.Grant(h.ctx, "not-a-uuid", authorization.RoleAuditor, ""); !errors.Is(err, ErrAccountNotFound) {
+	if err := roles.Grant(admin, "not-a-uuid", authorization.RoleAuditor, ""); !errors.Is(err, ErrAccountNotFound) {
 		t.Errorf("error = %v, want ErrAccountNotFound", err)
 	}
-	if err := roles.Grant(h.ctx, "3f2504e0-4f89-11d3-9a0c-0305e82c3301", authorization.RoleAuditor, ""); !errors.Is(err, ErrAccountNotFound) {
+	if err := roles.Grant(admin, "3f2504e0-4f89-11d3-9a0c-0305e82c3301", authorization.RoleAuditor, ""); !errors.Is(err, ErrAccountNotFound) {
 		t.Errorf("granting to a nonexistent account: error = %v, want ErrAccountNotFound", err)
 	}
-	if _, err := roles.Holders(h.ctx, "superuser", 10); !errors.Is(err, ErrUnknownRole) {
+	if _, err := roles.Holders(admin, "superuser", 10); !errors.Is(err, ErrUnknownRole) {
 		t.Errorf("Holders of an undeclared role: error = %v", err)
 	}
 }
@@ -110,7 +130,8 @@ func TestPermissionsResolveThroughTheCatalog(t *testing.T) {
 		t.Fatalf("an account with no roles holds %v", granted.All())
 	}
 
-	if err := roles.Grant(h.ctx, account.ID, authorization.RoleAuditor, ""); err != nil {
+	admin := authorized(t, account.ID, authorization.RolesManage)
+	if err := roles.Grant(admin, account.ID, authorization.RoleAuditor, ""); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 	granted, unknown, err = roles.Permissions(h.ctx, account.ID)
@@ -128,7 +149,7 @@ func TestPermissionsResolveThroughTheCatalog(t *testing.T) {
 	}
 
 	// Two roles combine into the union of their permissions.
-	if err := roles.Grant(h.ctx, account.ID, authorization.RoleAdministrator, ""); err != nil {
+	if err := roles.Grant(admin, account.ID, authorization.RoleAdministrator, ""); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 	granted, _, err = roles.Permissions(h.ctx, account.ID)
@@ -153,7 +174,8 @@ func TestAStaleGrantContributesNothingAndIsReported(t *testing.T) {
 		t.Fatalf("insert a stale grant: %v", err)
 	}
 	roles := testRoles(t, h)
-	if err := roles.Grant(h.ctx, account.ID, authorization.RoleAuditor, ""); err != nil {
+	admin := authorized(t, account.ID, authorization.RolesManage)
+	if err := roles.Grant(admin, account.ID, authorization.RoleAuditor, ""); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 
@@ -171,7 +193,7 @@ func TestAStaleGrantContributesNothingAndIsReported(t *testing.T) {
 	}
 
 	// It must still be removable, or the row would be permanent.
-	if err := roles.Revoke(h.ctx, account.ID, "retired_role"); err != nil {
+	if err := roles.Revoke(admin, account.ID, "retired_role"); err != nil {
 		t.Errorf("a stale grant could not be revoked: %v", err)
 	}
 }
@@ -183,16 +205,17 @@ func TestHoldersAnswersWhoCanDoThis(t *testing.T) {
 	second := h.account(t, "b@example.test")
 	other := h.account(t, "c@example.test")
 
+	admin := authorized(t, first.ID, authorization.RolesManage, authorization.RolesRead)
 	for _, account := range []Account{first, second} {
-		if err := roles.Grant(h.ctx, account.ID, authorization.RoleAdministrator, ""); err != nil {
+		if err := roles.Grant(admin, account.ID, authorization.RoleAdministrator, ""); err != nil {
 			t.Fatalf("Grant: %v", err)
 		}
 	}
-	if err := roles.Grant(h.ctx, other.ID, authorization.RoleAuditor, ""); err != nil {
+	if err := roles.Grant(admin, other.ID, authorization.RoleAuditor, ""); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 
-	holders, err := roles.Holders(h.ctx, authorization.RoleAdministrator, 10)
+	holders, err := roles.Holders(admin, authorization.RoleAdministrator, 10)
 	if err != nil {
 		t.Fatalf("Holders: %v", err)
 	}
@@ -211,12 +234,62 @@ func TestHoldersAnswersWhoCanDoThis(t *testing.T) {
 	if _, err := h.pool.Exec(h.ctx, `DELETE FROM users WHERE id = $1`, first.ID); err != nil {
 		t.Fatalf("delete an account: %v", err)
 	}
-	holders, err = roles.Holders(h.ctx, authorization.RoleAdministrator, 10)
+	holders, err = roles.Holders(admin, authorization.RoleAdministrator, 10)
 	if err != nil {
 		t.Fatalf("Holders: %v", err)
 	}
 	if len(holders) != 1 || holders[0].Email != "b@example.test" {
 		t.Fatalf("holders after deletion = %#v", holders)
+	}
+}
+
+func TestRoleChangesDenyByDefault(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	roles := testRoles(t, h)
+	account := h.account(t, "person@example.test")
+
+	// An unauthenticated context, an authenticated one holding nothing, and
+	// one holding the wrong permission are all denied. This is enforcement in
+	// the use case, not in a route guard a new route could forget.
+	contexts := map[string]context.Context{
+		"no authority at all":     h.ctx,
+		"an empty permission set": authorized(t, account.ID),
+		"the wrong permission":    authorized(t, account.ID, authorization.AuditRead),
+	}
+	for name, ctx := range contexts {
+		t.Run(name, func(t *testing.T) {
+			if err := roles.Grant(ctx, account.ID, authorization.RoleAuditor, ""); !errors.Is(err, authorization.ErrDenied) {
+				t.Errorf("Grant: error = %v, want ErrDenied", err)
+			}
+			if err := roles.Revoke(ctx, account.ID, authorization.RoleAuditor); !errors.Is(err, authorization.ErrDenied) {
+				t.Errorf("Revoke: error = %v, want ErrDenied", err)
+			}
+			if _, err := roles.Holders(ctx, authorization.RoleAdministrator, 10); !errors.Is(err, authorization.ErrDenied) {
+				t.Errorf("Holders: error = %v, want ErrDenied", err)
+			}
+		})
+	}
+
+	// Nothing was written by any of the denied attempts.
+	grants, err := roles.Grants(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 0 {
+		t.Fatalf("a denied grant was written: %#v", grants)
+	}
+
+	// The system path exists for the moment there is no caller to check —
+	// enrolling the first administrator — and is named so a review sees it.
+	if err := roles.GrantAsSystem(h.ctx, account.ID, authorization.RoleAdministrator); err != nil {
+		t.Fatalf("GrantAsSystem: %v", err)
+	}
+	granted, _, err := roles.Permissions(h.ctx, account.ID)
+	if err != nil {
+		t.Fatalf("Permissions: %v", err)
+	}
+	if !granted.Has(authorization.RolesManage) {
+		t.Fatalf("the bootstrap grant did nothing: %v", granted.All())
 	}
 }
 

@@ -60,7 +60,7 @@ frontend/vitest.config.ts file 0644 490ddf8c71d0f94c3a09775e0919bf8cf2a16ef3a244
 go.mod file 0644 5c40be901f9f80eb2fa6a5b40125a8a4cb14bc9480e3ce0fcc22ebd7940e4dde
 internal dir 0755
 internal/app dir 0755
-internal/app/app.go file 0644 70fe95e12661182f64b73c2fec7cee0d3ab6066faf468acfc00d79e811788088
+internal/app/app.go file 0644 1187d7e3cceb6e02538be661846c4389b77d2d90e5a9618d749b3812584fdc36
 internal/app/database.go file 0644 0dda4beca6185845806aafa2f0211db9b8c8c832cbf9ead38290ad78bfe98318
 internal/app/database_runtime.go file 0644 cebda86bbdf1a0094abe173b61e8785fc752dea884089bbddcaa8108598ff4d5
 internal/app/modes.go file 0644 0ce6c95c483fe4cf922ae6c44cd80ad6c5c5583d403b469161520633fef9875d
@@ -69,8 +69,8 @@ internal/app/password.go file 0644 16a4418847794ac9752b4d27f9241a891e1bacbbe1a4f
 internal/features dir 0755
 internal/features/README.md file 0644 42f730d2de1e27d230ba73c55b261492c32fa0ffa2ed59da44a5bd683f6f8b7f
 internal/features/audit dir 0755
-internal/features/audit/audit.go file 0644 8cdb9edb51c57b3783bb066a29bf900f458b8c0fffb3303df25009a73eafe908
-internal/features/audit/audit_test.go file 0644 562a88c97de58a5edf83d82aae1a32cd1699a4c8fbfb143f6d61a030ce19d082
+internal/features/audit/audit.go file 0644 c5d025627db48b4a52f89d664d3a9fb1d5c7b0c52c8e960da59a99ce37846dc4
+internal/features/audit/audit_test.go file 0644 ef249db445fe829ab7ac2e7b6bef4dd48d78da25dca6cc12ed90cce945b8edfa
 internal/features/audit/queries dir 0755
 internal/features/audit/queries/audit.sql file 0644 b72efd1551755dd4e724735469f78171b9a60802c7e87bd0f02e8d5668640833
 internal/features/audit/sqlc.yaml file 0644 55e35529ebff6e3c657f99aae9c71d01a764f30498485063ba9d60fa5f6dbf57
@@ -80,13 +80,13 @@ internal/features/audit/store/db.go file 0644 770dfabb639e487bd985c9942adc0d854e
 internal/features/audit/store/models.go file 0644 ed700f4ea232ab210600baaddf23de648a5b84c66738d5312a08c9bb6ad41a42
 internal/features/audit/store/querier.go file 0644 1599dff658a56230efcabd33b01bb1343f53ff8a7df8182f20336d99047f082a
 internal/features/auth dir 0755
-internal/features/auth/accounts.go file 0644 376c733a5d5aa2d5942a0802959e0ad456d785f036e4615db54953b31404890d
-internal/features/auth/auth_test.go file 0644 4db4a35d4f7795e3c9361945f4d8915676771a4746dac6a5d3336310b22a6b7c
+internal/features/auth/accounts.go file 0644 f842703fd25e87b288a795a0047d051cf73b26027e9ab498eadc6b6141bdbcb2
+internal/features/auth/auth_test.go file 0644 31571eb1f348d15ce016c5b69353a7b48804e0dddfad4f1f7fa18f83b2a08077
 internal/features/auth/queries dir 0755
 internal/features/auth/queries/sessions.sql file 0644 8dbcd98e0eaf7d0ed6e205231df22e114df307ab4d34af675586aee2e36ca48e
 internal/features/auth/queries/users.sql file 0644 eccbf70fdc27a9806753cf0e713e6c0fced474ff9c697387655a6135b335eeac
-internal/features/auth/roles.go file 0644 c7719c241ad5cbb2edd0b679716c6ccc8e1e5219d49860b2f0ad8ec2fad6909a
-internal/features/auth/roles_test.go file 0644 04df024c995206fea3e9f9320d9a15105b38ecd5fce21245a755880b776f66c4
+internal/features/auth/roles.go file 0644 0ef8b156f9bdc3ffe8986a23592f24621ce82917b412d47c9944cef06dd09a35
+internal/features/auth/roles_test.go file 0644 72583140a0454a550662e876cd8aab804c479ce5bd57f34278c5b570f1fc15ed
 internal/features/auth/sessions.go file 0644 5d52e6c93ef9ab740c33133178c9611be5a0f3c0d4a72502597a694dc0aeea63
 internal/features/auth/sqlc.yaml file 0644 7bc40a6003a1f91c9deeef697a3e133364f46951fd84a23d3dbef8326d302187
 internal/features/auth/store dir 0755
@@ -97,6 +97,8 @@ internal/features/auth/store/sessions.sql.go file 0644 129ae5839087c62fb376e951f
 internal/features/auth/store/users.sql.go file 0644 ffe16294636e340cb3039f6e4e3c711cb3ebeeb4608c9d3191a8204566c71dc4
 internal/platform dir 0755
 internal/platform/authorization dir 0755
+internal/platform/authorization/authorizer.go file 0644 ef65d2b58634cc0c618b6569cdd574ad164ee191566301b55c67dc59f3431789
+internal/platform/authorization/authorizer_test.go file 0644 4e7012c1a0a35c9333ca95a06d1934056debecd69e41a467a2df8add784a02d9
 internal/platform/authorization/catalog.go file 0644 52a3fd2c7942d5d37bd8663a34527252d019dee14bd7eb281dd61d95a095567c
 internal/platform/authorization/catalog_test.go file 0644 56224c25b9c0205c4ebed9a7d33e2e8b033f6369f87f9afe6144d728a64ea5bd
 internal/platform/config dir 0755
@@ -134,7 +136,7 @@ internal/platform/httpapi/httpjson/json_test.go file 0644 ff605f3f45c132946f7c51
 internal/platform/httpapi/openapigen dir 0755
 internal/platform/httpapi/openapigen/openapi.gen.go file 0644 49524ea2d6dd45dac9d9716ab35af0cad0cc1d666fc77989bf9468d8b644954f
 internal/platform/httpapi/problem dir 0755
-internal/platform/httpapi/problem/problem.go file 0644 d74d737bcb76ba9e0cb80cabd4a074be1ee06bea09ebe3593564803f4ae88c5d
+internal/platform/httpapi/problem/problem.go file 0644 6bcbeee42153cded8d0cca92bf98b2ad7fc210ac7cefdb309730da01b83d4d0e
 internal/platform/httpapi/problem/problem_test.go file 0644 58ec205b552c9bfb69ba04c2e13d263f39f27ef129023b78776f44321583be0c
 internal/platform/httpapi/router.go file 0644 2167a5c087950075c8c1e3be19cbe57e80140e3db22bf0fd98e0e0b0167c03ad
 internal/platform/httpapi/router_test.go file 0644 6504f432871bea9fe1b5a9d2a31f4de9285dafb6bf92a331ec243411da545999

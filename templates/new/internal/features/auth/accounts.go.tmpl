@@ -15,6 +15,7 @@ import (
 	"github.com/drilonrecica/nise-and-go/runtime/transaction"
 
 	"{{.ModulePath}}/internal/features/auth/store"
+	"{{.ModulePath}}/internal/platform/authorization"
 	"{{.ModulePath}}/internal/platform/database"
 )
 
@@ -185,13 +186,16 @@ func (a *Accounts) FindByID(ctx context.Context, userID string) (Account, error)
 	return account, nil
 }
 
-// SetStatus enables or disables an account.
+// SetStatus enables or disables an account. The caller must hold users.manage.
 //
 // Disabling stops the account's sessions from authenticating on their next
 // request. Ending them outright is a separate, explicit call, because the two
 // are different decisions: one is reversible, the other logs the person out of
 // every device.
 func (a *Accounts) SetStatus(ctx context.Context, userID, status string) error {
+	if err := authorization.Require(ctx, authorization.UsersManage); err != nil {
+		return err
+	}
 	if status != StatusActive && status != StatusDisabled {
 		return fmt.Errorf("%w: %q", ErrStatus, status)
 	}
