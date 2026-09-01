@@ -261,6 +261,10 @@ Choose `JOB_MAX_WORKERS` against `DB_MAX_CONNS`, not against the CPU count.
 Every running job holds work the pool has to serve, so a worker count above the
 pool size converts throughput into connection waiting.
 
+With the notifications module and `NOTIFICATIONS_SSE=true`, one connection is
+also held permanently by the live-update listener in each process serving
+HTTP. With the default `DB_MAX_CONNS=10` that is a tenth of the pool.
+
 Both are refused rather than clamped when out of range, for the same reason
 every other setting on this page is: an operator should learn at startup that a
 value was impossible, not discover later that it was quietly replaced with a
