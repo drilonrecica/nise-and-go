@@ -210,21 +210,32 @@ func TestSupervisorDebouncesABurstIntoOneRestart(t *testing.T) {
 		Name:     "app",
 		Runner:   runner,
 		Spec:     func() Spec { return Spec{Name: "app", Argv: []string{"bin"}} },
-		Debounce: 60 * time.Millisecond,
+		Debounce: 250 * time.Millisecond,
 		OnEvent:  log.record,
 	}
 	runSupervisor(t, s, changes)
 	waitFor(t, "the first start", func() bool { return runner.startCount() == 1 })
 
-	// Twenty changes inside one debounce window.
+	// Twenty changes inside one debounce window, with nothing between them.
+	// The sends are the burst: `changes` holds one, so every send after the
+	// first waits for the supervisor to take the previous, which is the
+	// arrival pattern a `git checkout` actually produces.
+	//
+	// There is deliberately no sleep in this loop. Spacing the sends by 2ms
+	// made the burst's width a function of the platform's timer granularity,
+	// and on Windows a 2ms sleep really lasts about 15ms -- so twenty of them
+	// spanned some 300ms, overran the window by five times, and the burst
+	// arrived as two. The test then reported the debouncer broken when what
+	// had actually happened was that the test stopped sending a burst.
 	for i := 0; i < 20; i++ {
 		changes <- struct{}{}
-		time.Sleep(2 * time.Millisecond)
 	}
 	waitFor(t, "the debounced restart", func() bool { return runner.startCount() == 2 })
 
-	// Nothing further may happen once the burst has settled.
-	time.Sleep(200 * time.Millisecond)
+	// Nothing further may happen once the burst has settled. This has to
+	// outlast the debounce window: wait less than it and "nothing further"
+	// only means "nothing yet".
+	time.Sleep(2 * s.Debounce)
 	if got := runner.startCount(); got != 2 {
 		t.Fatalf("start count = %d, want 2: the burst was not debounced into one restart", got)
 	}

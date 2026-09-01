@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drilonrecica/nise-and-go/internal/generator"
 	"github.com/drilonrecica/nise-and-go/internal/recipe"
@@ -216,6 +217,16 @@ func gitInit(t *testing.T, root string) {
 		{"init", "-q"},
 		{"config", "user.email", "test@example.com"},
 		{"config", "user.name", "test"},
+		// Nothing git starts here may outlive the command that started it.
+		// Auto gc, scheduled maintenance, and the fsmonitor daemon all keep
+		// writing inside .git after the foreground command has exited, and
+		// t.TempDir()'s RemoveAll then loses a race it reports as
+		// "unlinkat .../.git/objects: directory not empty" -- failing a test
+		// whose own assertions had all passed. That is what this turned into
+		// on the macOS runner.
+		{"config", "gc.auto", "0"},
+		{"config", "maintenance.auto", "false"},
+		{"config", "core.fsmonitor", "false"},
 		{"add", "-A"},
 		{"commit", "-qm", "generated"},
 	} {
@@ -225,4 +236,20 @@ func gitInit(t *testing.T, root string) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
+
+	// Belt and braces for the same race. Removal can still lose to a writer
+	// this test does not control and cannot enumerate, so retry it here.
+	// Registered after t.TempDir()'s own cleanup and therefore run before it
+	// -- cleanups are LIFO -- so what TempDir finds is either already gone or
+	// a directory nothing is holding.
+	t.Cleanup(func() {
+		var err error
+		for range 20 {
+			if err = os.RemoveAll(root); err == nil {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Errorf("could not remove the test repository at %s: %v", root, err)
+	})
 }

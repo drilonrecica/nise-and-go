@@ -136,7 +136,9 @@ func TestWatcherRunSignalsAChangeAndThenGoesQuiet(t *testing.T) {
 	// could legitimately be folded into the baseline; repeating the edit
 	// removes the race without making the test depend on a sleep.
 	edited := make(chan struct{})
+	editorDone := make(chan struct{})
 	go func() {
+		defer close(editorDone)
 		for i := 0; ; i++ {
 			select {
 			case <-edited:
@@ -158,19 +160,36 @@ func TestWatcherRunSignalsAChangeAndThenGoesQuiet(t *testing.T) {
 		close(edited)
 		t.Fatal("the watcher never reported a change")
 	}
+	// Wait for the editor to actually stop before reading anything into the
+	// watcher's behaviour. Closing `edited` only asks it to stop; the
+	// goroutine may already be past that check and still owes one more write.
+	// Draining before it has finished blames the watcher for a signal the
+	// test itself caused -- which is exactly how this read as "the watcher
+	// reported a change on an unchanged tree" on Windows, where the writes
+	// are slow enough for the straggler to land after a fixed 30ms sleep.
 	close(edited)
-	time.Sleep(30 * time.Millisecond) // let the last edit settle into a sweep
-	select {                          // drain anything the final edit queued
-	case <-changes:
-	default:
-	}
+	<-editorDone
 
 	// A tree that stops changing must stop signalling. A watcher that
 	// reported every sweep would restart the server forever.
-	select {
-	case <-changes:
-		t.Fatal("the watcher reported a change on an unchanged tree")
-	case <-time.After(100 * time.Millisecond):
+	//
+	// The last edit still has to work its way through a sweep, so drain
+	// whatever it queued until the channel stays empty for a stretch far
+	// longer than the sweep interval. Bounded, not slept: a watcher that
+	// signals forever never settles, and that is the failure this test is
+	// here to catch, so it is reported as itself rather than as a timeout.
+	quiet := 20 * w.Interval
+	deadline := time.Now().Add(3 * time.Second)
+	settled := false
+	for !settled && time.Now().Before(deadline) {
+		select {
+		case <-changes:
+		case <-time.After(quiet):
+			settled = true
+		}
+	}
+	if !settled {
+		t.Fatal("the watcher kept reporting changes on a tree that had stopped changing")
 	}
 
 	cancel()
