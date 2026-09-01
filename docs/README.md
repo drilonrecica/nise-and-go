@@ -55,6 +55,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [`nise generate`](commands/generate.md)
 - [`nise check`](commands/check.md)
 - [`nise version`](commands/version.md)
+- [`nise upgrade`](commands/upgrade.md)
 - [Toolchain](toolchain.md)
 - [Dependency allowlist](dependencies.md)
 - [Supported platforms](supported-platforms.md)

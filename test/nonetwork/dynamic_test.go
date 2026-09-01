@@ -402,6 +402,23 @@ func dynamicCases() []dynCase {
 			args:     []string{"new", "demoapp", "--module-path", "example.com/demoapp", "--yes"},
 			wantExit: exitPtr(0),
 		},
+		{
+			// upgrade reads a project, rewrites Nise-owned files, and bumps
+			// pinned dependency versions — all of which it does from data
+			// compiled into the binary. `go mod tidy` is named in its output
+			// rather than run, precisely so an upgrade is not the command
+			// that discovers a dependency is unreachable; this case is what
+			// proves that stayed true.
+			name:     "upgrade (outside a project)",
+			args:     []string{"upgrade", "--dry-run"},
+			wantExit: exitPtr(3), // clierr.ExitPrecondition
+			extraChecks: func(t *testing.T, res runResult) {
+				if !strings.Contains(res.stderr, "no nise.json") {
+					t.Errorf("stderr = %q, want it to name the local precondition (\"no nise.json found\") — "+
+						"this case exists specifically to prove the failure is local, not a network timeout", res.stderr)
+				}
+			},
+		},
 	}
 }
 

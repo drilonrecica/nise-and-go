@@ -23,6 +23,11 @@ nise version check
 nise upgrade
 ```
 
+`nise upgrade` moves a *generated project* to the running nise;
+[`nise version check`](commands/version.md) reports whether a newer nise
+exists. The two are deliberately not near-synonyms of each other: one edits
+your application, the other edits nothing at all.
+
 Exact commands may change during `0.x`.
 
 ## Output behavior
