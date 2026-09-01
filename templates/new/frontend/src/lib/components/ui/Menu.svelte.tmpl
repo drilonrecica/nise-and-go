@@ -149,6 +149,17 @@
 		onclick={() => (open ? close() : show('none'))}
 		onkeydown={onTriggerKeydown}
 	>
+		<!--
+			The trigger's accessible name comes from whatever this snippet
+			renders, deliberately: an aria-label here would override the
+			visible text and break "label in name" (WCAG 2.5.3) for any
+			trigger that shows words.
+
+			Which means a trigger snippet owes one. A snippet that renders only
+			icons and aria-hidden decoration produces a button no screen reader
+			can announce — see AccountMenu, where the name is kept in the tree
+			at every viewport width rather than hidden by a responsive class.
+		-->
 		{@render trigger()}
 	</button>
 
@@ -159,7 +170,6 @@
 			{id}
 			role="menu"
 			aria-label={label}
-			aria-labelledby="{id}-trigger"
 			tabindex="-1"
 			class="absolute z-50 mt-1 min-w-52 rounded-md border border-line bg-surface-raised p-1 shadow-overlay {align ===
 			'end'

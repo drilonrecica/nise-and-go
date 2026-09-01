@@ -21,7 +21,19 @@
 				class="flex size-7 items-center justify-center rounded-full bg-primary-soft text-xs font-semibold text-primary-on-soft"
 				aria-hidden="true">{account.name.slice(0, 1).toUpperCase()}</span
 			>
-			<span class="hidden max-w-40 truncate sm:inline">{account.name}</span>
+			<!--
+				The name is always in the accessibility tree, and only its
+				*visibility* changes with the viewport.
+
+				`hidden sm:inline` removed it from the tree below the small
+				breakpoint, and the avatar initial beside it is aria-hidden, so
+				on a phone this button had no accessible name at all — a defect
+				axe reports as `button-name` and a screen-reader user
+				experiences as an unlabelled control. `max-sm:sr-only` keeps
+				the same text in the tree at every width, which also keeps the
+				accessible name and the visible text identical (WCAG 2.5.3).
+			-->
+			<span class="max-w-40 truncate max-sm:sr-only sm:inline">{account.name}</span>
 			<Icon name="chevronDown" class="size-4" />
 		{/snippet}
 
