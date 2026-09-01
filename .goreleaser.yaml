@@ -87,10 +87,30 @@ archives:
       - README.md
 
 checksum:
-  # One file with a SHA-256 for every archive. Publishing it is M10-006's
-  # subject; producing it belongs here, beside the artifacts it covers.
+  # One file with a SHA-256 for every archive and every SBOM.
+  #
+  # This is the cheap check, and the one most people will actually run. It
+  # proves the file you have is the file that was published; it says nothing
+  # about who published it, which is what the build attestation is for.
   name_template: "checksums.txt"
   algorithm: sha256
+
+sboms:
+  # A software bill of materials per archive, in SPDX JSON.
+  #
+  # A Go binary already embeds its module graph — `go version -m nise` reads
+  # it — so this is not new information. It is information in a format a
+  # vulnerability scanner, a procurement review, or somebody else's policy
+  # engine can read without knowing anything about Go. That is the whole
+  # value: an SBOM is for the people who cannot run your toolchain.
+  #
+  # SPDX rather than CycloneDX because it is the ISO-standardised one and the
+  # one US federal guidance names; syft emits either, and a project shipping
+  # both is shipping two things to keep consistent.
+  - id: archives
+    artifacts: archive
+    documents:
+      - "{{ .ArtifactName }}.spdx.json"
 
 snapshot:
   # A local snapshot is clearly not a release. Naming it after the commit
@@ -134,8 +154,24 @@ release:
   footer: |
     ## Verifying what you downloaded
 
+    The file is the published file:
+
     ```sh
     sha256sum --check --ignore-missing checksums.txt
     ```
+
+    It was built by this repository's release workflow, from this tag, and not
+    by somebody who obtained a token:
+
+    ```sh
+    gh attestation verify nise_{{ .Version }}_linux_amd64.tar.gz --repo drilonrecica/nise-and-go
+    ```
+
+    The second check is the one that matters. A checksum published beside the
+    artifact by whoever published the artifact proves only that the download
+    was not corrupted in transit.
+
+    Each archive also ships an SPDX bill of materials (`*.spdx.json`) listing
+    every module compiled into it.
 
     Nise does not self-update, phone home, or check for new versions.

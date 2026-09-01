@@ -22,6 +22,8 @@ env:
   # Keep in sync with the Makefile by hand; nothing enforces that they agree,
   # for the same reason nothing enforces the Go version pin (ADR 0008).
   GORELEASER_VERSION: "v2.17.1"
+  # syft produces the SBOMs GoReleaser attaches to each archive.
+  SYFT_VERSION: "v1.51.1"
 
 jobs:
   release:
@@ -30,6 +32,13 @@ jobs:
     permissions:
       # Creating the draft release and uploading the archives to it.
       contents: write
+      # Recording a build attestation against each artifact, and minting the
+      # short-lived OIDC token that signs it. These two are what let somebody
+      # prove an archive came from this repository's workflow rather than from
+      # anybody who obtained a token — a checksum published beside the file by
+      # whoever published the file cannot.
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -53,6 +62,9 @@ jobs:
       - name: Install GoReleaser ${{ env.GORELEASER_VERSION }}
         run: go install github.com/goreleaser/goreleaser/v2@${{ env.GORELEASER_VERSION }}
 
+      - name: Install syft ${{ env.SYFT_VERSION }}
+        run: go install github.com/anchore/syft/cmd/syft@${{ env.SYFT_VERSION }}
+
       # The full hermetic check, before anything is built for distribution.
       # CI has already run it on the commit, but a tag can be pushed at any
       # object in history — including one CI never saw — and "the tests passed
@@ -75,6 +87,26 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: goreleaser release --snapshot --clean --skip=publish
 
+      # The attestation is recorded against the archives and the checksum
+      # file, in that order of importance. It is a signed statement, kept in
+      # GitHub's transparency log, that these exact bytes were produced by
+      # this workflow at this commit — verifiable afterwards with
+      # `gh attestation verify <file> --repo drilonrecica/nise-and-go`, with
+      # no key for this project to hold, lose, or rotate.
+      #
+      # This is a first-party GitHub action and is still pinned by SHA,
+      # because "first-party" describes who wrote it and not what a moved tag
+      # would run.
+      - name: Attest the release artifacts
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.spdx.json
+            dist/checksums.txt
+
       - name: Upload the artifacts for inspection
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -82,5 +114,6 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.spdx.json
             dist/checksums.txt
           retention-days: 7
