@@ -38,5 +38,6 @@ ADRs record consequential decisions, their context, and their tradeoffs. They pr
 - [0025: Own the UI primitives; take no headless component dependency](0025-owned-ui-primitives.md)
 - [0026: Feature generation writes new files and edits none](0026-feature-generation-writes-only-new-files.md)
 - [0027: Define the malware-scanning boundary; ship no scanner](0027-upload-malware-scanning-boundary.md)
+- [0028: The reference application is an overlay, not a committed tree](0028-reference-application.md)
 
 New records copy [template.md](template.md) and use the next four-digit number. Do not rewrite an accepted ADR to hide a reversal; add a new ADR that supersedes it.

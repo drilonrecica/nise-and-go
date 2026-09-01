@@ -1,0 +1,11 @@
+{
+  "name": "workbench",
+  "modulePath": "workbench",
+  "profile": "go-chi-postgres-svelte",
+  "modules": [
+    "notifications",
+    "organizations",
+    "totp",
+    "uploads"
+  ]
+}
