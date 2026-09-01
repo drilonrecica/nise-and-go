@@ -72,6 +72,51 @@ application refuses a public bind in production without this exact opt-in;
 setting it here is that check working rather than being bypassed, because
 inside a container the published ports are the boundary.
 
+## Recipes
+
+`deploy/compose.yaml` runs the whole thing locally: the image, PostgreSQL, and
+a migration step. `deploy/coolify.md` is the hosted recipe.
+
+Both run the application with `APP_ENV=production`, deliberately. A recipe
+that runs in development mode proves the image starts and proves nothing about
+whether a deployment will — and this application's production checks are the
+ones most likely to stop it.
+
+Verified by running it: migrations applied 9 of 9, the application started
+with no schema warning, `/healthz`, `/readyz`, and `/startupz` all answered
+200, and the embedded frontend was served.
+
+### Migrations are a separate step, not a startup task
+
+Both recipes run `db migrate` to completion **before** the application starts,
+and neither has the application migrate itself.
+
+An application that migrates when it boots migrates once per replica,
+concurrently, during a rolling deploy — and the second replica's migration
+runs against a schema the first is halfway through changing. Run as its own
+step, a failed migration stops the deploy with the migration's own error,
+rather than starting an application that refuses to serve for a reason
+somebody then has to go and find.
+
+The application still refuses to start against a schema it does not
+understand. That is the backstop, not the mechanism.
+
+### The settings production will not start without
+
+Both recipes set these, and the reason each is required is that its absence is
+invisible until it matters:
+
+- `CURSOR_SIGNING_KEY` — without it, each replica signs pagination cursors
+  with a key it generated, and rejects the cursors the others issued.
+- `MAIL_TRANSPORT=smtp` — the log transport sends nothing, silently.
+- `ALLOW_PUBLIC_BIND=true` — the explicit opt-in for binding a public
+  address, which inside a container is what published ports already are.
+- `LOG_FORMAT=json`, `DEBUG=false`.
+
+The compose file uses Compose's `:?` form for each secret rather than a
+default, because a default for a signing key is a signing key shared by
+everybody who copied the file.
+
 ## Reverse proxy
 
 The application expects TLS to terminate at a reverse proxy such as the one Coolify provides. Client-address and protocol headers are honored only from explicitly configured trusted proxies. Browser sessions use `__Host-` cookies, so the browser-facing edge must serve HTTPS.
