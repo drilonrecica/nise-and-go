@@ -4,30 +4,59 @@
   "enforcement": "active",
   "conditions": {
     "ref_name": {
-      "include": ["~DEFAULT_BRANCH"],
+      "include": [
+        "~DEFAULT_BRANCH"
+      ],
       "exclude": []
     }
   },
   "bypass_actors": [],
   "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
-    { "type": "required_linear_history" },
-    { "type": "required_signatures" },
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "type": "required_linear_history"
+    },
+    {
+      "type": "required_signatures"
+    },
     {
       "type": "required_status_checks",
       "parameters": {
         "strict_required_status_checks_policy": true,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
-          { "context": "Format, vet, and lint" },
-          { "context": "Test (ubuntu-latest)" },
-          { "context": "Test (macos-latest)" },
-          { "context": "Test (windows-latest)" },
-          { "context": "Fuzz targets" },
-          { "context": "PostgreSQL migration matrix" },
-          { "context": "Generation diff" },
-          { "context": "Docs check" }
+          {
+            "context": "Docs check"
+          },
+          {
+            "context": "Format, vet, and lint"
+          },
+          {
+            "context": "Fuzz targets"
+          },
+          {
+            "context": "Generation diff"
+          },
+          {
+            "context": "PostgreSQL migration matrix"
+          },
+          {
+            "context": "Reference application"
+          },
+          {
+            "context": "Test (macos-latest)"
+          },
+          {
+            "context": "Test (ubuntu-latest)"
+          },
+          {
+            "context": "Test (windows-latest)"
+          }
         ]
       }
     }

@@ -221,6 +221,54 @@ jobs:
       - name: make generate-diff
         run: make generate-diff
 
+  reference-app:
+    name: Reference application
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      # test/reference checks the overlay's invariants — that it owns nothing
+      # the generator owns, and that the recipe is one nise new accepts. It
+      # cannot check that the result compiles, because the overlay is Go source
+      # for a *different* module and this repository's toolchain never sees it.
+      #
+      # So this job builds it. Without one, the reference application is
+      # verified by whoever last built it by hand — and an overlay that stopped
+      # compiling would be found by the next person to try, which for a project
+      # with one maintainer means eventually.
+      - name: Build the reference application
+        run: |
+          examples/reference/build.sh "$RUNNER_TEMP/workbench"
+          cd "$RUNNER_TEMP/workbench"
+          # The framework is not on the module proxy yet, so the generated
+          # go.mod's requirement is resolved against this checkout. This line
+          # goes away with the first published release.
+          go mod edit -replace github.com/drilonrecica/nise-and-go="$GITHUB_WORKSPACE"
+          go mod tidy
+          # The overlay carries api/openapi.yaml and not the code generated
+          # from it, which is Nise-owned. Regenerating here is also what proves
+          # the contract the overlay ships is one the generator accepts.
+          make generate
+          go build ./...
+          go vet ./...
+
+      # The database-backed suites are not run here. They need PostgreSQL and
+      # take about ten minutes, and the migration-test job above already proves
+      # the schema against a real server. What this job protects is narrower
+      # and is the thing that actually rots: that the overlay still compiles
+      # against the framework it sits on.
+
   docs-check:
     name: Docs check
     runs-on: ubuntu-latest

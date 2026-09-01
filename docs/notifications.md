@@ -199,9 +199,19 @@ want to.
 ### Turning it off
 
 `NOTIFICATIONS_SSE=false` is a **supported configuration, not a degraded
-one**. The polling endpoints carry exactly the same information, and the
-stream is then not mounted at all — so a client gets a 404 and falls back
-immediately, rather than holding open a connection that delivers nothing.
+one**. The stream is then not mounted at all, so a client gets a 404 and falls
+back immediately rather than holding open a connection that delivers nothing.
+
+> **The polling endpoints do not exist yet.** This module ships a complete
+> use case, a table, a delivery worker, and the stream — and no HTTP surface
+> for reading notifications. A generated project therefore has no way for a
+> browser to list them, count the unread ones, or mark one read, whether the
+> stream is on or off. Building that surface is the application's job today;
+> `internal/features/notifications` has `List`, `Unread`, `MarkRead`, and
+> `MarkAllRead` waiting for it.
+>
+> This is a V0.1 gap rather than a design decision. See
+> [project status](project-status.md#what-is-not-finished).
 
 ### Why it is not in the OpenAPI document
 
@@ -211,7 +221,9 @@ events over one response. Every attempt to express that in OpenAPI produces a
 description generated code cannot use and a reader cannot trust.
 
 So the stream is mounted beside the generated operations, in
-`internal/app/notifications.go`, and documented here. The polling endpoints
-that serve the same information are in the document as usual — which is the
-point: the contract a client can generate against covers everything, and the
-stream is an optimisation on top of it.
+`internal/app/notifications.go`, and documented here.
+
+The intended shape is that the polling endpoints serving the same information
+are in the document as usual — so the contract a client generates against
+covers everything and the stream is an optimisation on top of it. Those
+endpoints are the part not yet written; see the note above.
