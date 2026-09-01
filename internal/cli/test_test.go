@@ -159,9 +159,38 @@ func TestPlanPackageScriptSuitePrefersFirstCandidateInOrder(t *testing.T) {
 	}
 }
 
+// A freshly generated project declares its frontend dependencies and has not
+// installed them. Running the suite anyway produced "paraglide-js: command not
+// found" — a missing binary nobody asked for, from a script nobody read, with
+// pnpm's own "did you mean to install?" three screens below it. The answer is
+// one command, so the plan says it.
+func TestPlanPackageScriptSuiteSkipsWhenDependenciesAreNotInstalled(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writePackageJSON(t, dir, map[string]string{"test:component": "vitest run"})
+	if err := os.RemoveAll(filepath.Join(dir, "frontend", "node_modules")); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := planPackageScriptSuite(suiteComponent, dir, componentScriptNames)
+	if plan.Runnable {
+		t.Fatal("the suite was planned as runnable with no dependencies installed")
+	}
+	if !strings.Contains(plan.SkipReason, "pnpm --dir frontend install") {
+		t.Errorf("SkipReason = %q, want it to name the command that fixes it", plan.SkipReason)
+	}
+}
+
 func writePackageJSON(t *testing.T, root string, scripts map[string]string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(root, "frontend"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// The suites below are about which script is chosen, which presupposes
+	// the dependencies are installed — planPackageScriptSuite skips before it
+	// looks at scripts otherwise. See
+	// TestPlanPackageScriptSuiteSkipsWhenDependenciesAreNotInstalled.
+	if err := os.MkdirAll(filepath.Join(root, "frontend", "node_modules"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	data, err := json.Marshal(map[string]any{"scripts": scripts})
