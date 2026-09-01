@@ -3,6 +3,8 @@ package doctor
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -131,7 +133,7 @@ func TestCheckGeneratorToolOutsideGeneratedProject(t *testing.T) {
 	t.Run("sqlc ok, no version floor enforced", func(t *testing.T) {
 		t.Parallel()
 		r := &fakeRunner{outputs: map[string]string{"go tool sqlc version": "v1.31.1\n"}}
-		got := checkSqlc(context.Background(), r, time.Second, false)
+		got := checkSqlc(context.Background(), r, time.Second, false, true)
 		if got.Status != StatusOK {
 			t.Errorf("Status = %v, want %v", got.Status, StatusOK)
 		}
@@ -140,7 +142,7 @@ func TestCheckGeneratorToolOutsideGeneratedProject(t *testing.T) {
 	t.Run("goose ok, prefixed output", func(t *testing.T) {
 		t.Parallel()
 		r := &fakeRunner{outputs: map[string]string{"go tool goose --version": "goose version: v3.27.3\n"}}
-		got := checkGoose(context.Background(), r, time.Second, false)
+		got := checkGoose(context.Background(), r, time.Second, false, true)
 		if got.Status != StatusOK {
 			t.Errorf("Status = %v, want %v", got.Status, StatusOK)
 		}
@@ -151,7 +153,7 @@ func TestCheckGeneratorToolOutsideGeneratedProject(t *testing.T) {
 		r := &fakeRunner{outputs: map[string]string{
 			"go tool oapi-codegen -version": "github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen\nv2.8.0\n",
 		}}
-		got := checkOapiCodegen(context.Background(), r, time.Second, false)
+		got := checkOapiCodegen(context.Background(), r, time.Second, false, true)
 		if got.Status != StatusOK {
 			t.Errorf("Status = %v, want %v", got.Status, StatusOK)
 		}
@@ -162,7 +164,7 @@ func TestCheckGeneratorToolOutsideGeneratedProject(t *testing.T) {
 		r := &fakeRunner{errs: map[string]error{
 			"go tool sqlc version": errors.New("go: tool sqlc not found"),
 		}}
-		got := checkSqlc(context.Background(), r, time.Second, false)
+		got := checkSqlc(context.Background(), r, time.Second, false, true)
 		if got.Status != StatusFail {
 			t.Fatalf("Status = %v, want %v", got.Status, StatusFail)
 		}
@@ -175,7 +177,7 @@ func TestCheckGeneratorToolOutsideGeneratedProject(t *testing.T) {
 func TestSQLCDoesNotRunImplicitlyInsideGeneratedProject(t *testing.T) {
 	t.Parallel()
 	r := &fakeRunner{}
-	got := checkSqlc(context.Background(), r, time.Second, true)
+	got := checkSqlc(context.Background(), r, time.Second, true, true)
 	if got.Status != StatusSkipped {
 		t.Fatalf("Status = %v, want %v (Found=%q)", got.Status, StatusSkipped, got.Found)
 	}
@@ -190,7 +192,7 @@ func TestSQLCDoesNotRunImplicitlyInsideGeneratedProject(t *testing.T) {
 func TestGooseDoesNotRunImplicitlyInsideGeneratedProject(t *testing.T) {
 	t.Parallel()
 	r := &fakeRunner{}
-	got := checkGoose(context.Background(), r, time.Second, true)
+	got := checkGoose(context.Background(), r, time.Second, true, true)
 	if got.Status != StatusSkipped {
 		t.Fatalf("Status = %v, want %v (Found=%q)", got.Status, StatusSkipped, got.Found)
 	}
@@ -219,7 +221,7 @@ func TestOAPICodegenSkipsImplicitExecutionInsideGeneratedProject(t *testing.T) {
 		fn   func(*fakeRunner) Check
 		key  string
 	}{
-		{"oapi-codegen", func(r *fakeRunner) Check { return checkOapiCodegen(context.Background(), r, time.Second, true) }, "go tool oapi-codegen -version"},
+		{"oapi-codegen", func(r *fakeRunner) Check { return checkOapiCodegen(context.Background(), r, time.Second, true, true) }, "go tool oapi-codegen -version"},
 	}
 
 	for _, tt := range tests {
@@ -312,4 +314,67 @@ func TestCheckContainerRuntime(t *testing.T) {
 			t.Error("Remedy is empty for a failing required check")
 		}
 	})
+}
+
+// The first command a new reader runs, in the directory they run it from.
+//
+// Before creating anything there is no module, so `go tool` has nothing to
+// resolve these three against. Reporting a failure there answered with three
+// red lines and a remedy naming a "repository root" that does not exist yet —
+// which is a check telling somebody to fix their machine for a problem their
+// machine does not have.
+func TestGeneratorToolsSkipWhereThereIsNoModule(t *testing.T) {
+	t.Parallel()
+
+	// A runner that fails every call, so a check that ran one would fail.
+	r := &fakeRunner{errs: map[string]error{
+		"go tool sqlc version":          errors.New("exit status 2"),
+		"go tool goose --version":       errors.New("exit status 2"),
+		"go tool oapi-codegen -version": errors.New("exit status 2"),
+	}}
+
+	for name, got := range map[string]Check{
+		"sqlc":         checkSqlc(context.Background(), r, time.Second, false, false),
+		"goose":        checkGoose(context.Background(), r, time.Second, false, false),
+		"oapi-codegen": checkOapiCodegen(context.Background(), r, time.Second, false, false),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got.Status != StatusSkipped {
+				t.Errorf("Status = %v, want %v", got.Status, StatusSkipped)
+			}
+			// A skip always says why. One that did not would be a check
+			// quietly reporting nothing.
+			if got.Found == "" || got.Required == "" {
+				t.Errorf("the skip does not say why: %+v", got)
+			}
+			if got.Remedy != "" {
+				t.Errorf("Remedy = %q; there is nothing for the reader to do", got.Remedy)
+			}
+		})
+	}
+}
+
+// hasGoModule walks up, because `go tool` does: a command run in a
+// subdirectory of a module resolves against that module's tools.
+func TestHasGoModuleWalksUp(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	nested := filepath.Join(root, "internal", "features", "thing")
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatalf("creating %s: %v", nested, err)
+	}
+	if hasGoModule(nested) {
+		t.Error("a directory tree with no go.mod was reported as a module")
+	}
+	// #nosec G306 -- a fixture in this test's own t.TempDir().
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/x\n"), 0o600); err != nil {
+		t.Fatalf("writing go.mod: %v", err)
+	}
+	if !hasGoModule(nested) {
+		t.Error("a directory inside a module was reported as having none")
+	}
+	if hasGoModule("") {
+		t.Error("an empty path was reported as a module")
+	}
 }

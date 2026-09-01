@@ -1,9 +1,34 @@
 # Documentation
 
-Nise & Go is currently in design and pre-alpha development. These pages describe the intended V0.1 contract. They are not evidence that a feature has already been implemented or security-reviewed.
+Nise & Go is currently in design and pre-alpha development. These pages
+describe the intended V0.1 contract. They are not evidence that a feature has
+already been implemented or security-reviewed.
 
-## Start here
+## New here?
 
+**[Your first Nise application](tutorial.md)** — thirty minutes, from nothing
+installed to a running application with a feature you added. Every command on
+that page has been run in the order it is written.
+
+Then, in whichever order the question comes up:
+
+| Question | Page |
+|---|---|
+| What is this, and is it ready? | [Project status](project-status.md) |
+| Why is it shaped like this? | [Philosophy](philosophy.md), [architecture](architecture.md) |
+| What did `nise new` write, and what may I edit? | [Generated application layout](generated-application-layout.md) |
+| How do I add a feature? | [`nise generate`](commands/generate.md) |
+| How do I run it while I work? | [`nise dev`](commands/dev.md) |
+| How do I put it somewhere? | [Deployment](deployment.md), [backups](backups.md) |
+| What does it *not* protect me from? | [Threat model](threat-model.md), [security](security.md) |
+| Show me a real one | [Workbench, the reference application](../examples/reference/README.md) |
+
+## Everything else
+
+The pages below are reference: complete, and not meant to be read in order.
+
+
+- [Your first Nise application](tutorial.md)
 - [Project status](project-status.md)
 - [Philosophy](philosophy.md)
 - [Architecture](architecture.md)
