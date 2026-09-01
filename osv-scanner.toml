@@ -1,0 +1,28 @@
+# Configuration for `make osv` (osv-scanner), the check that reports known
+# vulnerabilities in every module go.mod requires, called or not. Its whole
+# value is that it does not ask whether the code reaches them -- govulncheck
+# already owns that question, in `make vulncheck`.
+#
+# That scope has one consequence worth stating plainly: an advisory with no
+# fixed version will match forever, and the check cannot be made to pass by
+# upgrading. An entry here is the only other way, so each one records why the
+# finding is not a risk this repository can act on, and is reviewable in git
+# rather than being a flag buried in a workflow.
+
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+# "The golang.org/x/crypto/openpgp package is unmaintained, unsafe by design,
+# and has known security issues." The advisory covers the openpgp subpackages
+# only, and it carries no fixed version -- it never will, because the fix is
+# to stop using a package Go has permanently retired.
+#
+# This module does not use them. golang.org/x/crypto enters go.mod for
+# argon2 and blake2b, which is what runtime/password hashes with; the whole
+# openpgp tree is absent from the build graph. Verify with:
+#
+#   go list -deps ./cmd/... ./internal/... ./runtime/... ./test/... \
+#     | grep golang.org/x/crypto
+#
+# If that ever prints an openpgp path, this entry is wrong and the import is
+# the thing to remove -- not this line.
+reason = "x/crypto/openpgp is not in this module's build graph (x/crypto is used for argon2 and blake2b), and the advisory has no fixed version."

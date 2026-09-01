@@ -15,7 +15,7 @@ permissions:
 env:
   # Keep in sync with docs/toolchain.md and .tool-versions by hand; nothing
   # in this repository enforces that the three agree (see ADR 0008).
-  GO_VERSION: "1.26.5"
+  GO_VERSION: "1.26.7"
   GOLANGCI_LINT_VERSION: "2.11.3"
 
 jobs:
@@ -259,7 +259,13 @@ jobs:
           # The overlay carries api/openapi.yaml and not the code generated
           # from it, which is Nise-owned. Regenerating here is also what proves
           # the contract the overlay ships is one the generator accepts.
-          make generate
+          #
+          # api-generate, not generate: a generated project has no `generate`
+          # target. api-generate is the one that writes the Nise-owned
+          # bindings this comment is about, and it is the Go half, which is
+          # all this job needs -- api-types-generate shells out to pnpm, and
+          # there is no Node toolchain here.
+          make api-generate
           go build ./...
           go vet ./...
 

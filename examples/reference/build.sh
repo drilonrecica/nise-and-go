@@ -59,8 +59,21 @@ done
 
 parent=$(dirname "$destination")
 mkdir -p "$parent"
+# Canonicalize now that the parent exists, so the comparison below is between
+# two absolute paths rather than between whatever spelling the caller used.
+parent=$(CDPATH= cd -- "$parent" && pwd)
+destination="$parent/$(basename "$destination")"
+
 ( cd "$parent" && "$nise" "$@" )
-mv "$parent/$name" "$destination"
+
+# nise writes "$parent/$name". When the destination's own basename is already
+# $name -- which is what `build.sh .../workbench` asks for, and what CI asks
+# for -- nise has just written the destination itself, and there is nothing to
+# move. Running mv anyway hands it a source and a target that are the same
+# directory, and mv refuses: "cannot move ... to a subdirectory of itself".
+if [ "$parent/$name" != "$destination" ]; then
+	mv "$parent/$name" "$destination"
+fi
 
 # Verify rather than trust. A module flag that failed to parse produces an
 # application silently missing whole subsystems — no organizations, no uploads,
@@ -91,7 +104,7 @@ echo "Next:"
 echo "  cd $destination"
 echo "  go mod edit -replace github.com/drilonrecica/nise-and-go=$repo"
 echo "  go mod tidy"
-echo "  make generate                  # the overlay changes api/openapi.yaml"
+echo "  make api-generate              # the overlay changes api/openapi.yaml"
 echo "  pnpm --dir frontend install"
 echo "  nise dev"
 echo
