@@ -23,6 +23,11 @@ binary is static (`CGO_ENABLED=0`) and built with `-trimpath` and the commit's
 timestamp, so two builds of one tag are byte-identical and a checksum somebody
 else computes means something.
 
+The Homebrew tap serves four of the six — macOS and Linux on both
+architectures — because Homebrew does not run on Windows; it installs the
+same release archives, not a separate build (see
+[cli-and-distribution.md](cli-and-distribution.md#the-homebrew-tap)).
+
 This table and the configuration are checked against each other:
 `test/release` fails if the release builds a pair this page does not promise,
 or promises one it does not build. A table nobody verifies is a table that

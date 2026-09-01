@@ -72,7 +72,7 @@ archives:
     ids:
       - nise
     # A predictable name people can write in a script:
-    # nise_v0.1.0_linux_amd64.tar.gz
+    # nise_0.1.0_linux_amd64.tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
