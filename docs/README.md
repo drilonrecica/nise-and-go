@@ -32,6 +32,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Operations: runtime HTTP lifecycle](operations-runtime.md)
 - [Generated frontend](frontend.md)
 - [Security model](security.md)
+- [Threat model](threat-model.md)
 - [Password hashing](passwords.md)
 - [Sessions](sessions.md)
 - [Audit log](audit.md)
