@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,7 +67,9 @@ func TestCommandHelpRendersPositionalArguments(t *testing.T) {
 // exactly as they did before it existed.
 func TestCommandsWithoutPositionalArgumentsAreUnchanged(t *testing.T) {
 	want := map[string]string{
-		"version": "nise version",
+		// version nests `check` and still runs on its own, so its
+		// subcommand renders as optional — see commandHelp.
+		"version": "nise version [subcommand]",
 		"doctor":  "nise doctor",
 		"agents":  "nise agents [flags]",
 		"test":    "nise test [flags]",
@@ -152,4 +155,31 @@ func resolveForTest(t *testing.T, path []string) *Command {
 		t.Fatalf("could not resolve %v in the command registry", path)
 	}
 	return res.leaf
+}
+
+// A command that both runs and nests must not tell a reader its subcommand is
+// required. `nise version` prints the version and also carries `check`; usage
+// reading "nise version <subcommand>" would say the command everybody already
+// runs is malformed.
+func TestAnOptionalSubcommandRendersAsOptional(t *testing.T) {
+	both := &Command{
+		Name: "version",
+		Run:  func(context.Context, *Env) error { return nil },
+		Subcommands: []*Command{
+			{Name: "check", Short: "check"},
+		},
+	}
+	if got := commandHelp([]string{"version"}, both).Usage; got != "nise version [subcommand]" {
+		t.Errorf("Usage = %q, want the subcommand rendered as optional", got)
+	}
+
+	group := &Command{
+		Name: "db",
+		Subcommands: []*Command{
+			{Name: "migrate", Short: "migrate"},
+		},
+	}
+	if got := commandHelp([]string{"db"}, group).Usage; got != "nise db <subcommand>" {
+		t.Errorf("Usage = %q, want a group command's subcommand rendered as required", got)
+	}
 }

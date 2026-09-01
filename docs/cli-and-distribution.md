@@ -18,6 +18,8 @@ nise test
 nise db backup
 nise db restore
 nise db verify-backup
+nise version
+nise version check
 nise upgrade
 ```
 
@@ -245,6 +247,12 @@ Nise does not self-update, collect telemetry, or perform automatic update
 checks. An explicit check may report instructions appropriate to the detected
 installation channel. The project recipe records CLI and runtime versions for
 compatibility checks.
+
+The explicit check is [`nise version check`](commands/version.md). It is the
+only command in nise that opens a socket, it prints the command to run rather
+than running it, and it is deliberately not called `nise update`: `nise
+upgrade` already exists and upgrades a generated project, and naming a command
+for something it refuses to do is how a reader ends up believing it did.
 
 Those are checked rather than promised, and checked on the built binary rather
 than on the source. Every non-interactive command runs from a private copy that
