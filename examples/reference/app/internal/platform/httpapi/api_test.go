@@ -1,0 +1,805 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/drilonrecica/nise-and-go/runtime/logging"
+	"github.com/drilonrecica/nise-and-go/runtime/pagination"
+	"github.com/drilonrecica/nise-and-go/runtime/password"
+	"github.com/drilonrecica/nise-and-go/runtime/secure"
+	"github.com/drilonrecica/nise-and-go/runtime/session"
+
+	"workbench/internal/features/auth"
+	"workbench/internal/features/organizations"
+	"workbench/internal/features/reservation"
+	"workbench/internal/features/resource"
+	"workbench/internal/platform/database"
+	"workbench/internal/platform/httpapi/httpjson"
+	"workbench/internal/platform/httpapi/openapigen"
+	"workbench/internal/platform/httpapi/problem"
+	"workbench/internal/platform/httpauth"
+	"workbench/internal/platform/idempotency"
+)
+
+func TestStrictOpenAPIIndexRoute(t *testing.T) {
+	deps, _, _ := routerTestDeps(t)
+	deps.RegisterAPI = testServer(t).Register
+	handler, err := New(deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	policy, err := secure.NewAPIPolicy(secure.Development)
+	if err != nil {
+		t.Fatalf("NewAPIPolicy: %v", err)
+	}
+	for _, requestPath := range []string{"/api/v1", "/api/v1/"} {
+		response := serveRouter(handler, requestPath)
+		if response.Code != http.StatusOK {
+			t.Errorf("GET %s status = %d, want 200", requestPath, response.Code)
+		}
+		if got := response.Header().Get("Content-Type"); got != "application/json" {
+			t.Errorf("GET %s Content-Type = %q, want application/json", requestPath, got)
+		}
+		wantBody := map[string]any{"version": "v1"}
+		var gotBody map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &gotBody); err != nil {
+			t.Errorf("GET %s decode body: %v", requestPath, err)
+		} else if len(gotBody) != len(wantBody) || gotBody["version"] != wantBody["version"] {
+			t.Errorf("GET %s body = %#v, want direct resource %#v", requestPath, gotBody, wantBody)
+		}
+		if got := response.Header().Get(secure.HeaderCSP); got != policy.ContentSecurityPolicy() {
+			t.Errorf("GET %s CSP = %q, want API policy", requestPath, got)
+		}
+	}
+
+	methodResponse := serveRouterMethod(handler, http.MethodPost, "/api/v1/")
+	if methodResponse.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /api/v1/ status = %d, want 405", methodResponse.Code)
+	}
+	if got := methodResponse.Header().Get("Allow"); got != http.MethodGet {
+		t.Fatalf("POST /api/v1/ Allow = %q, want GET", got)
+	}
+
+	unmatched := serveRouter(handler, "/api/v1/not-in-openapi")
+	if unmatched.Code != http.StatusNotFound {
+		t.Fatalf("unmatched API status = %d, want 404", unmatched.Code)
+	}
+}
+
+func TestCollectionResponseShape(t *testing.T) {
+	t.Parallel()
+
+	response := httptest.NewRecorder()
+	err := httpjson.Write(response, http.StatusOK, newAPIRootCollection(
+		nil,
+		openapigen.Page{
+			HasMore: false,
+		},
+	))
+	if err != nil {
+		t.Fatalf("write collection fixture: %v", err)
+	}
+
+	const want = `{"items":[],"page":{"has_more":false}}` + "\n"
+	if got := response.Body.String(); got != want {
+		t.Fatalf("collection body = %q, want exact non-null shape %q", got, want)
+	}
+	if strings.Contains(response.Body.String(), `"data"`) ||
+		strings.Contains(response.Body.String(), `"result"`) ||
+		strings.Contains(response.Body.String(), `"meta"`) {
+		t.Fatalf("collection body contains a generic envelope: %q", response.Body.String())
+	}
+}
+
+// TestNewServerRequiresEveryDependency asserts the surface refuses to be
+// built incomplete. Each of these would otherwise produce a server that looks
+// fine until the first request that needs the missing piece — and for the
+// authentication dependencies, one that appears to work until somebody tries
+// to sign in.
+func TestNewServerRequiresEveryDependency(t *testing.T) {
+	t.Parallel()
+
+	for name, mutate := range map[string]func(*ServerDeps){
+		"cursor codec": func(d *ServerDeps) { d.Cursors = nil },
+		"credentials":  func(d *ServerDeps) { d.Credentials = nil },
+		"sessions":     func(d *ServerDeps) { d.Sessions = nil },
+		"accounts":     func(d *ServerDeps) { d.Accounts = nil },
+		"invitations":  func(d *ServerDeps) { d.Invitations = nil },
+		"cookies":      func(d *ServerDeps) { d.Cookies = nil },
+		"compromised":  func(d *ServerDeps) { d.Compromised = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testServerDeps(t)
+			mutate(&deps)
+			if _, err := NewServer(deps); err == nil {
+				t.Fatalf("NewServer accepted a nil %s", name)
+			}
+		})
+	}
+}
+
+func TestCursorCollectionResponseShape(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty page", func(t *testing.T) {
+		t.Parallel()
+		response := httptest.NewRecorder()
+		if err := httpjson.Write(response, http.StatusOK, newAPIRootCursorCollection(
+			nil,
+			openapigen.CursorPage{HasMore: false},
+		)); err != nil {
+			t.Fatalf("write cursor collection fixture: %v", err)
+		}
+		const want = `{"items":[],"page":{"has_more":false}}` + "\n"
+		if got := response.Body.String(); got != want {
+			t.Fatalf("body = %q, want exact non-null shape %q", got, want)
+		}
+	})
+
+	t.Run("cursor members are absent rather than null", func(t *testing.T) {
+		t.Parallel()
+		root := openapigen.APIRoot{Version: openapigen.V1}
+		response := httptest.NewRecorder()
+		if err := httpjson.Write(response, http.StatusOK, newAPIRootCursorCollection(
+			[]openapigen.APIRoot{root},
+			openapigen.CursorPage{HasMore: true, NextCursor: cursorPointer("nc1.k.a.b")},
+		)); err != nil {
+			t.Fatalf("write cursor collection fixture: %v", err)
+		}
+		body := response.Body.String()
+		if strings.Contains(body, "null") {
+			t.Errorf("body contains null: %q", body)
+		}
+		if strings.Contains(body, `"prev_cursor"`) {
+			t.Errorf("absent previous cursor was serialized: %q", body)
+		}
+		if !strings.Contains(body, `"next_cursor":"nc1.k.a.b"`) {
+			t.Errorf("body lacks the issued next cursor: %q", body)
+		}
+	})
+}
+
+func TestCursorBindingIgnoresOnlyThePaginationParameters(t *testing.T) {
+	t.Parallel()
+
+	base := cursorBinding(cursorRequest(t, "/api/v1/widgets?status=open"), "/widgets")
+
+	same := []string{
+		"/api/v1/widgets?status=open&limit=50",
+		"/api/v1/widgets?status=open&after=nc1.k.a.b",
+		"/api/v1/widgets?status=open&before=nc1.k.a.b",
+		"/api/v1/widgets?limit=1&status=open&after=x&before=y",
+	}
+	for _, target := range same {
+		if got := cursorBinding(cursorRequest(t, target), "/widgets"); got.String() != base.String() {
+			t.Errorf("%s changed the binding; pagination parameters must not be part of it", target)
+		}
+	}
+
+	different := []string{
+		"/api/v1/widgets?status=closed",
+		"/api/v1/widgets?status=open&owner=7",
+		"/api/v1/widgets",
+		"/api/v1/widgets?status=open&status=closed",
+	}
+	for _, target := range different {
+		if got := cursorBinding(cursorRequest(t, target), "/widgets"); got.String() == base.String() {
+			t.Errorf("%s kept the binding; a filter change must invalidate outstanding cursors", target)
+		}
+	}
+	if got := cursorBinding(cursorRequest(t, "/api/v1/gadgets?status=open"), "/gadgets"); got.String() == base.String() {
+		t.Error("two resources share one binding")
+	}
+}
+
+func TestIssueCursorPage(t *testing.T) {
+	t.Parallel()
+
+	codec := testCursorCodec(t)
+	binding := cursorBinding(cursorRequest(t, "/api/v1/widgets?status=open"), "/widgets")
+
+	page, err := issueCursorPage(codec, binding, pageBoundaries{
+		First:       []string{"100"},
+		Last:        []string{"149"},
+		HasMore:     true,
+		HasPrevious: true,
+	})
+	if err != nil {
+		t.Fatalf("issueCursorPage: %v", err)
+	}
+	if !page.HasMore || page.NextCursor == nil || page.PrevCursor == nil {
+		t.Fatalf("page = %#v, want both cursors", page)
+	}
+
+	next, err := codec.Decode(binding, *page.NextCursor)
+	if err != nil {
+		t.Fatalf("decode next cursor: %v", err)
+	}
+	if next.Direction != pagination.Forward || next.Values[0] != "149" {
+		t.Errorf("next cursor = %#v, want forward at the last row", next)
+	}
+	previous, err := codec.Decode(binding, *page.PrevCursor)
+	if err != nil {
+		t.Fatalf("decode previous cursor: %v", err)
+	}
+	if previous.Direction != pagination.Backward || previous.Values[0] != "100" {
+		t.Errorf("previous cursor = %#v, want backward at the first row", previous)
+	}
+
+	other := cursorBinding(cursorRequest(t, "/api/v1/widgets?status=closed"), "/widgets")
+	if _, err := codec.Decode(other, *page.NextCursor); !errors.Is(err, pagination.ErrCursorBinding) {
+		t.Errorf("a cursor issued for one filter decoded under another: %v", err)
+	}
+
+	t.Run("no further page issues no cursor", func(t *testing.T) {
+		t.Parallel()
+		empty, err := issueCursorPage(codec, binding, pageBoundaries{})
+		if err != nil {
+			t.Fatalf("issueCursorPage: %v", err)
+		}
+		if empty.HasMore || empty.NextCursor != nil || empty.PrevCursor != nil {
+			t.Fatalf("page = %#v, want no cursors", empty)
+		}
+	})
+
+	t.Run("an unbound query cannot issue a cursor", func(t *testing.T) {
+		t.Parallel()
+		_, err := issueCursorPage(codec, pagination.Binding{}, pageBoundaries{Last: []string{"1"}, HasMore: true})
+		if !errors.Is(err, pagination.ErrBinding) {
+			t.Fatalf("error = %v, want ErrBinding", err)
+		}
+	})
+}
+
+func TestParsePageThroughTheApplicationCodec(t *testing.T) {
+	t.Parallel()
+
+	codec := testCursorCodec(t)
+	limits, err := pagination.NewLimits(25, 100)
+	if err != nil {
+		t.Fatalf("NewLimits: %v", err)
+	}
+	request := cursorRequest(t, "/api/v1/widgets?status=open&limit=10")
+	binding := cursorBinding(request, "/widgets")
+
+	page, err := codec.ParsePage(binding, request.URL.Query(), limits)
+	if err != nil {
+		t.Fatalf("ParsePage: %v", err)
+	}
+	if page.Limit != 10 || page.HasCursor || page.Direction != pagination.Forward {
+		t.Fatalf("page = %#v", page)
+	}
+}
+
+func TestReportCollectionResponseShape(t *testing.T) {
+	t.Parallel()
+
+	report, err := pagination.ParseReport(url.Values{"page": {"2"}, "size": {"25"}}, testReportLimits(t))
+	if err != nil {
+		t.Fatalf("ParseReport: %v", err)
+	}
+	if report.Offset() != 25 {
+		t.Fatalf("Offset = %d, want 25", report.Offset())
+	}
+	totals, err := report.Totals(51)
+	if err != nil {
+		t.Fatalf("Totals: %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	if err := httpjson.Write(response, http.StatusOK, newAPIRootReportCollection(nil, issueReportPage(totals))); err != nil {
+		t.Fatalf("write report collection fixture: %v", err)
+	}
+	const want = `{"items":[],"page":{"has_more":true,"page":2,"size":25,"total":51,"total_pages":3}}` + "\n"
+	if got := response.Body.String(); got != want {
+		t.Fatalf("body = %q, want exact reporting shape %q", got, want)
+	}
+	for _, forbidden := range []string{"next_cursor", "prev_cursor", `"data"`, "null"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Errorf("report page contains %q: %q", forbidden, response.Body.String())
+		}
+	}
+}
+
+func TestReportPageEchoesTheRequestedPage(t *testing.T) {
+	t.Parallel()
+
+	limits := testReportLimits(t)
+	tests := []struct {
+		name        string
+		query       url.Values
+		total       int64
+		wantPage    int32
+		wantPages   int64
+		wantHasMore bool
+	}{
+		{name: "first page of an empty report", query: url.Values{}, total: 0, wantPage: 1, wantPages: 0, wantHasMore: false},
+		{name: "last page", query: url.Values{"page": {"3"}, "size": {"25"}}, total: 51, wantPage: 3, wantPages: 3, wantHasMore: false},
+		{name: "past the end", query: url.Values{"page": {"9"}, "size": {"25"}}, total: 51, wantPage: 9, wantPages: 3, wantHasMore: false},
+		{name: "exact multiple", query: url.Values{"page": {"2"}, "size": {"25"}}, total: 50, wantPage: 2, wantPages: 2, wantHasMore: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			report, err := pagination.ParseReport(tc.query, limits)
+			if err != nil {
+				t.Fatalf("ParseReport: %v", err)
+			}
+			totals, err := report.Totals(tc.total)
+			if err != nil {
+				t.Fatalf("Totals: %v", err)
+			}
+			page := issueReportPage(totals)
+			if page.Page != tc.wantPage || page.TotalPages != tc.wantPages || page.HasMore != tc.wantHasMore || page.Total != tc.total {
+				t.Fatalf("page = %#v", page)
+			}
+		})
+	}
+}
+
+func TestReportRefusesDepthAndMixedPagination(t *testing.T) {
+	t.Parallel()
+
+	limits := testReportLimits(t)
+	tooDeep := url.Values{"page": {"100000"}, "size": {"200"}}
+	if _, err := pagination.ParseReport(tooDeep, limits); !errors.Is(err, pagination.ErrReportTooDeep) {
+		t.Fatalf("error = %v, want ErrReportTooDeep", err)
+	}
+	mixed := url.Values{"page": {"1"}, "after": {"nc1.a.b.c"}}
+	if _, err := pagination.ParseReport(mixed, limits); !errors.Is(err, pagination.ErrMixedPagination) {
+		t.Fatalf("error = %v, want ErrMixedPagination", err)
+	}
+}
+
+func TestIdempotencyKeyIsRequiredAndBounded(t *testing.T) {
+	t.Parallel()
+
+	valid := "01J00000000000000000000001"
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/payments", nil)
+	request.Header.Set(idempotency.HeaderName, valid)
+	got, err := idempotencyKey(request)
+	if err != nil || got != valid {
+		t.Fatalf("idempotencyKey = %q, %v; want the header value", got, err)
+	}
+
+	rejected := map[string]string{
+		"absent":          "",
+		"too short":       "short",
+		"with a space":    "01J0000000 0000000000001",
+		"with a newline":  "01J0000000000000000000001\n",
+		"non-ASCII":       "01J00000000000000000000é",
+		"control byte":    "01J000000000000000000\x0001",
+		"beyond the size": strings.Repeat("k", idempotency.MaxKeyBytes+1),
+	}
+	for name, key := range rejected {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			probe := httptest.NewRequest(http.MethodPost, "/api/v1/payments", nil)
+			if key != "" {
+				probe.Header[idempotency.HeaderName] = []string{key}
+			}
+			if _, err := idempotencyKey(probe); !errors.Is(err, idempotency.ErrInvalidKey) {
+				t.Fatalf("idempotencyKey accepted %q: %v", key, err)
+			}
+		})
+	}
+}
+
+func TestIdempotencyFingerprintIgnoresOnlyWhatItShould(t *testing.T) {
+	t.Parallel()
+
+	type payment struct {
+		Amount   int    `json:"amount"`
+		Currency string `json:"currency"`
+	}
+
+	base := httptest.NewRequest(http.MethodPost, "/api/v1/payments", nil)
+	original, err := idempotencyFingerprint(base, payment{Amount: 100, Currency: "EUR"})
+	if err != nil {
+		t.Fatalf("idempotencyFingerprint: %v", err)
+	}
+	if len(original) != idempotency.FingerprintBytes {
+		t.Fatalf("fingerprint is %d bytes, want %d", len(original), idempotency.FingerprintBytes)
+	}
+
+	same, err := idempotencyFingerprint(
+		httptest.NewRequest(http.MethodPost, "/api/v1/payments?trace=1", nil),
+		payment{Amount: 100, Currency: "EUR"},
+	)
+	if err != nil {
+		t.Fatalf("idempotencyFingerprint: %v", err)
+	}
+	if string(same) != string(original) {
+		t.Error("a query parameter changed the fingerprint; only method, path, and body are part of it")
+	}
+
+	different := []struct {
+		name    string
+		request *http.Request
+		body    payment
+	}{
+		{name: "amount", request: base, body: payment{Amount: 101, Currency: "EUR"}},
+		{name: "currency", request: base, body: payment{Amount: 100, Currency: "USD"}},
+		{name: "path", request: httptest.NewRequest(http.MethodPost, "/api/v1/refunds", nil), body: payment{Amount: 100, Currency: "EUR"}},
+		{name: "method", request: httptest.NewRequest(http.MethodPut, "/api/v1/payments", nil), body: payment{Amount: 100, Currency: "EUR"}},
+	}
+	for _, tc := range different {
+		t.Run(tc.name+" changes it", func(t *testing.T) {
+			t.Parallel()
+			got, err := idempotencyFingerprint(tc.request, tc.body)
+			if err != nil {
+				t.Fatalf("idempotencyFingerprint: %v", err)
+			}
+			if string(got) == string(original) {
+				t.Errorf("changing the %s did not change the fingerprint", tc.name)
+			}
+		})
+	}
+}
+
+func TestIdempotencyProblemDistinguishesRetryableFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "concurrent", err: idempotency.ErrConcurrentRequest, wantStatus: http.StatusConflict, wantCode: "idempotency_conflict"},
+		{name: "reused key", err: idempotency.ErrKeyReuse, wantStatus: http.StatusUnprocessableEntity, wantCode: "idempotency_key_reuse"},
+		{name: "invalid key", err: idempotency.ErrInvalidKey, wantStatus: http.StatusBadRequest, wantCode: "invalid_idempotency_key"},
+		{name: "anything else", err: errors.New("the database went away"), wantStatus: http.StatusInternalServerError, wantCode: "internal_server_error"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			definition := idempotencyProblem(fmt.Errorf("scope payments.create key 01J0secret: %w", tc.err))
+			if definition.Status() != tc.wantStatus || definition.Code() != tc.wantCode {
+				t.Fatalf("definition = %d/%q, want %d/%q", definition.Status(), definition.Code(), tc.wantStatus, tc.wantCode)
+			}
+
+			response := httptest.NewRecorder()
+			problem.Handler(definition)(response, transportRequestWithIDs(), fmt.Errorf("key 01J0secret: %w", tc.err))
+			if strings.Contains(response.Body.String(), "01J0secret") {
+				t.Errorf("response exposed the idempotency key: %q", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestPaginationProblemMapsEveryFailureToTheClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{name: "expired", err: pagination.ErrCursorExpired, wantCode: "cursor_expired"},
+		{name: "forged", err: pagination.ErrCursorSignature, wantCode: "invalid_pagination"},
+		{name: "wrong query", err: pagination.ErrCursorBinding, wantCode: "invalid_pagination"},
+		{name: "wrong direction", err: pagination.ErrCursorDirection, wantCode: "invalid_pagination"},
+		{name: "malformed", err: pagination.ErrCursorMalformed, wantCode: "invalid_pagination"},
+		{name: "unsupported version", err: pagination.ErrCursorVersion, wantCode: "invalid_pagination"},
+		{name: "limit", err: pagination.ErrInvalidLimit, wantCode: "invalid_pagination"},
+		{name: "conflicting cursors", err: pagination.ErrConflictingCursors, wantCode: "invalid_pagination"},
+		{name: "report too deep", err: pagination.ErrReportTooDeep, wantCode: "report_too_deep"},
+		{name: "report page", err: pagination.ErrInvalidPage, wantCode: "invalid_pagination"},
+		{name: "report size", err: pagination.ErrInvalidSize, wantCode: "invalid_pagination"},
+		{name: "mixed pagination", err: pagination.ErrMixedPagination, wantCode: "invalid_pagination"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			definition := paginationProblem(fmt.Errorf("internal detail: %w", tc.err))
+			if definition.Status() != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", definition.Status())
+			}
+			if definition.Code() != tc.wantCode {
+				t.Errorf("code = %q, want %q", definition.Code(), tc.wantCode)
+			}
+
+			response := httptest.NewRecorder()
+			problem.Handler(definition)(response, transportRequestWithIDs(), fmt.Errorf("cursor nc1.secret.value: %w", tc.err))
+			for _, forbidden := range []string{"nc1.secret.value", "internal detail"} {
+				if strings.Contains(response.Body.String(), forbidden) {
+					t.Errorf("response exposed %q: %q", forbidden, response.Body.String())
+				}
+			}
+
+			// The public detail is the catalog's fixed text for this
+			// definition, never anything derived from the cause: two
+			// different signature failures must be indistinguishable.
+			var body openapigen.Problem
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode problem: %v", err)
+			}
+			wantDetail := "The pagination parameters are not valid for this collection."
+			switch tc.wantCode {
+			case "cursor_expired":
+				wantDetail = "The pagination cursor has expired; start the listing again."
+			case "report_too_deep":
+				wantDetail = "The requested report page is beyond the supported depth; narrow the filters."
+			}
+			if body.Detail != wantDetail {
+				t.Errorf("detail = %q, want the catalog text %q", body.Detail, wantDetail)
+			}
+		})
+	}
+}
+
+func TestResponseTransportErrorDoesNotExposeCause(t *testing.T) {
+	response := httptest.NewRecorder()
+	problem.Handler(problem.InternalServerError())(
+		response,
+		transportRequestWithIDs(),
+		errors.New("decoder failed beside /srv/private and secret-value"),
+	)
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", response.Code)
+	}
+	if got := response.Header().Get("Content-Type"); got != problem.MediaType {
+		t.Fatalf("Content-Type = %q, want %q", got, problem.MediaType)
+	}
+	for _, forbidden := range []string{"decoder", "/srv/private", "secret-value"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Errorf("body exposed %q: %q", forbidden, response.Body.String())
+		}
+	}
+}
+
+func TestRequestTransportErrorMapsBoundedPublicFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "invalid request", err: httpjson.ErrInvalidJSON, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
+		{name: "body too large", err: httpjson.ErrRequestBodyTooLarge, wantStatus: http.StatusRequestEntityTooLarge, wantCode: "request_body_too_large"},
+		{name: "media type", err: httpjson.ErrUnsupportedMediaType, wantStatus: http.StatusUnsupportedMediaType, wantCode: "unsupported_media_type"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			response := httptest.NewRecorder()
+			requestTransportError(
+				response,
+				transportRequestWithIDs(),
+				fmt.Errorf("private decoder detail: %w", tc.err),
+			)
+			if response.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", response.Code, tc.wantStatus)
+			}
+			if got := response.Header().Get("Content-Type"); got != problem.MediaType {
+				t.Fatalf("Content-Type = %q, want %q", got, problem.MediaType)
+			}
+			var body openapigen.Problem
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode problem: %v", err)
+			}
+			if body.Status != int32(tc.wantStatus) || body.Code != tc.wantCode {
+				t.Fatalf("problem = status %d, code %q; want status %d, code %q", body.Status, body.Code, tc.wantStatus, tc.wantCode)
+			}
+			if strings.Contains(response.Body.String(), "private decoder detail") {
+				t.Errorf("response exposed wrapped cause: %q", response.Body.String())
+			}
+		})
+	}
+}
+
+// testCursorCodec builds a codec with a throwaway key. A real deployment gets
+// its key ring from configuration; a test only needs one that signs.
+func testCursorCodec(t *testing.T) *pagination.Codec {
+	t.Helper()
+
+	key, err := pagination.GenerateKey("test")
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	ring, err := pagination.NewKeyRing(key)
+	if err != nil {
+		t.Fatalf("NewKeyRing: %v", err)
+	}
+	codec, err := pagination.NewCodec(ring, time.Hour)
+	if err != nil {
+		t.Fatalf("NewCodec: %v", err)
+	}
+	return codec
+}
+
+// testReportLimits is one report's policy. A real report chooses its own; the
+// depth ceiling is what keeps a page number from becoming an unbounded scan.
+func testReportLimits(t *testing.T) pagination.ReportLimits {
+	t.Helper()
+
+	limits, err := pagination.NewReportLimits(50, 200, 100000)
+	if err != nil {
+		t.Fatalf("NewReportLimits: %v", err)
+	}
+	return limits
+}
+
+// testServerDeps builds a complete, usable ServerDeps for a hermetic test.
+//
+// The authentication dependencies are the refusing fakes below: a test that
+// needs one to answer replaces just that field, and every other test gets a
+// dependency that fails loudly if a handler reaches it when it should not
+// have.
+func testServerDeps(t *testing.T) ServerDeps {
+	t.Helper()
+
+	policy, err := session.NewCookiePolicy(true)
+	if err != nil {
+		t.Fatalf("NewCookiePolicy: %v", err)
+	}
+	cookies, err := httpauth.NewCookies(policy)
+	if err != nil {
+		t.Fatalf("NewCookies: %v", err)
+	}
+	// The Workbench use cases are real values with a nil transaction runner
+	// rather than fakes. Every one of their methods opens a transaction
+	// first, so a handler that reached one of them without a session would
+	// panic — which is a louder failure than a fake returning an error, and
+	// it is exactly the failure the tests below are checking cannot happen.
+	resources, err := resource.New(nilTransactor())
+	if err != nil {
+		t.Fatalf("resource.New: %v", err)
+	}
+	reservations, err := reservation.New(nilTransactor(), reservation.Options{})
+	if err != nil {
+		t.Fatalf("reservation.New: %v", err)
+	}
+	return ServerDeps{
+		Cursors:      testCursorCodec(t),
+		Credentials:  refusingAuth{t: t},
+		Sessions:     refusingAuth{t: t},
+		Accounts:     refusingAuth{t: t},
+		Invitations:  refusingAuth{t: t},
+		Cookies:      cookies,
+		Compromised:  refusingAuth{t: t},
+		Resources:    resources,
+		Reservations: reservations,
+		Tenancy:      refusingTenancy{t: t},
+	}
+}
+
+// nilTransactor builds a Transactor around no pool.
+//
+// database.NewTransactor refuses a nil pool, so this constructs the zero value
+// directly — which is what a use case in these tests should hold: reachable
+// only by a handler that skipped its session check, and loud when it is.
+func nilTransactor() *database.Transactor { return &database.Transactor{} }
+
+// refusingTenancy fails the test if a handler resolves membership.
+//
+// The transport tests are about what happens *before* any use case is
+// consulted, and a tenancy resolver that answered would let a handler proceed
+// past a check it should have failed.
+type refusingTenancy struct{ t *testing.T }
+
+func (r refusingTenancy) MemberOf(context.Context, string, string) (organizations.Member, error) {
+	r.t.Helper()
+	r.t.Fatal("a handler resolved tenant membership before its session check")
+	return organizations.Member{}, nil
+}
+
+// refusingServerDeps is testServerDeps under its intent-revealing name, for
+// the tests whose whole point is that no use case is consulted.
+func refusingServerDeps(t *testing.T) ServerDeps {
+	t.Helper()
+	return testServerDeps(t)
+}
+
+// refusingAuth implements every port this package declares and fails the test
+// if any of them is called. It is what makes "the guard runs first" provable
+// rather than asserted.
+type refusingAuth struct{ t *testing.T }
+
+func (r refusingAuth) refuse(name string) {
+	r.t.Helper()
+	r.t.Fatalf("a handler called %s before it should have", name)
+}
+
+func (r refusingAuth) Authenticate(context.Context, string, string) (auth.Login, error) {
+	r.refuse("Authenticate")
+	return auth.Login{}, nil
+}
+
+func (r refusingAuth) CompleteSecondFactor(context.Context, string, string) (auth.Login, error) {
+	r.refuse("CompleteSecondFactor")
+	return auth.Login{}, nil
+}
+
+func (r refusingAuth) ChangePassword(context.Context, string, string, string, password.Compromised, string) (auth.Issued, error) {
+	r.refuse("ChangePassword")
+	return auth.Issued{}, nil
+}
+
+func (r refusingAuth) List(context.Context, string, string, int) ([]auth.Summary, error) {
+	r.refuse("List")
+	return nil, nil
+}
+
+func (r refusingAuth) Revoke(context.Context, string, string) error {
+	r.refuse("Revoke")
+	return nil
+}
+
+func (r refusingAuth) RevokeOtherSessions(context.Context, string, string, string) (int64, error) {
+	r.refuse("RevokeOtherSessions")
+	return 0, nil
+}
+
+func (r refusingAuth) Accept(context.Context, string, string) (auth.Account, error) {
+	r.refuse("Accept")
+	return auth.Account{}, nil
+}
+
+func (r refusingAuth) FindByID(context.Context, string) (auth.Account, error) {
+	r.refuse("FindByID")
+	return auth.Account{}, nil
+}
+
+// IsCompromised lets the same value stand in for the compromised-password
+// source, which no handler consults directly: it is handed to the use case
+// that chooses a password, and reaching it from here would mean a handler had
+// started making that decision itself.
+func (r refusingAuth) IsCompromised(context.Context, string) (bool, error) {
+	r.refuse("IsCompromised")
+	return false, nil
+}
+
+func testServer(t *testing.T) *Server {
+	t.Helper()
+
+	server, err := NewServer(testServerDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return server
+}
+
+func cursorRequest(t *testing.T, target string) *http.Request {
+	t.Helper()
+
+	parsed, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("parse %q: %v", target, err)
+	}
+	return httptest.NewRequest(http.MethodGet, parsed.String(), nil)
+}
+
+func cursorPointer(value string) *openapigen.Cursor {
+	cursor := openapigen.Cursor(value)
+	return &cursor
+}
+
+func transportRequestWithIDs() *http.Request {
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	ctx := logging.WithRequestID(request.Context(), "request_123")
+	ctx = logging.WithCorrelationID(ctx, "correlation_456")
+	ctx = logging.WithLogger(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return request.WithContext(ctx)
+}

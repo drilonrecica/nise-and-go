@@ -1,0 +1,1289 @@
+# Generated once by nise; owned by this application. Nise will not overwrite it.
+
+openapi: 3.0.3
+info:
+  title: "workbench API"
+  version: 1.0.0
+  description: "The authoritative HTTP transport contract for workbench."
+servers:
+  - url: /api/v1
+paths:
+  /:
+    get:
+      operationId: getAPIIndex
+      summary: Describe the versioned API boundary
+      responses:
+        "200":
+          description: The API boundary resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIRoot'
+  /system:
+    get:
+      operationId: getSystemInfo
+      summary: Describe the running binary, for an administrator
+      description: >-
+        The version of this application, the framework it was built against,
+        and which optional modules it carries. It needs the system.read
+        permission: this describes the deployment rather than the business, and
+        it is not something to hand an unauthenticated caller.
+      responses:
+        "200":
+          description: What this binary is.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemInfo'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+  /session:
+    get:
+      operationId: getCurrentSession
+      summary: Describe the session making this request
+      responses:
+        "200":
+          description: The signed-in account and its session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        "401":
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: signIn
+      summary: Exchange an address and password for a session
+      description: >-
+        A correct password may finish the sign-in or open a second-factor
+        challenge. Both are the same 200 response carrying a required status
+        discriminator, so a client cannot read the body without deciding which
+        of the two happened; `session` and `challenge` are each present only
+        for their own status.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignInRequest'
+      responses:
+        "200":
+          description: The password was correct. Read status to learn what to do next.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignInResult'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "429":
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: signOut
+      summary: End the session making this request
+      responses:
+        "204":
+          description: The session is revoked and its cookies are cleared.
+        "401":
+          $ref: '#/components/responses/Problem'
+  /session/second-factor:
+    post:
+      operationId: completeSecondFactor
+      summary: Finish a sign-in that opened a second-factor challenge
+      description: >-
+        The challenge token identifies the unfinished sign-in; it is not a
+        session and authenticates nothing else. An application with no
+        second-factor module refuses this operation, which is why the
+        operation exists in every application: enabling the module is a
+        recompile rather than a change to this contract.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecondFactorRequest'
+      responses:
+        "200":
+          description: The second step verified and a session was issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "429":
+          $ref: '#/components/responses/Problem'
+  /sessions:
+    get:
+      operationId: listSessions
+      summary: List the signed-in account's own sessions
+      responses:
+        "200":
+          description: Every live session this account holds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSummaryCollection'
+        "401":
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: revokeOtherSessions
+      summary: End every session except the one making this request
+      responses:
+        "200":
+          description: How many sessions were ended.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevocationResult'
+        "401":
+          $ref: '#/components/responses/Problem'
+  /sessions/{sessionId}:
+    delete:
+      operationId: revokeSession
+      summary: End one of the signed-in account's sessions
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[A-Za-z0-9-]+$'
+      responses:
+        "204":
+          description: The session is revoked.
+        "401":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+  /account/password:
+    post:
+      operationId: changePassword
+      summary: Change the signed-in account's password
+      description: >-
+        The current password is the proof, and every other session is ended so
+        that a password change is also a way to evict whoever else is holding
+        one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        "204":
+          description: The password was changed and other sessions were ended.
+        "401":
+          $ref: '#/components/responses/Problem'
+        "422":
+          $ref: '#/components/responses/Problem'
+  /invitations/accept:
+    post:
+      operationId: acceptInvitation
+      summary: Turn an invitation into an account
+      description: >-
+        The token is single-use and is spent by this call. It answers with the
+        address the account was created for, so the sign-in form that follows
+        can be filled in without the caller having to know it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcceptInvitationRequest'
+      responses:
+        "201":
+          description: The account was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptedInvitation'
+        "400":
+          $ref: '#/components/responses/Problem'
+        "422":
+          $ref: '#/components/responses/Problem'
+  /orgs/{orgId}/resources:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      operationId: listResources
+      summary: List an organization's bookable resources
+      description: >-
+        The tenant is a path segment rather than something inferred from the
+        session. A person can belong to more than one organization, and a
+        request that guessed which one would be a request whose meaning
+        depends on data the caller cannot see. Membership is verified inside
+        the named tenant, so a caller who is not in it gets the same 404 as
+        one naming an organization that does not exist.
+      parameters:
+        - name: include_retired
+          in: query
+          required: false
+          description: Include resources that are out of service.
+          schema:
+            type: boolean
+            default: false
+        - $ref: '#/components/parameters/CursorLimit'
+        - $ref: '#/components/parameters/CursorAfter'
+      responses:
+        "200":
+          description: A page of resources.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCursorCollection'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: createResource
+      summary: Add a resource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResourceInput'
+      responses:
+        "201":
+          description: The created resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Resource'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+        "409":
+          $ref: '#/components/responses/Problem'
+        "422":
+          $ref: '#/components/responses/Problem'
+  /orgs/{orgId}/resources/{resourceId}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      operationId: getResource
+      summary: Read one resource
+      responses:
+        "200":
+          description: The resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Resource'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+    put:
+      operationId: updateResource
+      summary: Change a resource's details
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResourceInput'
+      responses:
+        "200":
+          description: The updated resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Resource'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+        "409":
+          $ref: '#/components/responses/Problem'
+        "422":
+          $ref: '#/components/responses/Problem'
+  /orgs/{orgId}/resources/{resourceId}/retire:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      operationId: retireResource
+      summary: Take a resource out of service
+      description: >-
+        A command rather than a field, because it is one: it withdraws
+        capability from every member at once, has its own permission, and
+        cannot be undone by the person it surprises. It also requires a recent
+        proof of identity — see the reauthentication matrix — which a PUT
+        setting a nullable timestamp could not express.
+
+        Retiring an already-retired resource is refused rather than accepted,
+        because moving the timestamp would rewrite when it happened, and that
+        is the one fact anybody asks about afterwards.
+      responses:
+        "200":
+          description: The retired resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Resource'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+        "409":
+          $ref: '#/components/responses/Problem'
+  /orgs/{orgId}/reservations:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      operationId: listReservations
+      summary: List reservations
+      description: >-
+        One operation serves the calendar, the steward's view, and "my
+        reservations", because they differ only by filter. Three operations
+        would be three chances for them to disagree about what a reservation
+        is.
+      parameters:
+        - name: resource_id
+          in: query
+          required: false
+          description: Only this resource's reservations — the calendar.
+          schema:
+            $ref: '#/components/schemas/ResourceIdValue'
+        - name: holder_id
+          in: query
+          required: false
+          description: Only this person's — "my reservations".
+          schema:
+            $ref: '#/components/schemas/UserIdValue'
+        - name: state
+          in: query
+          required: false
+          description: >-
+            Only reservations in these states. Repeat the parameter for more
+            than one; absent means every state.
+          schema:
+            type: array
+            maxItems: 5
+            items:
+              $ref: '#/components/schemas/ReservationState'
+        - name: from
+          in: query
+          required: false
+          description: >-
+            Only reservations overlapping this window. `from` and `to` must be
+            given together — a half-set window would match nothing and read as
+            "no reservations" rather than as a filter mistake, so it is
+            refused.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - $ref: '#/components/parameters/CursorLimit'
+        - $ref: '#/components/parameters/CursorAfter'
+      responses:
+        "200":
+          description: A page of reservations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReservationCursorCollection'
+        "400":
+          $ref: '#/components/responses/Problem'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: createReservation
+      summary: Book a resource for a window
+      description: >-
+        A 409 means the window is already taken by a live reservation of the
+        same resource. That answer comes from an exclusion constraint in the
+        database rather than from a check in the application: under
+        concurrency, two callers both read "free" and both write, so a check
+        that reads first is a check that passes for both.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReservationInput'
+      responses:
+        "201":
+          description: The booking.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+        "409":
+          $ref: '#/components/responses/Problem'
+        "422":
+          $ref: '#/components/responses/Problem'
+  /orgs/{orgId}/reservations/{reservationId}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/ReservationId'
+    get:
+      operationId: getReservation
+      summary: Read one reservation
+      responses:
+        "200":
+          description: The reservation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+  /orgs/{orgId}/reservations/{reservationId}/check-out:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/ReservationId'
+    post:
+      operationId: checkOutReservation
+      summary: Record that the resource has been collected
+      description: >-
+        The first of the two domain commands, and not a PUT with a different
+        field: it refuses a window that has not started, refuses a reservation
+        that is not merely booked, and refuses a caller who is neither the
+        holder nor a steward. A request body that set `state` could express
+        none of that, and there would be no server-side check that
+        meaningfully rejects a shape the contract says is allowed.
+
+        It is idempotent by construction — a second call answers 409 with the
+        state it is in — so it takes no Idempotency-Key.
+      responses:
+        "200":
+          description: The collected reservation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+        "409":
+          $ref: '#/components/responses/Problem'
+  /orgs/{orgId}/reservations/{reservationId}/return:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/ReservationId'
+    post:
+      operationId: returnReservation
+      summary: Record that the resource is back
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReturnInput'
+      responses:
+        "200":
+          description: The returned reservation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+        "409":
+          $ref: '#/components/responses/Problem'
+        "422":
+          $ref: '#/components/responses/Problem'
+  /orgs/{orgId}/reservations/{reservationId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/ReservationId'
+    post:
+      operationId: cancelReservation
+      summary: Give up a booking that has not been collected
+      description: >-
+        A checked-out reservation cannot be cancelled. The resource is in
+        somebody's hands, and the honest end for that is a return — cancelling
+        would free the slot in the calendar while the instrument was still
+        gone.
+      responses:
+        "200":
+          description: The cancelled reservation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        "401":
+          $ref: '#/components/responses/Problem'
+        "403":
+          $ref: '#/components/responses/Problem'
+        "404":
+          $ref: '#/components/responses/Problem'
+        "409":
+          $ref: '#/components/responses/Problem'
+components:
+  schemas:
+    SystemInfo:
+      type: object
+      additionalProperties: false
+      required:
+        - application_version
+        - framework_module
+        - framework_version
+        - environment
+        - modules
+      properties:
+        application_version:
+          type: string
+          maxLength: 128
+          description: This application's own build version, or "(devel)" for a source build.
+        framework_module:
+          type: string
+          maxLength: 255
+        framework_version:
+          type: string
+          maxLength: 128
+        environment:
+          type: string
+          maxLength: 32
+        modules:
+          type: array
+          description: The optional compile-time modules this binary carries.
+          items:
+            type: string
+            maxLength: 64
+    Account:
+      type: object
+      additionalProperties: false
+      description: One identity, without its credential.
+      required:
+        - id
+        - email
+        - status
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[A-Za-z0-9-]+$'
+        email:
+          type: string
+          maxLength: 320
+        status:
+          type: string
+          enum:
+            - active
+            - disabled
+    Session:
+      type: object
+      additionalProperties: false
+      description: >-
+        The signed-in account and the session carrying it. The session token
+        itself is never in a body: it is written to a hardened cookie and
+        exists nowhere else.
+      required:
+        - account
+        - session_id
+        - expires_at
+        - proven_at
+        - permissions
+      properties:
+        account:
+          $ref: '#/components/schemas/Account'
+        permissions:
+          type: array
+          description: >-
+            Every permission this session holds, so the interface can hide an
+            action the server would refuse. It is a courtesy and never a
+            control: the server checks the same permissions in the use case,
+            and a caller who ignores this list gets the same refusal.
+          items:
+            type: string
+            maxLength: 64
+        session_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[A-Za-z0-9-]+$'
+        expires_at:
+          type: string
+          format: date-time
+        proven_at:
+          type: string
+          format: date-time
+          description: When the holder last proved their identity with a password.
+    SignInResult:
+      type: object
+      additionalProperties: false
+      description: >-
+        What a correct password produced. status is required and is the only
+        member a client may read unconditionally.
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - signed_in
+            - second_factor_required
+        session:
+          $ref: '#/components/schemas/Session'
+        challenge:
+          $ref: '#/components/schemas/SecondFactorChallenge'
+    SecondFactorChallenge:
+      type: object
+      additionalProperties: false
+      description: >-
+        An unfinished sign-in. The token identifies that attempt and nothing
+        else: it is not a session, it authenticates no other request, and it is
+        spent by the first correct answer.
+      required:
+        - token
+        - expires_at
+      properties:
+        token:
+          type: string
+          maxLength: 512
+        expires_at:
+          type: string
+          format: date-time
+    SignInRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          minLength: 3
+          maxLength: 320
+        password:
+          type: string
+          minLength: 1
+          maxLength: 4096
+    SecondFactorRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - challenge_token
+        - code
+      properties:
+        challenge_token:
+          type: string
+          minLength: 1
+          maxLength: 512
+        code:
+          type: string
+          minLength: 1
+          maxLength: 64
+    SessionSummary:
+      type: object
+      additionalProperties: false
+      description: One row of the account's own session list.
+      required:
+        - id
+        - created_at
+        - last_seen_at
+        - expires_at
+        - current
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[A-Za-z0-9-]+$'
+        created_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        current:
+          type: boolean
+          description: Whether this is the session making the request.
+    SessionSummaryCollection:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - page
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionSummary'
+        page:
+          $ref: '#/components/schemas/Page'
+    RevocationResult:
+      type: object
+      additionalProperties: false
+      required:
+        - revoked
+      properties:
+        revoked:
+          type: integer
+          format: int64
+          minimum: 0
+    ChangePasswordRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - current_password
+        - new_password
+      properties:
+        current_password:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        new_password:
+          type: string
+          minLength: 1
+          maxLength: 4096
+    AcceptInvitationRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - token
+        - password
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 512
+        password:
+          type: string
+          minLength: 1
+          maxLength: 4096
+    AcceptedInvitation:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          maxLength: 320
+    APIRoot:
+      type: object
+      additionalProperties: false
+      description: The direct resource returned by the versioned API root.
+      required:
+        - version
+      properties:
+        version:
+          type: string
+          enum:
+            - v1
+    Page:
+      type: object
+      additionalProperties: false
+      description: Neutral pagination metadata for a collection with no paging strategy of its own.
+      required:
+        - has_more
+      properties:
+        has_more:
+          type: boolean
+    CursorPage:
+      type: object
+      additionalProperties: false
+      description: >-
+        Cursor pagination metadata. has_more reports whether another page exists
+        in the direction this page was read. A cursor member is absent, never
+        null, when there is no page in that direction.
+      required:
+        - has_more
+      properties:
+        has_more:
+          type: boolean
+        next_cursor:
+          $ref: '#/components/schemas/Cursor'
+        prev_cursor:
+          $ref: '#/components/schemas/Cursor'
+    ReportPage:
+      type: object
+      additionalProperties: false
+      description: >-
+        Offset reporting pagination metadata, for reports where a page number
+        is something a person quotes and a total is something they need. It is
+        a separate contract from CursorPage, never a variant of it.
+      required:
+        - page
+        - size
+        - total
+        - total_pages
+        - has_more
+      properties:
+        page:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 100000
+        size:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 200
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+        total_pages:
+          type: integer
+          format: int64
+          minimum: 0
+        has_more:
+          type: boolean
+    Cursor:
+      type: string
+      description: >-
+        An opaque authenticated position token. Return it verbatim in after or
+        before; never parse, construct, or store it beyond the current listing.
+      minLength: 1
+      maxLength: 4096
+    APIRootCollection:
+      type: object
+      additionalProperties: false
+      description: A concrete collection contract fixture; domain collections define their own schemas.
+      required:
+        - items
+        - page
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/APIRoot'
+        page:
+          $ref: '#/components/schemas/Page'
+    APIRootReportCollection:
+      type: object
+      additionalProperties: false
+      description: A concrete offset-paginated reporting collection fixture; domain reports define their own schemas.
+      required:
+        - items
+        - page
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/APIRoot'
+        page:
+          $ref: '#/components/schemas/ReportPage'
+    APIRootCursorCollection:
+      type: object
+      additionalProperties: false
+      description: A concrete cursor-paginated collection fixture; domain collections define their own schemas.
+      required:
+        - items
+        - page
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/APIRoot'
+        page:
+          $ref: '#/components/schemas/CursorPage'
+    Problem:
+      type: object
+      additionalProperties: false
+      description: RFC 9457 Problem Details with the application's controlled extensions.
+      required:
+        - type
+        - title
+        - status
+        - detail
+        - code
+        - request_id
+        - correlation_id
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          minLength: 1
+          maxLength: 2048
+          pattern: '^([A-Za-z][A-Za-z0-9+.-]*:|/$|/[^/])'
+        title:
+          type: string
+          minLength: 1
+          maxLength: 256
+        status:
+          type: integer
+          format: int32
+          minimum: 400
+          maximum: 599
+        detail:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        instance:
+          type: string
+          format: uri-reference
+          maxLength: 2048
+        code:
+          type: string
+          pattern: '^[a-z][a-z0-9_]{2,63}$'
+        request_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9_-]+$'
+        correlation_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9_-]+$'
+    ResourceIdValue:
+      type: string
+      description: >-
+        An opaque identifier. Do not parse it. It is declared as a
+        constrained string rather than with `format: uuid`, because the
+        generator turns that format into a 16-byte array — which is a
+        parsed identifier, and the contract's whole claim is that this one is
+        opaque.
+      minLength: 36
+      maxLength: 36
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    UserIdValue:
+      type: string
+      description: >-
+        An opaque identifier. Do not parse it. It is declared as a
+        constrained string rather than with `format: uuid`, because the
+        generator turns that format into a 16-byte array — which is a
+        parsed identifier, and the contract's whole claim is that this one is
+        opaque.
+      minLength: 36
+      maxLength: 36
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    ReservationIdValue:
+      type: string
+      description: >-
+        An opaque identifier. Do not parse it. It is declared as a
+        constrained string rather than with `format: uuid`, because the
+        generator turns that format into a 16-byte array — which is a
+        parsed identifier, and the contract's whole claim is that this one is
+        opaque.
+      minLength: 36
+      maxLength: 36
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    OrgIdValue:
+      type: string
+      description: >-
+        An organization's identifier. Do not parse it. It is declared as a
+        constrained string rather than with `format: uuid`, because the
+        generator turns that format into a 16-byte array — which is a
+        parsed identifier, and the contract's whole claim is that this one is
+        opaque.
+      minLength: 36
+      maxLength: 36
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    ReservationState:
+      type: string
+      description: >-
+        Where a reservation is in its life. `no_show` is distinct from
+        `cancelled` on purpose: cancelling frees the slot for somebody else in
+        time to use it, and not turning up does not.
+      enum: [booked, checked_out, returned, cancelled, no_show]
+    Resource:
+      type: object
+      additionalProperties: false
+      required: [id, org_id, name, description, location, in_service, created_at, updated_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/ResourceIdValue'
+        org_id:
+          $ref: '#/components/schemas/OrgIdValue'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+        location:
+          type: string
+          maxLength: 200
+        photo_key:
+          type: string
+          maxLength: 512
+        in_service:
+          type: boolean
+          description: >-
+            False once the resource has been retired. It is a derived boolean
+            beside the timestamp rather than instead of it, because "is this
+            bookable" is what a client branches on and "when did it stop" is
+            what a person asks.
+        retired_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ResourceInput:
+      type: object
+      additionalProperties: false
+      description: >-
+        What a caller may set. A separate schema from Resource on purpose: the
+        identifier, the tenant, the timestamps and the retirement are the
+        server's, and a request body that accepted them would be one somebody
+        eventually populates.
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+        location:
+          type: string
+          maxLength: 200
+    ResourceCursorCollection:
+      type: object
+      additionalProperties: false
+      required: [items, page, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Resource'
+        page:
+          $ref: '#/components/schemas/CursorPage'
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >-
+            How many resources match the filter across every page. It is
+            reported beside cursor pagination rather than instead of it: a
+            person wants to know there are 40 instruments, and a cursor is
+            still what keeps the pages stable while somebody adds one.
+    Reservation:
+      type: object
+      additionalProperties: false
+      required: [id, org_id, resource_id, holder_id, starts_at, ends_at, state, note, created_at, updated_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/ReservationIdValue'
+        org_id:
+          $ref: '#/components/schemas/OrgIdValue'
+        resource_id:
+          $ref: '#/components/schemas/ResourceIdValue'
+        holder_id:
+          $ref: '#/components/schemas/UserIdValue'
+        starts_at:
+          type: string
+          format: date-time
+        ends_at:
+          type: string
+          format: date-time
+        state:
+          $ref: '#/components/schemas/ReservationState'
+        note:
+          type: string
+          maxLength: 2000
+        return_note:
+          type: string
+          maxLength: 2000
+        checked_out_at:
+          type: string
+          format: date-time
+        returned_at:
+          type: string
+          format: date-time
+        cancelled_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ReservationInput:
+      type: object
+      additionalProperties: false
+      required: [resource_id, starts_at, ends_at]
+      properties:
+        resource_id:
+          $ref: '#/components/schemas/ResourceIdValue'
+        starts_at:
+          type: string
+          format: date-time
+        ends_at:
+          type: string
+          format: date-time
+        note:
+          type: string
+          maxLength: 2000
+    ReturnInput:
+      type: object
+      additionalProperties: false
+      description: >-
+        What the holder says about the resource's condition, and optionally a
+        photo of it. The state after a return is what the next person
+        inherits, and "it was already like that" is the argument these fields
+        exist to settle.
+      properties:
+        note:
+          type: string
+          maxLength: 2000
+        photo_key:
+          type: string
+          maxLength: 512
+    ReservationCursorCollection:
+      type: object
+      additionalProperties: false
+      required: [items, page, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reservation'
+        page:
+          $ref: '#/components/schemas/CursorPage'
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+  parameters:
+    CursorLimit:
+      name: limit
+      in: query
+      required: false
+      description: >-
+        Page size. Absent means the collection's default. A value outside
+        1..200, or outside the collection's own smaller maximum, is refused
+        rather than clamped.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 200
+    CursorAfter:
+      name: after
+      in: query
+      required: false
+      description: >-
+        Read the page following this cursor. Only a cursor this collection
+        issued as next_cursor is accepted; it cannot be combined with before.
+      schema:
+        $ref: '#/components/schemas/Cursor'
+    CursorBefore:
+      name: before
+      in: query
+      required: false
+      description: >-
+        Read the page preceding this cursor. Only a cursor this collection
+        issued as prev_cursor is accepted; it cannot be combined with after.
+      schema:
+        $ref: '#/components/schemas/Cursor'
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        A client-generated key that makes this command safe to retry. Reuse the
+        same key for every retry of the same request and a new key for a new
+        request; a key replayed with a different body is refused. Recorded
+        responses are replayable for a bounded retention window.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 255
+        pattern: '^[!-~]+$'
+    ReportPageNumber:
+      name: page
+      in: query
+      required: false
+      description: >-
+        1-based page number. Absent means the first page. A page whose first
+        row is past the report's offset ceiling is refused rather than served
+        slowly.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 100000
+    ReportPageSize:
+      name: size
+      in: query
+      required: false
+      description: >-
+        Report page size. Absent means the report's default. Out of range is
+        refused rather than clamped. It cannot be combined with the cursor
+        parameters.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 200
+    OrgId:
+      name: orgId
+      in: path
+      required: true
+      description: >-
+        The organization this request acts in. It is a path segment rather
+        than something inferred from the session: a person can belong to more
+        than one, and a request that guessed would be a request whose meaning
+        depends on data the caller cannot see.
+      schema:
+        $ref: '#/components/schemas/OrgIdValue'
+    ResourceId:
+      name: resourceId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/ResourceIdValue'
+    ReservationId:
+      name: reservationId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/ReservationIdValue'
+  responses:
+    Problem:
+      description: The request failed with an RFC 9457 Problem Details response.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'

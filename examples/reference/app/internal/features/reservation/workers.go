@@ -69,16 +69,25 @@ func (w *Workers) WithClock(now func() time.Time) *Workers {
 	return &copied
 }
 
-// Register wires every worker and the periodic sweep into a registry.
+// The three workers, returned individually rather than registered here.
 //
-// Registration is explicit and in one place, rather than each worker
-// registering itself from an init(): a job kind that exists only because a
-// package happened to be imported is one nobody can find from the registry.
-func (w *Workers) Register(registry *river.Workers) {
-	river.AddWorker(registry, &confirmationWorker{workers: w})
-	river.AddWorker(registry, &reminderWorker{workers: w})
-	river.AddWorker(registry, &noShowCheckWorker{workers: w})
+// Registration goes through the application's own jobs.Register, which records
+// each kind so that scheduling a kind with no worker is caught at startup —
+// silence that otherwise looks exactly like success. A Register method on this
+// type would use river.AddWorker directly and slip past that check, which is
+// the kind of shortcut that is invisible until a periodic job never runs.
+
+// Confirmation returns the worker that sends a booking confirmation.
+func (w *Workers) Confirmation() river.Worker[ConfirmationArgs] {
+	return &confirmationWorker{workers: w}
 }
+
+// Reminder returns the worker that tells a holder their window is about to
+// open.
+func (w *Workers) Reminder() river.Worker[ReminderArgs] { return &reminderWorker{workers: w} }
+
+// NoShowCheck returns the worker that closes out an uncollected reservation.
+func (w *Workers) NoShowCheck() river.Worker[NoShowCheckArgs] { return &noShowCheckWorker{workers: w} }
 
 // send builds and sends one message about one reservation.
 //
