@@ -25,11 +25,19 @@ import (
 //
 // They are required in CI, where the PostgreSQL service is present and their
 // absence is a broken image rather than an ordinary developer machine. The
-// same variable that makes the database mandatory makes these mandatory.
+// same variable that makes the database mandatory makes these mandatory, so
+// this reads CI exactly the way dbtest.availabilityPolicy does: only "1" and
+// "true" mean CI. A bare non-empty check is not the same question. Nise's own
+// generated-project probe builds this project inside a subprocess it runs
+// with CI=false, precisely so these suites stay out of a job that declares no
+// PostgreSQL service — and "false" is non-empty, so the bare check read that
+// shield as CI and failed every macOS and Windows leg on a missing pg_dump
+// they were never asked to have.
 func requireTools(t *testing.T) {
 	t.Helper()
 	if _, _, err := RequireTools(); err != nil {
-		if os.Getenv("CI") != "" {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("CI"))) {
+		case "1", "true":
 			t.Fatalf("CI is set and the PostgreSQL client tools are missing: %v", err)
 		}
 		t.Skipf("skipping: %v", err)
