@@ -155,6 +155,7 @@ application never needs to do. That is checked rather than intended.
 ```sh
 examples/reference/build.sh /tmp/workbench
 cd /tmp/workbench
+go mod edit -replace github.com/drilonrecica/nise-and-go=/path/to/nise-and-go
 go mod tidy
 pnpm --dir frontend install
 nise dev
@@ -163,6 +164,32 @@ nise dev
 Building runs the same `nise new` a reader would run, from the documentation
 they would read. An application that only builds from a snapshot proves that a
 project was generated once; this one proves generation still works.
+
+The `replace` is the pre-release step every generated project needs until
+`github.com/drilonrecica/nise-and-go v0.1.0` reaches the module proxy. It is
+documented in the generated README too, and it goes away with the first
+published release.
+
+### Deploying it
+
+```sh
+go mod vendor                       # while the framework is unpublished
+pnpm --dir frontend install         # to produce the lockfile the image needs
+cd deploy
+POSTGRES_PASSWORD=… APP_DB_PASSWORD=… CURSOR_SIGNING_KEY="k1:$(openssl rand -base64 32)" \
+  docker compose up -d --build
+```
+
+`go mod vendor` is the other half of the same pre-release step: the image
+builds in a container that cannot see a local checkout, so the framework has to
+travel in the build context. Drop it, and restore the `go mod download` line in
+`deploy/Dockerfile`, once the module resolves from the proxy.
+
+`APP_DB_PASSWORD` is a second, different secret. The application connects as an
+unprivileged role rather than the one that owns the tables, because row-level
+security does not apply to a table's owner — see
+[Two database roles](../../docs/multitenancy.md) and the generated
+`deploy/coolify.md`.
 
 ## Acceptance
 
