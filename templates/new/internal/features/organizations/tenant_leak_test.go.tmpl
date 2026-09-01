@@ -1,0 +1,400 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package organizations
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
+
+	"github.com/drilonrecica/nise-and-go/runtime/transaction"
+
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/jobs"
+)
+
+// This file is about the two places tenant context can escape the request
+// that established it.
+//
+// A **pooled connection** is reused by whoever asks next. If the tenant
+// survived on it, the next request would read the previous one's data through
+// a connection it did nothing wrong to receive — the worst kind of leak,
+// because nothing in the second request's code is incorrect.
+//
+// A **background job** has no request at all. Nothing establishes its tenant
+// unless the job does, so a worker that assumes a tenant is present reads
+// either nothing or, if the mechanism were a plain SET, whatever the previous
+// occupant of that connection left behind.
+//
+// Both are proved here against a real database, under contention, because
+// both are the kind of defect that never appears in a single-threaded test.
+
+const leakTestTimeout = 90 * time.Second
+
+// tenantScopedCount reads how many organizations the current transaction can
+// see. Under row-level security that is a per-tenant answer, which makes it
+// the simplest possible probe for "whose data am I looking at".
+func tenantScopedCount(ctx context.Context, tx pgx.Tx) (int, error) {
+	var visible int
+	err := tx.QueryRow(ctx, `SELECT count(*) FROM organizations`).Scan(&visible)
+	return visible, err
+}
+
+// TestConcurrentTenantsOnASmallPoolNeverSeeEachOther is the pooled-connection
+// proof, made adversarial on purpose.
+//
+// The pool is deliberately far smaller than the number of goroutines, so
+// every connection is handed back and forth between tenants continuously.
+// That is the condition a leak needs, and it is the condition a
+// single-threaded test never creates.
+func TestConcurrentTenantsOnASmallPoolNeverSeeEachOther(t *testing.T) {
+	h := newHarnessWithPoolSize(t, 2)
+
+	const tenants = 8
+	created := make([]tenant, 0, tenants)
+	for i := range tenants {
+		created = append(created, h.newTenant(t, fmt.Sprintf("tenant-%d", i)))
+	}
+
+	ctx, cancel := context.WithTimeout(h.ctx, leakTestTimeout)
+	defer cancel()
+
+	var (
+		wg      sync.WaitGroup
+		leaks   atomic.Int64
+		rounds  = 40
+		failure atomic.Value
+	)
+	for _, own := range created {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range rounds {
+				err := h.transactor.WithinTenant(ctx, own.org.ID, transaction.Options{Access: transaction.ReadOnly},
+					func(ctx context.Context, tx pgx.Tx) error {
+						visible, err := tenantScopedCount(ctx, tx)
+						if err != nil {
+							return err
+						}
+						// Exactly one: this tenant's own organization.
+						// More means another tenant's rows are visible;
+						// fewer means this tenant lost its own context.
+						if visible != 1 {
+							leaks.Add(1)
+							failure.Store(fmt.Sprintf("tenant %s saw %d organizations", own.org.Slug, visible))
+						}
+						return nil
+					})
+				if err != nil {
+					failure.Store(err.Error())
+					leaks.Add(1)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if leaks.Load() != 0 {
+		detail, _ := failure.Load().(string)
+		t.Fatalf("%d tenant-context violations across %d transactions on a %d-connection pool: %s",
+			leaks.Load(), tenants*rounds, 2, detail)
+	}
+}
+
+// TestATenantTransactionInterleavedWithAnUnscopedOneLeaksNothing covers the
+// specific sequence a request pattern produces: a tenant-scoped read followed
+// by an unscoped one on the same connection, over and over.
+func TestATenantTransactionInterleavedWithAnUnscopedOneLeaksNothing(t *testing.T) {
+	h := newHarnessWithPoolSize(t, 1)
+	own := h.newTenant(t, "interleaved")
+
+	for range 30 {
+		if err := h.transactor.WithinTenant(h.ctx, own.org.ID, transaction.Options{Access: transaction.ReadOnly},
+			func(ctx context.Context, tx pgx.Tx) error {
+				visible, err := tenantScopedCount(ctx, tx)
+				if err != nil {
+					return err
+				}
+				if visible != 1 {
+					t.Errorf("a tenant-scoped read saw %d organizations, want 1", visible)
+				}
+				return nil
+			}); err != nil {
+			t.Fatalf("WithinTenant: %v", err)
+		}
+
+		var leaked int
+		if err := h.transactor.Within(h.ctx, transaction.Options{Access: transaction.ReadOnly},
+			func(ctx context.Context, tx pgx.Tx) error {
+				var err error
+				leaked, err = tenantScopedCount(ctx, tx)
+				return err
+			}); err != nil {
+			t.Fatalf("Within: %v", err)
+		}
+		// Reported outside the callback deliberately. t.Fatalf calls
+		// runtime.Goexit, and doing that from inside a transaction callback
+		// abandons the transaction mid-flight — on a one-connection pool
+		// that is a connection nothing can reclaim, and the test binary
+		// hangs until its timeout instead of failing. Which is exactly what
+		// happened while negative-checking this file.
+		if leaked != 0 {
+			t.Fatalf("an unscoped read saw %d organizations on a one-connection pool; the previous transaction's tenant survived", leaked)
+		}
+	}
+}
+
+// --- background jobs ---
+
+// tenantJobArgs is the shape every tenant-scoped job must have: the
+// organization it belongs to, carried in the job's own arguments.
+//
+// A job has no request, so nothing establishes its tenant unless the job
+// does. Putting the organization in the arguments is what makes that possible
+// and what makes it visible in the queue — an operator looking at a stuck job
+// can see which tenant it belongs to without running it.
+type tenantJobArgs struct {
+	OrgID string `json:"org_id"`
+	// Scoped selects which of the two workers below runs, so both paths can
+	// be exercised through one kind.
+	Scoped bool `json:"scoped"`
+}
+
+func (tenantJobArgs) Kind() string { return "test_tenant_probe" }
+
+// tenantJobWorker reads tenant-scoped data, with or without establishing the
+// tenant first.
+type tenantJobWorker struct {
+	river.WorkerDefaults[tenantJobArgs]
+
+	transactor *database.Transactor
+	results    chan jobResult
+}
+
+type jobResult struct {
+	orgID   string
+	scoped  bool
+	visible int
+	err     error
+}
+
+func (w *tenantJobWorker) Work(ctx context.Context, job *river.Job[tenantJobArgs]) error {
+	result := jobResult{orgID: job.Args.OrgID, scoped: job.Args.Scoped}
+
+	read := func(ctx context.Context, tx pgx.Tx) error {
+		visible, err := tenantScopedCount(ctx, tx)
+		result.visible = visible
+		return err
+	}
+
+	if job.Args.Scoped {
+		result.err = w.transactor.WithinTenant(ctx, job.Args.OrgID, transaction.Options{Access: transaction.ReadOnly}, read)
+	} else {
+		// Deliberately no tenant. This is the mistake being tested for.
+		result.err = w.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, read)
+	}
+
+	select {
+	case w.results <- result:
+	case <-ctx.Done():
+	}
+	return nil
+}
+
+// TestAJobWithNoTenantContextSeesNothing is the default-deny reaching the one
+// place with no request to inherit from.
+//
+// A worker that forgot to establish its tenant must read nothing. The
+// alternative — reading whatever the connection last carried — is the failure
+// this whole design exists to make impossible, and a background worker is
+// where it would be least likely to be noticed.
+func TestAJobWithNoTenantContextSeesNothing(t *testing.T) {
+	h := newHarness(t)
+	own := h.newTenant(t, "jobtenant")
+
+	results := make(chan jobResult, 4)
+	client := h.startJobClient(t, &tenantJobWorker{transactor: h.transactor, results: results})
+
+	if err := client.Insert(h.ctx, tenantJobArgs{OrgID: own.org.ID, Scoped: false}, nil); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	result := awaitJob(t, results)
+	if result.err != nil {
+		t.Fatalf("the job failed: %v", result.err)
+	}
+	if result.visible != 0 {
+		t.Fatalf("a job that established no tenant read %d organizations; it must read none", result.visible)
+	}
+}
+
+// TestAJobThatEstablishesItsTenantSeesOnlyThatTenant is the other half: the
+// correct pattern works, and works to exactly one tenant.
+func TestAJobThatEstablishesItsTenantSeesOnlyThatTenant(t *testing.T) {
+	h := newHarness(t)
+	own := h.newTenant(t, "jobowner")
+	h.newTenant(t, "jobother")
+
+	results := make(chan jobResult, 4)
+	client := h.startJobClient(t, &tenantJobWorker{transactor: h.transactor, results: results})
+
+	if err := client.Insert(h.ctx, tenantJobArgs{OrgID: own.org.ID, Scoped: true}, nil); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	result := awaitJob(t, results)
+	if result.err != nil {
+		t.Fatalf("the job failed: %v", result.err)
+	}
+	if result.visible != 1 {
+		t.Fatalf("a job scoped to one tenant read %d organizations, want exactly its own", result.visible)
+	}
+}
+
+// TestJobsForDifferentTenantsRunningTogetherDoNotLeak is the worker-side
+// equivalent of the pooled-connection test: several tenants' jobs worked
+// concurrently, sharing the same pool, each of which must see only its own.
+func TestJobsForDifferentTenantsRunningTogetherDoNotLeak(t *testing.T) {
+	h := newHarnessWithPoolSize(t, 3)
+
+	const tenants = 6
+	created := make([]tenant, 0, tenants)
+	for i := range tenants {
+		created = append(created, h.newTenant(t, fmt.Sprintf("job-%d", i)))
+	}
+
+	results := make(chan jobResult, tenants*4)
+	client := h.startJobClient(t, &tenantJobWorker{transactor: h.transactor, results: results})
+
+	const rounds = 4
+	for range rounds {
+		for _, own := range created {
+			if err := client.Insert(h.ctx, tenantJobArgs{OrgID: own.org.ID, Scoped: true}, nil); err != nil {
+				t.Fatalf("Insert: %v", err)
+			}
+		}
+	}
+
+	deadline := time.After(leakTestTimeout)
+	for range tenants * rounds {
+		select {
+		case result := <-results:
+			if result.err != nil {
+				t.Fatalf("a job failed: %v", result.err)
+			}
+			if result.visible != 1 {
+				t.Fatalf("a job for tenant %s read %d organizations while %d tenants' jobs ran together; it must read exactly its own",
+					result.orgID, result.visible, tenants)
+			}
+		case <-deadline:
+			t.Fatal("the tenant-scoped jobs did not all run")
+		}
+	}
+}
+
+// TestTheJobQueueItselfIsNotTenantScoped covers a mistake somebody will
+// eventually make: adding row-level security to River's own tables.
+//
+// The queue is infrastructure, not tenant data. A worker fetches jobs before
+// it knows which tenant any of them belongs to, so a policy on river_job
+// would leave every worker fetching nothing — a queue that silently stops,
+// with every job still sitting in it.
+func TestTheJobQueueItselfIsNotTenantScoped(t *testing.T) {
+	h := newHarness(t)
+
+	rows, err := h.pool.Query(h.ctx,
+		`SELECT relname FROM pg_class WHERE relname LIKE 'river%' AND relrowsecurity`)
+	if err != nil {
+		t.Fatalf("reading row-security flags: %v", err)
+	}
+	defer rows.Close()
+
+	var scoped []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scanning: %v", err)
+		}
+		scoped = append(scoped, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if len(scoped) != 0 {
+		t.Fatalf("row-level security is enabled on the job queue's own tables %v; workers fetch before they know a job's tenant, so the queue would silently stop", scoped)
+	}
+}
+
+// TestATenantTransactionCanStillEnqueue is the same point from the other
+// direction: enqueuing inside a tenant-scoped transaction — which is how a
+// tenant-scoped use case enqueues — must work.
+func TestATenantTransactionCanStillEnqueue(t *testing.T) {
+	h := newHarness(t)
+	own := h.newTenant(t, "enqueuer")
+
+	results := make(chan jobResult, 2)
+	client := h.startJobClient(t, &tenantJobWorker{transactor: h.transactor, results: results})
+
+	err := h.transactor.WithinTenant(h.ctx, own.org.ID, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
+		return client.InsertTx(ctx, tx, tenantJobArgs{OrgID: own.org.ID, Scoped: true}, nil)
+	})
+	if err != nil {
+		t.Fatalf("enqueuing inside a tenant transaction: %v", err)
+	}
+
+	result := awaitJob(t, results)
+	if result.err != nil {
+		t.Fatalf("the job failed: %v", result.err)
+	}
+	if result.visible != 1 {
+		t.Errorf("the job read %d organizations, want 1", result.visible)
+	}
+}
+
+// awaitJob waits for one job result.
+func awaitJob(t *testing.T, results <-chan jobResult) jobResult {
+	t.Helper()
+
+	select {
+	case result := <-results:
+		return result
+	case <-time.After(leakTestTimeout):
+		t.Fatal("the job never ran")
+		return jobResult{}
+	}
+}
+
+// startJobClient builds and starts a River client over the harness's pool.
+func (h *harness) startJobClient(t *testing.T, worker river.Worker[tenantJobArgs]) *jobs.Client {
+	t.Helper()
+
+	registry := jobs.NewRegistry()
+	jobs.Register(registry, worker)
+	settings, err := jobs.NewSettings(4, time.Second)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	client, err := jobs.New(h.pool, registry, settings, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Start(h.ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := client.Stop(stopCtx); err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+	return client
+}
