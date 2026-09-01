@@ -23,14 +23,14 @@ import (
 // for a doubling is not a budget; it is a note about the past.
 const (
 	// maxDefaultFiles and maxAllModulesFiles bound the file count.
-	maxDefaultFiles    = 245
-	maxAllModulesFiles = 310
+	maxDefaultFiles    = 250
+	maxAllModulesFiles = 312
 
 	// maxDefaultBytes and maxAllModulesBytes bound the total size. They are
 	// generous relative to the counts above, because prose is what most of
 	// the growth is and prose is the part worth having.
-	maxDefaultBytes    = 1_500_000
-	maxAllModulesBytes = 1_950_000
+	maxDefaultBytes    = 1_540_000
+	maxAllModulesBytes = 1_980_000
 
 	// maxSingleFileBytes bounds any one generated file. A file over this is
 	// one nobody reads, which for application-owned code means a file

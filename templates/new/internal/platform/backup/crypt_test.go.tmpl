@@ -1,0 +1,327 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package backup
+
+import (
+	"bytes"
+	"crypto/rand"
+	"errors"
+	"io"
+	"testing"
+)
+
+func testKey(t *testing.T) []byte {
+	t.Helper()
+	key, err := NewKey()
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+	return key
+}
+
+func sealed(t *testing.T, key, additional, plaintext []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	if err := seal(&out, bytes.NewReader(plaintext), key, additional); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	return out.Bytes()
+}
+
+func opened(t *testing.T, key, additional, ciphertext []byte) ([]byte, error) {
+	t.Helper()
+	var out bytes.Buffer
+	err := open(&out, bytes.NewReader(ciphertext), key, additional)
+	return out.Bytes(), err
+}
+
+// The sizes that exercise the chunk boundary. The exact multiples are the
+// interesting ones: a construction that only marks a short final read as
+// final leaves them looking exactly like a truncated file.
+func boundarySizes() []int {
+	return []int{
+		0,
+		1,
+		chunkSize - 1,
+		chunkSize,
+		chunkSize + 1,
+		2 * chunkSize,
+		2*chunkSize + 17,
+	}
+}
+
+func TestARoundTripReturnsTheSameBytes(t *testing.T) {
+	t.Parallel()
+	key := testKey(t)
+	additional := []byte(`{"format":1}`)
+
+	for _, size := range boundarySizes() {
+		plaintext := make([]byte, size)
+		if _, err := rand.Read(plaintext); err != nil {
+			t.Fatalf("generating %d bytes: %v", size, err)
+		}
+
+		restored, err := opened(t, key, additional, sealed(t, key, additional, plaintext))
+		if err != nil {
+			t.Fatalf("open of a %d-byte plaintext: %v", size, err)
+		}
+		if !bytes.Equal(restored, plaintext) {
+			t.Errorf("a %d-byte plaintext did not survive the round trip", size)
+		}
+	}
+}
+
+func TestATruncatedBackupIsRefusedRatherThanPartlyRestored(t *testing.T) {
+	t.Parallel()
+	key := testKey(t)
+	additional := []byte(`{"format":1}`)
+
+	// Three chunks, so there is a truncation point that lands on an exact
+	// chunk boundary — the case a per-chunk AEAD without a final marker
+	// would happily decrypt into a prefix of the database.
+	plaintext := make([]byte, 3*chunkSize)
+	if _, err := rand.Read(plaintext); err != nil {
+		t.Fatalf("generating a plaintext: %v", err)
+	}
+	full := sealed(t, key, additional, plaintext)
+	chunk := chunkSize + 16 // one sealed chunk: plaintext plus GCM's tag.
+
+	cuts := map[string]int{
+		"after one whole chunk":  noncePrefixBytes + chunk,
+		"after two whole chunks": noncePrefixBytes + 2*chunk,
+		"mid-chunk":              noncePrefixBytes + chunk + 500,
+		"the prefix alone":       noncePrefixBytes,
+	}
+	for name, cut := range cuts {
+		restored, err := opened(t, key, additional, full[:cut])
+		if !errors.Is(err, ErrCorrupt) {
+			t.Errorf("truncated %s: error = %v, want ErrCorrupt", name, err)
+		}
+		if bytes.Equal(restored, plaintext) {
+			t.Errorf("truncated %s: the whole plaintext came back", name)
+		}
+	}
+}
+
+// The negative check for the test above: if truncation after a whole chunk
+// were accepted, that acceptance would produce a proper prefix of the
+// plaintext. This states what a broken construction would return, so the test
+// above is known to be testing something.
+func TestTruncationWouldOtherwiseYieldAUsablePrefix(t *testing.T) {
+	t.Parallel()
+	key := testKey(t)
+	additional := []byte(`{"format":1}`)
+
+	plaintext := make([]byte, 2*chunkSize)
+	if _, err := rand.Read(plaintext); err != nil {
+		t.Fatalf("generating a plaintext: %v", err)
+	}
+	full := sealed(t, key, additional, plaintext)
+
+	// Open the first chunk by hand with the non-final nonce, which is what a
+	// construction without a final flag would do for every chunk.
+	aead, err := newAEAD(key)
+	if err != nil {
+		t.Fatalf("newAEAD: %v", err)
+	}
+	var prefix [noncePrefixBytes]byte
+	copy(prefix[:], full[:noncePrefixBytes])
+	first, err := aead.Open(nil, nonce(prefix, 0, false), full[noncePrefixBytes:noncePrefixBytes+chunkSize+aead.Overhead()], additional)
+	if err != nil {
+		t.Fatalf("opening the first chunk: %v", err)
+	}
+	if !bytes.Equal(first, plaintext[:chunkSize]) {
+		t.Fatal("the first chunk is not the first chunk of the plaintext, so this test proves nothing")
+	}
+}
+
+func TestAReorderedBackupIsRefused(t *testing.T) {
+	t.Parallel()
+	key := testKey(t)
+	additional := []byte(`{"format":1}`)
+
+	plaintext := make([]byte, 2*chunkSize)
+	if _, err := rand.Read(plaintext); err != nil {
+		t.Fatalf("generating a plaintext: %v", err)
+	}
+	full := sealed(t, key, additional, plaintext)
+	chunk := chunkSize + 16
+
+	swapped := make([]byte, len(full))
+	copy(swapped, full[:noncePrefixBytes])
+	copy(swapped[noncePrefixBytes:], full[noncePrefixBytes+chunk:noncePrefixBytes+2*chunk])
+	copy(swapped[noncePrefixBytes+chunk:], full[noncePrefixBytes:noncePrefixBytes+chunk])
+	copy(swapped[noncePrefixBytes+2*chunk:], full[noncePrefixBytes+2*chunk:])
+
+	if _, err := opened(t, key, additional, swapped); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("error = %v, want ErrCorrupt for two swapped chunks", err)
+	}
+}
+
+func TestADuplicatedChunkIsRefused(t *testing.T) {
+	t.Parallel()
+	key := testKey(t)
+	additional := []byte(`{"format":1}`)
+
+	plaintext := make([]byte, 2*chunkSize)
+	full := sealed(t, key, additional, plaintext)
+	chunk := chunkSize + 16
+
+	duplicated := make([]byte, 0, len(full)+chunk)
+	duplicated = append(duplicated, full[:noncePrefixBytes+chunk]...)
+	duplicated = append(duplicated, full[noncePrefixBytes:noncePrefixBytes+chunk]...)
+	duplicated = append(duplicated, full[noncePrefixBytes+chunk:]...)
+
+	if _, err := opened(t, key, additional, duplicated); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("error = %v, want ErrCorrupt for a duplicated chunk", err)
+	}
+}
+
+func TestDataAppendedAfterTheFinalChunkIsRefused(t *testing.T) {
+	t.Parallel()
+	key := testKey(t)
+	additional := []byte(`{"format":1}`)
+
+	full := sealed(t, key, additional, []byte("a small database"))
+	extended := append(append([]byte{}, full...), full[noncePrefixBytes:]...)
+
+	if _, err := opened(t, key, additional, extended); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("error = %v, want ErrCorrupt for data after the final chunk", err)
+	}
+}
+
+func TestAWrongKeyIsRefusedAndSaysNothingMore(t *testing.T) {
+	t.Parallel()
+	additional := []byte(`{"format":1}`)
+	full := sealed(t, testKey(t), additional, []byte("a small database"))
+
+	_, err := opened(t, testKey(t), additional, full)
+	if !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("error = %v, want ErrCorrupt", err)
+	}
+	// The wrong key and a tampered file must be indistinguishable: telling
+	// somebody probing a backup which of the two they got wrong hands them
+	// an oracle, and the caller can do nothing different with the answer.
+	tampered := append([]byte{}, full...)
+	tampered[len(tampered)-1] ^= 0x01
+	_, tamperErr := opened(t, testKey(t), additional, tampered)
+	if err.Error() != tamperErr.Error() {
+		t.Errorf("a wrong key reports %q and a tampered file reports %q; they must not be distinguishable", err, tamperErr)
+	}
+}
+
+func TestAlteredAdditionalDataIsRefused(t *testing.T) {
+	t.Parallel()
+	key := testKey(t)
+	full := sealed(t, key, []byte(`{"schema_version":9}`), []byte("a small database"))
+
+	if _, err := opened(t, key, []byte(`{"schema_version":8}`), full); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("error = %v, want ErrCorrupt when the header the body was bound to changed", err)
+	}
+}
+
+func TestEveryFileGetsItsOwnNoncePrefix(t *testing.T) {
+	t.Parallel()
+	key := testKey(t)
+	additional := []byte(`{"format":1}`)
+
+	// A repeated (key, nonce) pair under GCM is catastrophic, so the prefix
+	// carries the burden of separating files sealed with one key.
+	seen := make(map[string]struct{})
+	const files = 64
+	for range files {
+		full := sealed(t, key, additional, []byte("a small database"))
+		seen[string(full[:noncePrefixBytes])] = struct{}{}
+	}
+	if len(seen) != files {
+		t.Errorf("%d distinct nonce prefixes across %d files; they must all differ", len(seen), files)
+	}
+}
+
+func TestAKeyOfTheWrongLengthIsRefused(t *testing.T) {
+	t.Parallel()
+	for _, length := range []int{0, 16, 31, 33, 64} {
+		if err := seal(io.Discard, bytes.NewReader(nil), make([]byte, length), nil); !errors.Is(err, ErrKeyLength) {
+			t.Errorf("seal with a %d-byte key: error = %v, want ErrKeyLength", length, err)
+		}
+		if err := open(io.Discard, bytes.NewReader(nil), make([]byte, length), nil); !errors.Is(err, ErrKeyLength) {
+			t.Errorf("open with a %d-byte key: error = %v, want ErrKeyLength", length, err)
+		}
+	}
+}
+
+func TestNewKeyIsTheRightLengthAndNotConstant(t *testing.T) {
+	t.Parallel()
+	first, second := testKey(t), testKey(t)
+	if len(first) != KeyBytes {
+		t.Errorf("NewKey returned %d bytes, want %d", len(first), KeyBytes)
+	}
+	if bytes.Equal(first, second) {
+		t.Error("two generated keys are identical")
+	}
+}
+
+func FuzzARoundTripReturnsTheSameBytes(f *testing.F) {
+	f.Add([]byte(nil))
+	f.Add([]byte("a small database"))
+	f.Add(bytes.Repeat([]byte("x"), chunkSize))
+
+	key, err := NewKey()
+	if err != nil {
+		f.Fatalf("NewKey: %v", err)
+	}
+	additional := []byte(`{"format":1}`)
+
+	f.Fuzz(func(t *testing.T, plaintext []byte) {
+		var ciphertext bytes.Buffer
+		if err := seal(&ciphertext, bytes.NewReader(plaintext), key, additional); err != nil {
+			t.Fatalf("seal: %v", err)
+		}
+		var restored bytes.Buffer
+		if err := open(&restored, bytes.NewReader(ciphertext.Bytes()), key, additional); err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		if !bytes.Equal(restored.Bytes(), plaintext) {
+			t.Errorf("a %d-byte plaintext did not survive the round trip", len(plaintext))
+		}
+	})
+}
+
+// A sealed backup must never be openable by chance, whatever the input is.
+func FuzzCorruptionIsAlwaysCaught(f *testing.F) {
+	f.Add(uint32(0), byte(1))
+	f.Add(uint32(7), byte(0x80))
+
+	key, err := NewKey()
+	if err != nil {
+		f.Fatalf("NewKey: %v", err)
+	}
+	additional := []byte(`{"format":1}`)
+	plaintext := []byte("a small database, sealed once and then attacked")
+	var buf bytes.Buffer
+	if err := seal(&buf, bytes.NewReader(plaintext), key, additional); err != nil {
+		f.Fatalf("seal: %v", err)
+	}
+	full := buf.Bytes()
+
+	f.Fuzz(func(t *testing.T, at uint32, flip byte) {
+		if flip == 0 {
+			t.Skip("flipping no bits leaves the backup intact")
+		}
+		damaged := append([]byte{}, full...)
+		damaged[int(at%uint32(len(damaged)))] ^= flip
+
+		if bytes.Equal(damaged, full) {
+			t.Skip("the damage was a no-op")
+		}
+		var restored bytes.Buffer
+		err := open(&restored, bytes.NewReader(damaged), key, additional)
+		if err == nil && bytes.Equal(restored.Bytes(), plaintext) {
+			// Damage to the nonce prefix alone cannot be detected by the
+			// AEAD — it changes which nonce is tried, so it fails — and
+			// damage anywhere else fails the tag. There is no byte whose
+			// change leaves the plaintext intact.
+			t.Errorf("flipping %#x at byte %d was not detected", flip, int(at%uint32(len(full))))
+		}
+	})
+}

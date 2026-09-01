@@ -133,6 +133,37 @@ sqlc and to reject any generated Go output outside that feature's `store/`.
 The target is an explicit no-op before the first query-owning feature exists
 and is included in `make all`.
 
+## Backups
+
+```sh
+./{{.AppName}} db backup  -out /backups/{{.AppName}}-$(date +%F).backup
+./{{.AppName}} db verify  -from /backups/{{.AppName}}-<date>.backup
+./{{.AppName}} db restore -from /backups/{{.AppName}}-<date>.backup -confirm <database>
+```
+
+These are commands of this binary, not of `nise`: `nise db` builds the
+application from source first, which is right for `migrate` and `status` on a
+developer machine and wrong for a production backup.
+
+They need `pg_dump` and `pg_restore` on `PATH` and refuse clearly without
+them. The deployment image carries neither, deliberately — run backups from an
+operator machine, a scheduled job, or a sidecar.
+
+`BACKUP_ENCRYPTION_KEY` is required: base64 of exactly 32 bytes, from
+`openssl rand -base64 32`. There is no default and nothing is generated, so
+there is no way to end up with a backup nobody can read.
+
+`db verify` **restores** the backup into a scratch database and checks the
+schema arrives where the backup says it should, then drops it. It is not a
+checksum: a backup nobody has restored is a hypothesis. Run it on a schedule.
+
+`db restore` replaces this database's contents and takes `-confirm <database
+name>` rather than a bare flag, because a bare flag gets pasted from shell
+history.
+
+`internal/platform/backup/` is yours. The framework's `docs/backups.md`
+describes the file format, the encryption, and what each refusal means.
+
 ## Database transactions
 
 Business use cases own transaction boundaries through

@@ -91,6 +91,15 @@ model.
   codes** for every enrolled account until each re-enrols
   ([ADR 0023](adr/0023-second-factor-design.md)). Recovery codes are stored
   only as digests.
+- **A leaked `BACKUP_ENCRYPTION_KEY` opens every backup ever taken, and there
+  is no rotation procedure.** The encryption is sound
+  ([backups](backups.md)); re-encrypting an archive under a new key is not
+  implemented, so separating a compromised key from the backups it opens means
+  taking fresh ones and destroying the old, on the operator's own schedule.
+- **A backup is a complete copy of the data with none of the access control**,
+  and where it is kept is entirely the operator's decision. This framework
+  encrypts it and verifies that it restores; it does not move it anywhere,
+  expire it, or notice that nobody has taken one for a month.
 
 ## Operator responsibility
 

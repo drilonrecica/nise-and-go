@@ -1,0 +1,108 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package app
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"{{.ModulePath}}/internal/platform/backup"
+)
+
+func backupSettings(t *testing.T, databaseURL string) backup.Settings {
+	t.Helper()
+	key, err := backup.NewKey()
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+	settings, err := backup.NewSettings(databaseURL, "", key)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	return settings
+}
+
+// The confirmation is the only thing standing between a mistyped path and a
+// replaced production database, so it is worth its own test.
+func TestRestoreIsRefusedWithoutTheDatabaseName(t *testing.T) {
+	t.Parallel()
+	settings := backupSettings(t, "postgres://app@127.0.0.1:5432/production")
+
+	tests := map[string]struct {
+		confirmation string
+		wants        []string
+	}{
+		"nothing at all": {
+			confirmation: "",
+			wants:        []string{"production", "-confirm production"},
+		},
+		// The message must name both, because somebody who typed another
+		// database's name is pointed somewhere they do not think they are.
+		"another database": {
+			confirmation: "staging",
+			wants:        []string{"production", "staging", "DATABASE_URL"},
+		},
+		"nearly right": {
+			confirmation: "Production",
+			wants:        []string{"production", "Production"},
+		},
+		"a bare yes": {
+			confirmation: "yes",
+			wants:        []string{"production", "yes"},
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			err := confirmRestore(settings, tc.confirmation)
+			if err == nil {
+				t.Fatalf("a restore confirmed with %q was accepted", tc.confirmation)
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestRestoreIsAllowedWhenTheNameMatches(t *testing.T) {
+	t.Parallel()
+	settings := backupSettings(t, "postgres://app@127.0.0.1:5432/production")
+	if err := confirmRestore(settings, "production"); err != nil {
+		t.Fatalf("confirmRestore: %v", err)
+	}
+}
+
+// Backup and verify take no confirmation, because neither destroys anything.
+// Requiring one for them would make the restore's confirmation a habit rather
+// than a decision.
+func TestOnlyRestoreAsksForConfirmation(t *testing.T) {
+	t.Parallel()
+	for _, action := range BackupActions {
+		if action == "restore" {
+			continue
+		}
+		// An empty path stops before any of these reaches configuration, so
+		// this exercises the argument checking rather than a database.
+		_, err := RunBackup(context.Background(), BackupRequest{Action: action})
+		if err == nil || !strings.Contains(err.Error(), "path is required") {
+			t.Errorf("%s with no path: error = %v, want a missing-path error", action, err)
+		}
+	}
+}
+
+func TestAnUnknownBackupActionNamesTheOnesThatExist(t *testing.T) {
+	t.Parallel()
+	_, err := RunBackup(context.Background(), BackupRequest{Action: "archive", Path: "/x"})
+	if err == nil {
+		t.Fatal("RunBackup accepted an unknown action")
+	}
+	for _, action := range BackupActions {
+		if !strings.Contains(err.Error(), action) {
+			t.Errorf("the error does not mention %q: %v", action, err)
+		}
+	}
+}

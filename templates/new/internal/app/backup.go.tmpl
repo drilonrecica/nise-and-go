@@ -1,0 +1,109 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"{{.ModulePath}}/internal/platform/backup"
+	"{{.ModulePath}}/internal/platform/config"
+)
+
+// BackupRequest is one explicit backup-surface invocation.
+type BackupRequest struct {
+	// Action is "backup", "restore", or "verify".
+	Action string
+	// Path is where the backup is written to or read from.
+	Path string
+	// Confirmation is the database name the operator typed. Restore refuses
+	// unless it matches the database that is about to be replaced.
+	Confirmation string
+}
+
+// BackupActions are the actions RunBackup accepts.
+var BackupActions = []string{"backup", "restore", "verify"}
+
+// IsBackupAction reports whether an action belongs to this surface rather
+// than to RunDatabase.
+func IsBackupAction(action string) bool {
+	for _, known := range BackupActions {
+		if action == known {
+			return true
+		}
+	}
+	return false
+}
+
+// RunBackup executes one backup action.
+//
+// Every action loads the key, including verify. A verification that could run
+// without the key would be verifying nothing but the header, and the
+// difference between that and a real verification is invisible in the output.
+func RunBackup(ctx context.Context, request BackupRequest) (backup.Result, error) {
+	if !IsBackupAction(request.Action) {
+		return backup.Result{}, fmt.Errorf("backup action must be one of %v, found %q", BackupActions, request.Action)
+	}
+	if request.Path == "" {
+		return backup.Result{}, errors.New("a backup path is required")
+	}
+
+	cfg, _, err := config.Load()
+	if err != nil {
+		return backup.Result{}, fmt.Errorf("loading configuration: %w", err)
+	}
+	key, err := config.BackupKey()
+	if err != nil {
+		return backup.Result{}, err
+	}
+	settings, err := backup.NewSettings(cfg.DatabaseURL.Reveal(), cfg.DatabasePassword.Reveal(), key)
+	if err != nil {
+		return backup.Result{}, err
+	}
+
+	switch request.Action {
+	case "backup":
+		return backup.Create(ctx, settings, request.Path)
+	case "verify":
+		return backup.Verify(ctx, settings, request.Path)
+	case "restore":
+		if err := confirmRestore(settings, request.Confirmation); err != nil {
+			return backup.Result{}, err
+		}
+		return backup.Restore(ctx, settings, request.Path)
+	}
+	// Unreachable: IsBackupAction has already accepted the action, and every
+	// accepted one is handled above. The compiler wants a return anyway, and
+	// a panic here would be a worse answer than an error nobody can trigger.
+	return backup.Result{}, fmt.Errorf("unhandled backup action %q", request.Action)
+}
+
+// confirmRestore refuses a restore whose confirmation does not name the
+// database it is about to overwrite.
+//
+// A boolean -confirm flag would be typed once out of habit and thereafter
+// pasted from shell history, which is the same as not asking. Naming the
+// database means the operator has to look at which one they are pointed at —
+// and the usual way this goes wrong is being pointed at the wrong one.
+func confirmRestore(settings backup.Settings, confirmation string) error {
+	target, err := backup.DatabaseName(settings)
+	if err != nil {
+		return err
+	}
+	switch confirmation {
+	case target:
+		return nil
+	case "":
+		return fmt.Errorf("restore replaces the contents of database %q and was not confirmed; "+
+			"re-run with -confirm %s once you are sure this is the database you mean", target, target)
+	default:
+		// Naming the mismatch rather than repeating the prompt: somebody who
+		// typed a different database's name is pointed at a different
+		// database than they think they are, and that is the thing worth
+		// saying out loud.
+		return fmt.Errorf("this restore would replace database %q and the confirmation names %q; "+
+			"check DATABASE_URL points where you mean before re-running with -confirm %s",
+			target, confirmation, target)
+	}
+}

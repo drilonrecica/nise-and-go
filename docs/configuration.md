@@ -329,6 +329,26 @@ sending account to anything on the path. And a server that does not offer
 plaintext — a silent downgrade makes an active attacker's job a matter of
 stripping one capability line.
 
+## Generated backup settings
+
+See [backups](backups.md) for the format and the commands.
+
+| Variable | Default | Constraint |
+|---|---:|---|
+| `BACKUP_ENCRYPTION_KEY` | — | required by the backup commands; base64 of exactly 32 bytes |
+
+It accepts the `_FILE` indirection like every other secret.
+
+This is the one setting that is **not** part of the `Config` the server loads.
+It is read by `db backup`, `db restore`, and `db verify` and by nothing else,
+so a web replica that will never take a backup does not hold the key that
+opens every one of them.
+
+There is no default and nothing is generated. An unset `CURSOR_SIGNING_KEY`
+can fall back to an ephemeral key because the cost is cursors that stop
+verifying after a restart; an unset backup key would produce a backup nobody
+can ever read, and that is discovered on the day it is needed.
+
 ## Generated session settings
 
 See [sessions](sessions.md) for the cookie and lifecycle contracts.

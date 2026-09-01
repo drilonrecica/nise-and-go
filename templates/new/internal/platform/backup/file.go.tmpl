@@ -1,0 +1,150 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package backup
+
+import (
+	"bufio"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+)
+
+// The file layout:
+//
+//	[ "NISEBAK1" | uint32 header length | header JSON | nonce prefix | sealed chunks... ]
+//
+// The magic comes first so a wrong path fails with "this is not a backup"
+// rather than with a decryption error, which reads like a wrong key and sends
+// whoever is holding the key looking in the wrong place.
+//
+// The header is in the clear. An operator holding a directory of backups
+// needs to know which database, which schema version, and when — and needing
+// the key to find out is how a restore drill turns into a search. It is still
+// authenticated: its exact bytes are the additional authenticated data for
+// every sealed chunk, so a header edited to claim a different schema version
+// makes the body fail to open rather than restoring under a false
+// description.
+//
+// There is deliberately no checksum of the plaintext anywhere in the file.
+// The AEAD is the integrity mechanism, and a second, weaker one beside it
+// would invite somebody to check the cheap one and call the backup verified.
+
+// maxHeaderBytes bounds the declared header length, so a corrupted or hostile
+// file cannot ask this process to allocate an arbitrary amount before
+// anything has been authenticated.
+const maxHeaderBytes = 64 << 10
+
+// writeHeader writes the magic, the length, and the header bytes.
+func writeHeader(w io.Writer, header []byte) error {
+	if len(header) > maxHeaderBytes {
+		return fmt.Errorf("backup: the header is %d bytes, over the %d-byte limit", len(header), maxHeaderBytes)
+	}
+	if _, err := io.WriteString(w, Magic); err != nil {
+		return fmt.Errorf("backup: writing the file marker: %w", err)
+	}
+	var length [4]byte
+	// #nosec G115 -- the length is bounded by maxHeaderBytes three lines
+	// above, which is far below uint32's range.
+	binary.BigEndian.PutUint32(length[:], uint32(len(header)))
+	if _, err := w.Write(length[:]); err != nil {
+		return fmt.Errorf("backup: writing the header length: %w", err)
+	}
+	if _, err := w.Write(header); err != nil {
+		return fmt.Errorf("backup: writing the header: %w", err)
+	}
+	return nil
+}
+
+// body carries a backup's still-encrypted contents together with the exact
+// header bytes it is bound to.
+type body struct {
+	// header is the parsed description.
+	header Header
+	// additional is the header's bytes as they were read, not as they would
+	// re-marshal. Re-encoding to check the signature would make the check
+	// depend on this Go version's map ordering and number formatting, and
+	// would eventually reject a backup this application wrote itself.
+	additional []byte
+	// reader is positioned at the nonce prefix.
+	reader io.Reader
+}
+
+// readHeader parses a backup's front matter and leaves reader positioned at
+// the sealed body.
+func readHeader(reader io.Reader) (body, error) {
+	marker := make([]byte, len(Magic))
+	if _, err := io.ReadFull(reader, marker); err != nil {
+		return body{}, fmt.Errorf("%w: it is too short to be one", ErrNotABackup)
+	}
+	if string(marker) != Magic {
+		return body{}, ErrNotABackup
+	}
+
+	var length [4]byte
+	if _, err := io.ReadFull(reader, length[:]); err != nil {
+		return body{}, fmt.Errorf("%w: the header length is missing", ErrNotABackup)
+	}
+	declared := binary.BigEndian.Uint32(length[:])
+	if declared == 0 || declared > maxHeaderBytes {
+		return body{}, fmt.Errorf("%w: the header length is %d, which is not plausible", ErrNotABackup, declared)
+	}
+
+	additional := make([]byte, declared)
+	if _, err := io.ReadFull(reader, additional); err != nil {
+		return body{}, fmt.Errorf("%w: the header is shorter than it declares", ErrNotABackup)
+	}
+
+	var header Header
+	if err := json.Unmarshal(additional, &header); err != nil {
+		return body{}, fmt.Errorf("%w: the header does not parse: %s", ErrNotABackup, err.Error())
+	}
+	if header.Magic != Magic {
+		return body{}, ErrNotABackup
+	}
+	if header.Format != Format {
+		return body{}, fmt.Errorf("%w: it is format %d and this binary reads format %d",
+			ErrFormat, header.Format, Format)
+	}
+	return body{header: header, additional: additional, reader: reader}, nil
+}
+
+// openBackup opens a backup file and reads its header.
+//
+// The returned close function is the caller's to call on every path,
+// including the ones that fail.
+func openBackup(path string) (Header, body, func(), error) {
+	// #nosec G304 -- opening the path the operator named is what this
+	// command is. There is no traversal to prevent: the caller is the person
+	// holding the backup, not a request.
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Header{}, body{}, func() {}, fmt.Errorf("backup: there is no backup at %s", path)
+		}
+		return Header{}, body{}, func() {}, fmt.Errorf("backup: opening %s: %w", path, err)
+	}
+	closer := func() { _ = file.Close() }
+
+	parsed, err := readHeader(bufio.NewReaderSize(file, 1<<20))
+	if err != nil {
+		closer()
+		return Header{}, body{}, func() {}, fmt.Errorf("%w (%s)", err, path)
+	}
+	return parsed.header, parsed, closer, nil
+}
+
+// countingReader counts what passes through it, so a backup can report how
+// much it dumped without buffering any of it.
+type countingReader struct {
+	reader io.Reader
+	count  int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.reader.Read(p)
+	c.count += int64(n)
+	return n, err
+}
