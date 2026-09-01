@@ -4,12 +4,15 @@ package reservation
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 
 	"github.com/drilonrecica/nise-and-go/runtime/transaction"
 
@@ -17,6 +20,7 @@ import (
 	"workbench/internal/features/resource"
 	"workbench/internal/platform/database"
 	"workbench/internal/platform/database/dbtest"
+	"workbench/internal/platform/jobs"
 )
 
 const testTimeout = 90 * time.Second
@@ -91,7 +95,7 @@ func newHarnessWithPoolSize(t *testing.T, maxConns int) *harness {
 	if err != nil {
 		t.Fatalf("NewTransactor: %v", err)
 	}
-	reservations, err := New(transactor)
+	reservations, err := New(transactor, Options{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -173,3 +177,54 @@ func (h *harness) book(t *testing.T, fromHours, toHours int) Reservation {
 
 // holderActor is the reservation's own holder, with no management permission.
 func (h *harness) holderActor() Actor { return Actor{UserID: h.holder} }
+
+// jobClient builds a real River client against the test database, so the
+// transactional-enqueue guarantee can be checked against the actual job table
+// rather than against a fake that agrees with the code by construction.
+func (h *harness) jobClient(t *testing.T) *jobs.Client {
+	t.Helper()
+
+	settings, err := jobs.NewSettings(1, time.Second)
+	if err != nil {
+		t.Fatalf("jobs.NewSettings: %v", err)
+	}
+	registry := jobs.NewRegistry()
+	// A worker per kind, because River refuses a client whose queue can hold
+	// a job it has no worker for — and a queue that silently accepts one is a
+	// job nobody will ever run.
+	jobs.Register(registry, river.WorkFunc(func(context.Context, *river.Job[ConfirmationArgs]) error { return nil }))
+	jobs.Register(registry, river.WorkFunc(func(context.Context, *river.Job[ReminderArgs]) error { return nil }))
+	jobs.Register(registry, river.WorkFunc(func(context.Context, *river.Job[NoShowCheckArgs]) error { return nil }))
+
+	client, err := jobs.New(h.pool, registry, settings, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("jobs.New: %v", err)
+	}
+	return client
+}
+
+// queuedKinds reads the job table directly. Reading it rather than asking the
+// client is the point: the guarantee is about rows, and a client-side count
+// would agree with the code that wrote it.
+func (h *harness) queuedKinds(t *testing.T) []string {
+	t.Helper()
+
+	rows, err := h.pool.Query(h.ctx, `SELECT kind FROM river_job ORDER BY id`)
+	if err != nil {
+		t.Fatalf("reading the job queue: %v", err)
+	}
+	defer rows.Close()
+
+	var kinds []string
+	for rows.Next() {
+		var kind string
+		if err := rows.Scan(&kind); err != nil {
+			t.Fatalf("scanning a job: %v", err)
+		}
+		kinds = append(kinds, kind)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("reading the job queue: %v", err)
+	}
+	return kinds
+}

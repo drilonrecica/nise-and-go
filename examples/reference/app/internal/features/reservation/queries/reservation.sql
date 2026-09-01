@@ -102,3 +102,4 @@ WHERE (sqlc.narg(resource_id)::uuid IS NULL OR resource_id = sqlc.narg(resource_
   AND (sqlc.arg(states)::text[] = '{}' OR state = ANY (sqlc.arg(states)::text[]))
   AND (sqlc.narg(window_start)::timestamptz IS NULL
        OR during && tstzrange(sqlc.narg(window_start)::timestamptz, sqlc.narg(window_end)::timestamptz, '[)'));
+
