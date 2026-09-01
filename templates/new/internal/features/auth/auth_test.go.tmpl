@@ -5,6 +5,8 @@ package auth
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/drilonrecica/nise-and-go/runtime/observability"
 	"github.com/drilonrecica/nise-and-go/runtime/session"
 
 	migrationdb "{{.ModulePath}}/db"
@@ -96,7 +99,24 @@ func newHarness(t *testing.T, lifetime session.Lifetime) *harness {
 	}
 	databaseURL := testDatabase.URL().Reveal()
 	databasePassword := testDatabase.Password().Reveal()
-	pool, err := database.Open(ctx, databaseURL, databasePassword, settings, database.OpenOptions{})
+	// The query tracer is installed here, not only in production, because
+	// the round-trip budgets in budget_test.go count through it. Without
+	// it they would observe nothing and pass at any cost — which is a
+	// mistake this harness made until a test that checks the counter
+	// itself said so.
+	queryMetrics, err := database.NewQueryMetrics(observability.NewRegistry())
+	if err != nil {
+		t.Fatalf("NewQueryMetrics: %v", err)
+	}
+	tracer, err := database.NewQueryTracer(database.QueryTraceOptions{
+		SlowThreshold: time.Second,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Metrics:       queryMetrics,
+	})
+	if err != nil {
+		t.Fatalf("NewQueryTracer: %v", err)
+	}
+	pool, err := database.Open(ctx, databaseURL, databasePassword, settings, database.OpenOptions{Tracer: tracer})
 	if err != nil {
 		t.Fatalf("open test pool: %v", err)
 	}
