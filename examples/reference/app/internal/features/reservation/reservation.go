@@ -158,14 +158,22 @@ type Reservations struct {
 	// the check-out precondition and the no-show sweep are testable without
 	// waiting, which is what makes them tested at all.
 	now func() time.Time
+	// options are the collaborators a change has effects through — audit,
+	// jobs, notifications. Every one is optional and every one is called
+	// inside the transaction that made the change; see effects.go.
+	options Options
 }
 
 // New builds it.
-func New(transactor *database.Transactor) (*Reservations, error) {
+//
+// The collaborators are optional. A process that never runs a worker still
+// creates reservations, and a test of the state machine should not have to
+// construct a job client to check that returning twice is refused.
+func New(transactor *database.Transactor, options Options) (*Reservations, error) {
 	if transactor == nil {
 		return nil, errors.New("reservation: a transaction runner is required")
 	}
-	return &Reservations{transactor: transactor, now: time.Now}, nil
+	return &Reservations{transactor: transactor, now: time.Now, options: options}, nil
 }
 
 // WithClock returns a copy that reads the time from now.
@@ -213,15 +221,22 @@ func (r *Reservations) Create(ctx context.Context, orgID string, request Request
 
 	var row store.Reservation
 	err = r.transactor.WithinTenant(ctx, orgID, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
-		var txErr error
-		row, txErr = store.New(tx).CreateReservation(ctx, store.CreateReservationParams{
+		created, txErr := store.New(tx).CreateReservation(ctx, store.CreateReservationParams{
 			ResourceID: resourceID,
 			HolderID:   holderID,
 			StartsAt:   timestamptz(request.StartsAt),
 			EndsAt:     timestamptz(request.EndsAt),
 			Note:       note,
 		})
-		return txErr
+		if txErr != nil {
+			return txErr
+		}
+		row = created
+		booked := toReservation(created)
+		if effectErr := r.recordAndEnqueue(ctx, tx, ActionCreated, request.HolderID, booked); effectErr != nil {
+			return effectErr
+		}
+		return r.scheduleConfirmationAndReminder(ctx, tx, orgID, booked)
 	})
 	if err != nil {
 		switch {
@@ -294,7 +309,7 @@ func (a Actor) mayAct(holderID string) bool {
 // instrument is actually in use — which is the question the calendar exists to
 // answer.
 func (r *Reservations) CheckOut(ctx context.Context, orgID, reservationID string, actor Actor) (Reservation, error) {
-	return r.transition(ctx, orgID, reservationID, actor, StateBooked,
+	return r.transition(ctx, orgID, reservationID, actor, StateBooked, ActionCheckedOut,
 		func(ctx context.Context, queries *store.Queries, current store.Reservation) (store.Reservation, error) {
 			if r.now().Before(rangeLower(current.During)) {
 				return store.Reservation{}, ErrNotStarted
@@ -317,7 +332,7 @@ func (r *Reservations) Return(ctx context.Context, orgID, reservationID string, 
 		return Reservation{}, fmt.Errorf("%w: the photo key is longer than %d characters", ErrInvalid, MaxPhotoKeyBytes)
 	}
 
-	return r.transition(ctx, orgID, reservationID, actor, StateCheckedOut,
+	return r.transition(ctx, orgID, reservationID, actor, StateCheckedOut, ActionReturned,
 		func(ctx context.Context, queries *store.Queries, current store.Reservation) (store.Reservation, error) {
 			return queries.ReturnReservation(ctx, store.ReturnReservationParams{
 				ID:             current.ID,
@@ -333,7 +348,7 @@ func (r *Reservations) Return(ctx context.Context, orgID, reservationID string, 
 // hands, and the honest end for that is a return. Cancelling would free the
 // slot in the calendar while the instrument was still gone.
 func (r *Reservations) Cancel(ctx context.Context, orgID, reservationID string, actor Actor) (Reservation, error) {
-	return r.transition(ctx, orgID, reservationID, actor, StateBooked,
+	return r.transition(ctx, orgID, reservationID, actor, StateBooked, ActionCancelled,
 		func(ctx context.Context, queries *store.Queries, current store.Reservation) (store.Reservation, error) {
 			return queries.CancelReservation(ctx, store.CancelReservationParams{ID: current.ID})
 		})
@@ -350,6 +365,7 @@ func (r *Reservations) transition(
 	orgID, reservationID string,
 	actor Actor,
 	required State,
+	action string,
 	act func(context.Context, *store.Queries, store.Reservation) (store.Reservation, error),
 ) (Reservation, error) {
 	id, err := parseUUID(reservationID)
@@ -390,7 +406,7 @@ func (r *Reservations) transition(
 			return actErr
 		}
 		row = updated
-		return nil
+		return r.recordAndEnqueue(ctx, tx, action, actor.UserID, toReservation(updated))
 	})
 	if err != nil {
 		for _, known := range []error{ErrNotFound, ErrNotHolder, ErrWrongState, ErrNotStarted} {
@@ -414,9 +430,22 @@ func (r *Reservations) transition(
 func (r *Reservations) SweepNoShows(ctx context.Context, orgID string, cutoff time.Time) ([]Reservation, error) {
 	var rows []store.Reservation
 	err := r.transactor.WithinTenant(ctx, orgID, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
-		var txErr error
-		rows, txErr = store.New(tx).MarkNoShows(ctx, store.MarkNoShowsParams{Cutoff: timestamptz(cutoff)})
-		return txErr
+		marked, txErr := store.New(tx).MarkNoShows(ctx, store.MarkNoShowsParams{Cutoff: timestamptz(cutoff)})
+		if txErr != nil {
+			return txErr
+		}
+		rows = marked
+		for _, marked := range rows {
+			swept := toReservation(marked)
+			// No actor: the sweep is the system, not a person.
+			if effectErr := r.recordAndEnqueue(ctx, tx, ActionNoShow, "", swept); effectErr != nil {
+				return effectErr
+			}
+			if effectErr := r.notifyNoShow(ctx, tx, swept); effectErr != nil {
+				return effectErr
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("reservation: sweeping no-shows: %w", err)
