@@ -120,6 +120,24 @@ does not work safely, so completing it qualifies under (1) — and doing so is
 still an addition, made deliberately, rather than a feature that arrived
 because somebody had the afternoon.
 
+### The freeze is enforced, and not yet in force
+
+Three parts of the V0.1 surface can be enumerated, so `test/freeze` fails the
+build if any of them grows: the profile set, the module set, and every
+dependency a generated project pins — by name, against
+[dependencies](dependencies.md), and by count, so one cannot be added by
+documenting it in the same commit. Adding a dependency now requires writing
+the paragraph that justifies it, which is where a justification either exists
+or visibly does not.
+
+What that cannot hold is the part nobody can enumerate: a runtime package, a
+generated file, another option on an existing command. That stays a judgement.
+
+The freeze itself has **not been declared**, because the blueprint's own
+sequence is that the V0.1 checklist passes first and it does not — see the
+gaps above. Declaring it now would freeze three optional modules in a state
+where their server side works and nothing can reach it.
+
 ## Validation path
 
 1. Implement the deterministic CLI and golden-profile foundation.
