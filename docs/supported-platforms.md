@@ -6,7 +6,7 @@ what the `nise` CLI is *released* for, what developing Nise itself is
 request. A platform only belongs in the third list if a CI job genuinely runs
 on it — this page does not claim testing that does not happen.
 
-## Release platforms (planned, M10)
+## Release platforms
 
 The release target is Linux, macOS, and Windows, each on amd64 and arm64 —
 six binaries per release:
@@ -17,9 +17,24 @@ six binaries per release:
 | macOS | yes | yes |
 | Windows | yes | yes |
 
-No release workflow exists yet. Building and publishing these six binaries is
-M10 scope; see [checks.md](checks.md) for why `ci.yml` deliberately does not
-attempt it.
+`.goreleaser.yaml` builds exactly these six, and
+`.github/workflows/release.yml` runs it when a `v*` tag is pushed. Every
+binary is static (`CGO_ENABLED=0`) and built with `-trimpath` and the commit's
+timestamp, so two builds of one tag are byte-identical and a checksum somebody
+else computes means something.
+
+This table and the configuration are checked against each other:
+`test/release` fails if the release builds a pair this page does not promise,
+or promises one it does not build. A table nobody verifies is a table that
+eventually lies.
+
+Run the cross-compile locally before tagging:
+
+```sh
+make release-snapshot
+```
+
+CI does not build all six on every push; see [checks.md](checks.md) for why.
 
 ## Development-supported platforms
 
@@ -60,12 +75,17 @@ runners:
 | `macos-latest` | macOS | arm64 (Apple Silicon) |
 | `windows-latest` | Windows | amd64 |
 
-This is three of the six release-target combinations. CI does **not**
-exercise Linux/arm64, macOS/amd64 (Intel), or Windows/arm64 — there is no job
-that builds or runs tests on those three combinations today. If a future
-release build targets one of those three and it breaks, CI as it stands would
-not have caught it; that gap is closed by M10 (the release workflow), not by
-this task, which is explicitly out of scope here (see checks.md).
+This is three of the six release-target combinations. CI does **not** *run
+tests* on Linux/arm64, macOS/amd64 (Intel), or Windows/arm64 — no job executes
+a test binary on those three.
+
+They are, however, **built**. `make release-snapshot` cross-compiles all six,
+and the release workflow does the same before drafting a release, so a build
+constraint or an import that only resolves on one platform fails before
+anything is published. What remains uncovered is runtime behavior on those
+three: a cross-compiled binary that builds but misbehaves on Windows/arm64
+would not be caught by anything here. That is stated rather than closed —
+GitHub offers no hosted runner for two of the three.
 
 The `lint`, `generation-diff`, `docs-check`, and PostgreSQL migration-matrix
 jobs run on `ubuntu-latest` only. The first three are static-analysis and
@@ -81,3 +101,10 @@ portability.
   above.
 - `make check` runs unmodified in a POSIX `/bin/sh` on Linux and macOS (the
   two platforms this task's agent had available to verify directly).
+- `test/release` reads `.goreleaser.yaml` and the release table above and
+  fails if they disagree.
+- `make release-snapshot` was run: six archives, each containing the binary,
+  `LICENSE`, and `README.md`, plus `checksums.txt`. The Linux/amd64 binary is
+  statically linked and reports its stamped version; the macOS and Windows
+  binaries are Mach-O and PE32+ respectively. Two consecutive runs produced
+  identical checksums.

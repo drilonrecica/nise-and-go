@@ -1,0 +1,86 @@
+name: Release
+
+# Cuts a release when a version tag is pushed.
+#
+# The release is created as a **draft**. Nothing is installable until a human
+# has looked at the six archives and the generated notes and pressed publish —
+# a tag pushed by mistake is then a draft to delete rather than a version
+# somebody has already installed and a `go install` proxy has already cached.
+on:
+  push:
+    tags:
+      - "v*"
+  # A dry run against the current default branch, for changing this workflow
+  # without pushing a tag to find out whether it works.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.5"
+  # Keep in sync with the Makefile by hand; nothing enforces that they agree,
+  # for the same reason nothing enforces the Go version pin (ADR 0008).
+  GORELEASER_VERSION: "v2.17.1"
+
+jobs:
+  release:
+    name: Build and draft the release
+    runs-on: ubuntu-latest
+    permissions:
+      # Creating the draft release and uploading the archives to it.
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # GoReleaser reads the tag history to build the changelog, and a
+          # shallow clone gives it one commit and therefore no changelog.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      # Installed through the module proxy, which checksum-verifies it, rather
+      # than through goreleaser's own action. Same reasoning as the scanners
+      # in security.yml: one fewer third-party action to pin by SHA and audit,
+      # and the version is pinned in exactly one visible place.
+      - name: Install GoReleaser ${{ env.GORELEASER_VERSION }}
+        run: go install github.com/goreleaser/goreleaser/v2@${{ env.GORELEASER_VERSION }}
+
+      # The full hermetic check, before anything is built for distribution.
+      # CI has already run it on the commit, but a tag can be pushed at any
+      # object in history — including one CI never saw — and "the tests passed
+      # on some ancestor" is not the claim a release makes.
+      - name: Verify
+        run: make check
+
+      # A cross-compile of all six targets on a runner that is one of them.
+      # This is the step that catches a build constraint or an import that
+      # only resolves on Linux.
+      - name: Build and draft the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: goreleaser release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The workflow_dispatch path builds everything and publishes nothing, so
+      # this workflow can be changed and proven without cutting a release.
+      - name: Build a snapshot (dry run)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: goreleaser release --snapshot --clean --skip=publish
+
+      - name: Upload the artifacts for inspection
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-artifacts
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+          retention-days: 7
