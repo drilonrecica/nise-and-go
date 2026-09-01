@@ -52,6 +52,46 @@ The optional organization module combines application checks with PostgreSQL RLS
   vulnerability database changes without this repository changing.
 - Release checksums, SBOMs, and build attestations.
 
+## Residual risks
+
+Stated rather than mitigated. Each of these is real, none is addressed by
+anything on this page, and every one belongs in a deployment's own threat
+model.
+
+- **Application-owned code can bypass every convention here.** Generated code
+  is yours; a use case that skips the permission check is a use case that
+  skips the permission check.
+- **Row-level security can create false confidence.** It is configured
+  correctly here and checked at startup, and a schema that *looks* complete
+  while enforcing nothing is a real failure mode of the technology. See
+  [multitenancy](multitenancy.md).
+- **No malware scanning happens unless you configure a scanner**, and a
+  generated project configures none. A genuine PDF can carry an exploit for a
+  reader ([ADR 0027](adr/0027-upload-malware-scanning-boundary.md)).
+- **Job payloads are readable by anyone who can read the database.** Put
+  identifiers in them, not secrets — a single-use token in a job argument is a
+  token stored in a queue.
+- **A presigned upload URL cannot be revoked.** It is a signature; disabling
+  an account does not reach one already issued. The one-hour cap bounds the
+  exposure rather than removing it.
+- **Notification content is stored already rendered**, deliberately, so the
+  record matches what somebody was told. The table therefore holds message
+  text as sensitive as the events it describes.
+- **The audit log records that something happened, not that it was
+  authorized.** It is written by the application that made the decision.
+- **SMTP and object-storage providers receive the data needed to serve you**,
+  including invitation links. That is a data-sharing decision you are making.
+- **Availability depends on PostgreSQL**, because sessions and jobs share it.
+  That is the cost of not adding a broker: one datastore to run, and one to
+  lose.
+- **Compromised developer or CI credentials can subvert a release.**
+- **A privileged user can misuse what they were granted.** Audit records make
+  it reconstructable afterwards; nothing makes it impossible.
+- With the TOTP module, **an attacker who reads `totp_secrets` can compute
+  codes** for every enrolled account until each re-enrols
+  ([ADR 0023](adr/0023-second-factor-design.md)). Recovery codes are stored
+  only as digests.
+
 ## Operator responsibility
 
 Nise cannot compensate for leaked secrets, exposed databases, missing updates, untested backups, permissive proxy, CDN, or firewall rules, insecure custom code, or incorrect authorization policies. Each real application requires its own threat model.
