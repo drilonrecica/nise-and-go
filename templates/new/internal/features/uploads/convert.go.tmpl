@@ -33,6 +33,7 @@ func toUpload(row store.Upload) Upload {
 		ExpiresAt:    timeOf(row.ExpiresAt),
 		FinalizedAt:  timeOf(row.FinalizedAt),
 		RejectedBy:   row.RejectedReason.String,
+		ScannedBy:    row.ScannedBy.String,
 	}
 }
 

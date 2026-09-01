@@ -1,0 +1,95 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package uploads
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+)
+
+// Scanner examines a stored object before it leaves quarantine.
+//
+// This application ships no implementation, and that is a decision rather
+// than an omission — see docs/adr/0027-upload-malware-scanning-boundary.md.
+// Bundling an engine would put a daemon and several hundred megabytes into
+// every project that accepts a profile picture; keeping its signatures
+// current would mean fetching them, and this framework performs no implicit
+// network access of any kind. A scanner with stale signatures is worse than
+// none, because it produces a "clean" verdict somebody believes.
+//
+// So the boundary is here, and the implementation is the application's. It
+// knows what its deployment already runs; this package does not.
+//
+// # What an implementation must do
+//
+// Read the whole of r, or explicitly decide not to. The reader is the stored
+// object, still in quarantine and reachable by nobody.
+//
+// Return nil to accept, and an error to refuse. A refusal is an ordinary
+// rejection: the object is deleted, the row records the reason, and the
+// uploader learns no more than they learn about any other refusal.
+//
+// Return an error that wraps [ErrScanUnavailable] when the scanner itself
+// could not run — the daemon is down, the socket refused, the timeout
+// elapsed. That is treated as a failure to finalize rather than as a
+// rejection, because "we could not check" and "we checked and it is
+// malicious" are different facts and only one of them should delete
+// somebody's file.
+//
+// # What it is called with
+//
+// One scan per finalization, after the cheap checks and before the move. An
+// object that is the wrong type or the wrong size is refused without paying
+// for a scan, and an object a scanner refuses has never existed at a
+// reachable key.
+type Scanner interface {
+	// Name identifies the scanner in the upload's record. It is stored, so
+	// it should say what examined the object — "clamd", "clamscan 1.4" —
+	// rather than "scanner".
+	Name() string
+	// Scan reads the stored object and reports whether it is acceptable.
+	Scan(ctx context.Context, r io.Reader) error
+}
+
+// ErrScanUnavailable marks a scanner that could not run, as distinct from one
+// that ran and refused.
+//
+// The distinction decides what happens to somebody's file. A scanner that
+// refused means delete it; a scanner that could not be reached means try
+// again later, because deleting a file on the strength of a broken daemon is
+// data loss caused by an outage.
+var ErrScanUnavailable = errors.New("uploads: the malware scanner could not run")
+
+// MaxScanBytes bounds what is handed to a scanner.
+//
+// It is MaxUploadBytes, because an object larger than that has already been
+// refused. The bound is restated here so that a scanner cannot be handed an
+// unbounded stream if the upload limit is ever raised without thinking about
+// what that does to a scan.
+const MaxScanBytes = MaxUploadBytes
+
+// scan runs the configured scanner over the stored object, and reports the
+// name to record.
+//
+// It returns "" and no error when no scanner is configured. That is the
+// default a generated application ships with, it is recorded per upload as a
+// NULL scanned_by, and it is stated in docs/security.md rather than left for
+// somebody to discover.
+func (u *Uploads) scan(ctx context.Context, upload Upload) (string, error) {
+	if u.scanner == nil {
+		return "", nil
+	}
+
+	reader, err := u.store.Get(ctx, upload.StorageKey)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = reader.Close() }()
+
+	if err := u.scanner.Scan(ctx, io.LimitReader(reader, MaxScanBytes)); err != nil {
+		return "", fmt.Errorf("%s: %w", u.scanner.Name(), err)
+	}
+	return u.scanner.Name(), nil
+}

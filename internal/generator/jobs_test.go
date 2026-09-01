@@ -764,3 +764,62 @@ func TestTenantContextCannotEscapeAConnectionOrAJob(t *testing.T) {
 		t.Error("the tenant-scoped job does not carry its organization in its arguments")
 	}
 }
+
+// TestTheMalwareScanningBoundaryIsDefinedAndEmpty pins M8-013 (ADR 0027): the
+// interface exists, nothing implements it, and the two orderings that make it
+// meaningful are in the code rather than only in the ADR.
+func TestTheMalwareScanningBoundaryIsDefinedAndEmpty(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, allModulesOptions())
+
+	scan := content["internal/features/uploads/scan.go"]
+	for _, fragment := range []string{
+		"type Scanner interface {",
+		"Scan(ctx context.Context, r io.Reader) error",
+		"ErrScanUnavailable",
+	} {
+		if !strings.Contains(scan, fragment) {
+			t.Errorf("internal/features/uploads/scan.go lacks %q", fragment)
+		}
+	}
+
+	// Nothing in a generated project may implement it. Shipping an engine
+	// would mean shipping a signature feed, which would mean implicit
+	// network access this project does not perform.
+	for path, body := range content {
+		if strings.HasSuffix(path, ".go") && strings.Contains(body, "clamav") {
+			t.Errorf("%s references a bundled scanner engine", path)
+		}
+	}
+
+	// The scan runs after the cheap checks and before the move: a wrong-type
+	// object never costs a scan, and a refused one never exists at a
+	// reachable key.
+	lifecycle := content["internal/features/uploads/uploads.go"]
+	finalize := lifecycle[strings.Index(lifecycle, "func (u *Uploads) Finalize("):]
+	typeCheck := strings.Index(finalize, "u.accepted[measured.contentType]")
+	scanCall := strings.Index(finalize, "u.scan(ctx, upload)")
+	move := strings.Index(finalize, "u.store.Move(")
+	if typeCheck < 0 || scanCall < 0 || move < 0 {
+		t.Fatal("Finalize does not check the type, scan, and move")
+	}
+	if typeCheck >= scanCall {
+		t.Error("the scan runs before the type check, so an object that was going to be refused anyway costs a scan")
+	}
+	if scanCall >= move {
+		t.Error("the scan runs after the move, so a refused object exists at a reachable key first")
+	}
+
+	// An unavailable scanner must not be a rejection, or an outage deletes
+	// people's files.
+	if !strings.Contains(finalize, "errors.Is(err, ErrScanUnavailable)") {
+		t.Error("Finalize does not distinguish an unreachable scanner from a refusal")
+	}
+
+	// And the verdict is recorded, so an already-available object can be
+	// asked whether it was scanned.
+	if !strings.Contains(content["db/migrations/00013_uploads.sql"], "scanned_by text") {
+		t.Error("nothing records which scanner examined an object")
+	}
+}

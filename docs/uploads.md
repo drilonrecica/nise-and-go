@@ -127,3 +127,62 @@ scripting.
 
 Widen it deliberately, with `uploads.WithAcceptedTypes`, and remember that
 every entry is a type some browser will render.
+
+## Malware scanning
+
+**A generated application ships no malware scanner, and says so.** See
+[ADR 0027](adr/0027-upload-malware-scanning-boundary.md) for the reasoning;
+the short version is that bundling an engine would put a daemon and several
+hundred megabytes into every project that accepts a profile picture, keeping
+its signatures current would mean fetching them, and a scanner with stale
+signatures is worse than none because it produces a "clean" verdict somebody
+believes.
+
+What the framework provides is the boundary:
+
+```go
+type Scanner interface {
+    Name() string
+    Scan(ctx context.Context, r io.Reader) error
+}
+
+uploads.New(transactor, store, uploads.WithScanner(myScanner))
+```
+
+The scan runs **inside `Finalize`, after the cheap checks and before the
+move**. That position is the decision:
+
+- After the type and size checks, so an object that was going to be refused
+  anyway never costs a scan.
+- Before the move, so an object a scanner refuses has never existed at a
+  reachable key. There is no window in which it is available, and no cleanup
+  to get wrong.
+- Over the stored bytes, for the same reason everything else in this lifecycle
+  is.
+
+### "Could not check" is not "malicious"
+
+An implementation returns an error wrapping `uploads.ErrScanUnavailable` when
+the scanner itself could not run — the daemon is down, the socket refused, the
+timeout elapsed.
+
+That is treated as a failure to finalize, not as a rejection. The upload stays
+staged, the object stays in quarantine, and finalization can be retried once
+the scanner is back. **Deleting somebody's file on the strength of a broken
+daemon is data loss caused by an outage**, and the two facts are different
+enough that the interface makes you say which one you mean.
+
+### What is recorded
+
+`uploads.scanned_by` holds the scanner's name, or NULL. It exists so that "was
+this scanned, and by what" is answerable for an object that is already
+available — the question asked after a scanner is added, and after one turns
+out to have been broken for a month.
+
+### The residual risk, stated
+
+With no scanner configured, a generated application stores whatever passes its
+type and size checks. A PDF can be a real PDF and still carry an exploit for a
+reader; a PNG can be a real PNG and still be the payload half of something
+else. That risk is real, it is not mitigated by anything on this page, and it
+belongs in every deployment's own threat model.

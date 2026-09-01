@@ -59,6 +59,14 @@ CREATE TABLE uploads (
     -- for the audit trail and the operator, not for the uploader, who should
     -- not learn which of several checks they failed.
     rejected_reason text,
+    -- The name of the scanner that examined this object, or NULL.
+    --
+    -- A generated application ships no malware scanner and says so (ADR
+    -- 0027). This column exists so that "was this scanned, and by what" is
+    -- answerable for an object that is already available — which is the
+    -- question asked after a scanner is added, and after one turns out to
+    -- have been broken for a month.
+    scanned_by text,
 
     CONSTRAINT uploads_storage_key_unique UNIQUE (storage_key),
     CONSTRAINT uploads_storage_key_length CHECK (char_length(storage_key) BETWEEN 1 AND 512),
@@ -68,6 +76,7 @@ CREATE TABLE uploads (
     CONSTRAINT uploads_declared_size_positive CHECK (declared_size > 0),
     CONSTRAINT uploads_size_nonnegative CHECK (size IS NULL OR size >= 0),
     CONSTRAINT uploads_checksum_length CHECK (checksum IS NULL OR octet_length(checksum) = 32),
+    CONSTRAINT uploads_scanned_by_length CHECK (scanned_by IS NULL OR char_length(scanned_by) BETWEEN 1 AND 64),
     CONSTRAINT uploads_expires_after_staged CHECK (expires_at > staged_at),
     -- A finalized row has a verdict and a timestamp; a staged one has
     -- neither. The state and the columns describing it cannot disagree,
