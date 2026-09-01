@@ -245,7 +245,8 @@ func (r *Roles) Holders(ctx context.Context, role string, limit int) ([]Holder, 
 	var holders []Holder
 	err := r.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := store.New(tx).ListRoleHolders(ctx, store.ListRoleHoldersParams{
-			Role:  role,
+			Role: role,
+			// #nosec G115 -- limit is clamped above to a bound far inside int32.
 			Limit: int32(limit),
 		})
 		if err != nil {

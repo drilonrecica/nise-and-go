@@ -97,10 +97,11 @@ func (s *Stream) Run(ctx context.Context) error {
 	s.started = true
 	s.mu.Unlock()
 
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil
-		}
+	// A canceled context is how this loop is asked to stop, not a failure to
+	// report: the component that runs it cancels on shutdown. So the loop
+	// condition is cancellation, and every exit from it returns nil — there
+	// is no path on which a stopped listener is an error.
+	for ctx.Err() == nil {
 		if err := s.listen(ctx); err != nil && ctx.Err() == nil {
 			s.logger.Warn("the notification listener stopped; clients fall back to polling",
 				slog.String("detail", err.Error()))
@@ -111,6 +112,7 @@ func (s *Stream) Run(ctx context.Context) error {
 			}
 		}
 	}
+	return nil
 }
 
 // listen holds one connection until it fails or ctx is done.

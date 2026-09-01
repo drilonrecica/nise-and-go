@@ -216,6 +216,12 @@ func TestADeliveryFailureDoesNotEraseTheNotification(t *testing.T) {
 		t.Fatalf("markFailed: %v", err)
 	}
 
+	// The channel delivered nothing, which is the premise of everything
+	// below: the notification survives an attempt that did not happen.
+	if delivered := h.email.delivered(); len(delivered) != 0 {
+		t.Fatalf("the failing channel reported %d deliveries", len(delivered))
+	}
+
 	// The notification is untouched: still there, still unread.
 	stored, err := h.notifications.List(h.ctx, h.recipient, 10, time.Time{})
 	if err != nil {

@@ -117,7 +117,7 @@ func TestGeneratedAuthenticationScreens(t *testing.T) {
 	sessionModule := content["frontend/src/lib/session.svelte.ts"]
 	for _, fragment := range []string{
 		"export function safeNext(",
-		"!next.startsWith('/') || next.startsWith('//')",
+		"!next?.startsWith('/') || next.startsWith('//')",
 	} {
 		if !strings.Contains(sessionModule, fragment) {
 			t.Errorf("session.svelte.ts lacks %q", fragment)

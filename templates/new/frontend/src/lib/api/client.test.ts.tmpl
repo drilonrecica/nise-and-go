@@ -91,23 +91,24 @@ describe('API client', () => {
 		} satisfies components['schemas']['APIRootCollection'];
 		expect(collection).toEqual({ items: [], page: { has_more: false } });
 
-		if (false) {
-			expectTypeOf(client.get('/')).toEqualTypeOf<
-				Promise<components['schemas']['APIRoot']>
-			>();
-			// @ts-expect-error collection items are required and never null.
-			void ({ items: null, page: { has_more: false } } satisfies components['schemas']['APIRootCollection']);
-			// @ts-expect-error collection page metadata is required and never null.
-			void ({ items: [], page: null } satisfies components['schemas']['APIRootCollection']);
-			// @ts-expect-error collection items cannot be omitted.
-			void ({ page: { has_more: false } } satisfies components['schemas']['APIRootCollection']);
-			// @ts-expect-error generic envelope members are not in the collection contract.
-			void ({ items: [], page: { has_more: false }, data: [] } satisfies components['schemas']['APIRootCollection']);
-			// @ts-expect-error /missing is not in the generated OpenAPI paths.
-			void client.get('/missing');
-			// @ts-expect-error the generated root path has no POST operation.
-			void client.request('post', '/');
-		}
+		// Compile-time only. vitest erases expectTypeOf at runtime, so these
+		// assert against the generated types during type-checking and do
+		// nothing when the test runs.
+		expectTypeOf(client.get('/')).toEqualTypeOf<
+			Promise<components['schemas']['APIRoot']>
+		>();
+		// @ts-expect-error collection items are required and never null.
+		void ({ items: null, page: { has_more: false } } satisfies components['schemas']['APIRootCollection']);
+		// @ts-expect-error collection page metadata is required and never null.
+		void ({ items: [], page: null } satisfies components['schemas']['APIRootCollection']);
+		// @ts-expect-error collection items cannot be omitted.
+		void ({ page: { has_more: false } } satisfies components['schemas']['APIRootCollection']);
+		// @ts-expect-error generic envelope members are not in the collection contract.
+		void ({ items: [], page: { has_more: false }, data: [] } satisfies components['schemas']['APIRootCollection']);
+		// @ts-expect-error /missing is not in the generated OpenAPI paths.
+		void client.get('/missing');
+		// @ts-expect-error the generated root path has no POST operation.
+		void client.request('post', '/');
 	});
 
 	it('types cursor pages as opaque tokens that are absent, never null', () => {
@@ -124,20 +125,21 @@ describe('API client', () => {
 		expect(lastPage.page.next_cursor).toBeUndefined();
 		expect(Object.hasOwn(lastPage.page, 'next_cursor')).toBe(false);
 
-		if (false) {
-			expectTypeOf<components['schemas']['Cursor']>().toEqualTypeOf<string>();
-			expectTypeOf<components['schemas']['CursorPage']>().not.toEqualTypeOf<
-				components['schemas']['Page']
-			>();
-			// @ts-expect-error an absent cursor is omitted, never null.
-			void ({ items: [], page: { has_more: false, next_cursor: null } } satisfies components['schemas']['APIRootCursorCollection']);
-			// @ts-expect-error has_more is required on every cursor page.
-			void ({ items: [], page: {} } satisfies components['schemas']['APIRootCursorCollection']);
-			// @ts-expect-error offset members do not belong to the cursor contract.
-			void ({ items: [], page: { has_more: false, total: 0 } } satisfies components['schemas']['APIRootCursorCollection']);
-			// @ts-expect-error a cursor page is not interchangeable with the neutral page.
-			void ({ items: [], page: { has_more: false, next_cursor: 'nc1.a.b.c' } } satisfies components['schemas']['APIRootCollection']);
-		}
+		// Compile-time only. vitest erases expectTypeOf at runtime, so these
+		// assert against the generated types during type-checking and do
+		// nothing when the test runs.
+		expectTypeOf<components['schemas']['Cursor']>().toEqualTypeOf<string>();
+		expectTypeOf<components['schemas']['CursorPage']>().not.toEqualTypeOf<
+			components['schemas']['Page']
+		>();
+		// @ts-expect-error an absent cursor is omitted, never null.
+		void ({ items: [], page: { has_more: false, next_cursor: null } } satisfies components['schemas']['APIRootCursorCollection']);
+		// @ts-expect-error has_more is required on every cursor page.
+		void ({ items: [], page: {} } satisfies components['schemas']['APIRootCursorCollection']);
+		// @ts-expect-error offset members do not belong to the cursor contract.
+		void ({ items: [], page: { has_more: false, total: 0 } } satisfies components['schemas']['APIRootCursorCollection']);
+		// @ts-expect-error a cursor page is not interchangeable with the neutral page.
+		void ({ items: [], page: { has_more: false, next_cursor: 'nc1.a.b.c' } } satisfies components['schemas']['APIRootCollection']);
 	});
 
 	it('types report pages as a separate page/size/total contract', () => {
@@ -147,19 +149,20 @@ describe('API client', () => {
 		};
 		expect(report.page.total_pages).toBe(3);
 
-		if (false) {
-			expectTypeOf<components['schemas']['ReportPage']>().not.toEqualTypeOf<
-				components['schemas']['CursorPage']
-			>();
-			// @ts-expect-error every reporting member is required.
-			void ({ items: [], page: { page: 1, size: 25 } } satisfies components['schemas']['APIRootReportCollection']);
-			// @ts-expect-error cursor members do not belong to the reporting contract.
-			void ({ items: [], page: { page: 1, size: 25, total: 0, total_pages: 0, has_more: false, next_cursor: 'nc1.a.b.c' } } satisfies components['schemas']['APIRootReportCollection']);
-			// @ts-expect-error a cursor page cannot stand in for a report page.
-			void ({ items: [], page: { has_more: false } } satisfies components['schemas']['APIRootReportCollection']);
-			// @ts-expect-error a report total is a number, never null for an empty report.
-			void ({ items: [], page: { page: 1, size: 25, total: null, total_pages: 0, has_more: false } } satisfies components['schemas']['APIRootReportCollection']);
-		}
+		// Compile-time only. vitest erases expectTypeOf at runtime, so these
+		// assert against the generated types during type-checking and do
+		// nothing when the test runs.
+		expectTypeOf<components['schemas']['ReportPage']>().not.toEqualTypeOf<
+			components['schemas']['CursorPage']
+		>();
+		// @ts-expect-error every reporting member is required.
+		void ({ items: [], page: { page: 1, size: 25 } } satisfies components['schemas']['APIRootReportCollection']);
+		// @ts-expect-error cursor members do not belong to the reporting contract.
+		void ({ items: [], page: { page: 1, size: 25, total: 0, total_pages: 0, has_more: false, next_cursor: 'nc1.a.b.c' } } satisfies components['schemas']['APIRootReportCollection']);
+		// @ts-expect-error a cursor page cannot stand in for a report page.
+		void ({ items: [], page: { has_more: false } } satisfies components['schemas']['APIRootReportCollection']);
+		// @ts-expect-error a report total is a number, never null for an empty report.
+		void ({ items: [], page: { page: 1, size: 25, total: null, total_pages: 0, has_more: false } } satisfies components['schemas']['APIRootReportCollection']);
 	});
 
 	it('parses a valid Problem body and exposes its code', async () => {

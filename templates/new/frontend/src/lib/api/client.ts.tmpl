@@ -361,7 +361,7 @@ function apiURL(
 	params?: Record<string, string | number>,
 	query?: Record<string, unknown>
 ): string {
-	const filled = path.replace(/\{([^}]+)\}/g, (whole, name: string) => {
+	const filled = path.replace(/\{([^}]+)\}/g, (_whole, name: string) => {
 		const value = params?.[name];
 		if (value === undefined) {
 			throw new Error(`API path ${path} needs the parameter ${name}`);

@@ -40,6 +40,16 @@ type transactionOwnedUseCase struct {
 	transactor *Transactor
 }
 
+// The two shapes above exist to prove, at compile time, that a sqlc-style
+// Querier composes with a Transactor without either package knowing about the
+// other — which is the whole claim of ADR 0015. Referencing them here is what
+// makes that a check rather than dead code the linter is right to flag.
+var (
+	_ = newSQLCStyleQueries
+	_ = (*sqlcStyleQueries).probe
+	_ = transactionOwnedUseCase.execute
+)
+
 func (u transactionOwnedUseCase) execute(ctx context.Context) error {
 	return u.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
 		queries := newSQLCStyleQueries(tx)

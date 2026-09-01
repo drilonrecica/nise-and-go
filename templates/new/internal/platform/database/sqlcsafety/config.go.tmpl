@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -81,23 +82,45 @@ func ValidateConfig(content []byte) error {
 // without query-owning features is valid and remains an honest no-op.
 func ValidateProject(root string) error {
 	features := filepath.Join(root, "internal", "features")
-	return filepath.WalkDir(features, func(path string, entry fs.DirEntry, walkErr error) error {
+	// The walk is confined by os.Root, so a symlink planted inside the
+	// feature tree cannot make a read reach outside it. Reading by path
+	// inside a WalkDir callback is the symlink TOCTOU shape: the entry is
+	// resolved once during the walk and again when the file is opened, and
+	// anything can change between the two. Confinement is the operating
+	// system's here rather than this function's care.
+	confined, err := os.OpenRoot(features)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// A project with no features yet is valid, and remains an
+			// honest no-op.
+			return nil
+		}
+		return fmt.Errorf("opening the feature root: %w", err)
+	}
+	defer func() { _ = confined.Close() }()
+
+	return fs.WalkDir(confined.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() || entry.Name() != "sqlc.yaml" {
 			return nil
 		}
-		content, err := os.ReadFile(path) // #nosec G304 -- path is discovered only beneath the application's fixed feature root.
+		file, err := confined.Open(path)
 		if err != nil {
 			return err
 		}
+		content, err := io.ReadAll(file)
+		closeErr := file.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
 		if err := ValidateConfig(content); err != nil {
-			relative, relErr := filepath.Rel(root, path)
-			if relErr != nil {
-				relative = path
-			}
-			return fmt.Errorf("%s: %w", filepath.ToSlash(relative), err)
+			relative := filepath.ToSlash(filepath.Join("internal", "features", path))
+			return fmt.Errorf("%s: %w", relative, err)
 		}
 		return nil
 	})

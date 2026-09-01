@@ -70,7 +70,7 @@ export function isCurrent(item: NavItem, pathname: string): boolean {
 	if (pathname === item.href) {
 		return true;
 	}
-	const prefix = item.href.endsWith('/') ? item.href : item.href + '/';
+	const prefix = item.href.endsWith('/') ? item.href : `${item.href}/`;
 	return pathname.startsWith(prefix);
 }
 
@@ -102,7 +102,7 @@ export function breadcrumbs(pathname: string, sections: NavSection[] = navigatio
 	const trail: Crumb[] = [{ href: '/', label: known.get('/') ?? 'Overview', current: segments.length === 0 }];
 	let href = '';
 	for (const [index, segment] of segments.entries()) {
-		href += '/' + segment;
+		href += `/${segment}`;
 		trail.push({
 			href,
 			label: known.get(href) ?? humanize(segment),

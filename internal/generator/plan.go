@@ -164,6 +164,8 @@ type templateData struct {
 	XCryptoVersion      string
 	GoVersion           string
 	GoImageTag          string
+	BiomeVersion        string
+	GolangciLintVersion string
 	NodeVersion         string
 	NodeMajor           string
 	PnpmVersion         string
@@ -212,6 +214,8 @@ func newTemplateData(opts Options) templateData {
 		XCryptoVersion:         XCryptoVersion,
 		GoVersion:              GoDirective,
 		GoImageTag:             GoImageTag,
+		BiomeVersion:           BiomeVersion,
+		GolangciLintVersion:    GolangciLintVersion,
 		NodeVersion:            NodeVersion,
 		NodeMajor:              NodeMajor,
 		PnpmVersion:            PnpmVersion,

@@ -114,6 +114,14 @@ func validateBucket(bucket string) error {
 
 // S3 stores objects in an S3-compatible service.
 //
+// Every request this type makes is flagged by gosec's SSRF rule, and
+// .golangci.yml excludes that rule for this file. The reason belongs here as
+// well as there: the URL is built from S3_ENDPOINT and S3_BUCKET — operator
+// configuration, validated by NewS3Settings at startup — plus a key
+// ValidateKey has already restricted to an allowlisted character set. Nothing
+// a request supplies reaches the host. The analyzer cannot see that the
+// endpoint is configuration, because to it a string is a string.
+//
 // It speaks the four verbs an object store needs and nothing else. There is
 // no multipart upload, no lifecycle configuration, no bucket creation, and no
 // listing — an application that needs to enumerate objects has a database

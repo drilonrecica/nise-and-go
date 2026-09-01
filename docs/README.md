@@ -57,6 +57,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Dependency allowlist](dependencies.md)
 - [Supported platforms](supported-platforms.md)
 - [Checks](checks.md)
+- [Linting](linting.md)
 - [Deployment](deployment.md)
 - [Versioning and compatibility](versioning.md)
 - [Public roadmap](roadmap.md)

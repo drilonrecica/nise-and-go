@@ -405,7 +405,8 @@ func (r *Recorder) Sweep(ctx context.Context, retention time.Duration, limit int
 	err := r.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		removed, err = store.New(tx).DeleteAuditEventsBefore(ctx, store.DeleteAuditEventsBeforeParams{
-			Cutoff:     pgtype.Timestamptz{Time: cutoff, Valid: true},
+			Cutoff: pgtype.Timestamptz{Time: cutoff, Valid: true},
+			// #nosec G115 -- limit is clamped above to a bound far inside int32.
 			SweepLimit: int32(limit),
 		})
 		if err != nil {

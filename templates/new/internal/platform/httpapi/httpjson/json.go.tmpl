@@ -40,7 +40,11 @@ func Decode(w http.ResponseWriter, r *http.Request, expectedMediaType string, ds
 	}
 
 	limited := http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
-	defer limited.Close()
+	// The close error is discarded explicitly rather than ignored. This is
+	// a request body being drained after it has already been read in full:
+	// there is nothing left to fail at, and nothing a caller could do about
+	// it if there were.
+	defer func() { _ = limited.Close() }()
 	data, err := io.ReadAll(limited)
 	if err != nil {
 		var tooLarge *http.MaxBytesError
@@ -58,20 +62,29 @@ func Decode(w http.ResponseWriter, r *http.Request, expectedMediaType string, ds
 		return fmt.Errorf("%w: expected %s", ErrUnsupportedMediaType, expectedMediaType)
 	}
 	if err := rejectDuplicateKeys(data); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+		return fmt.Errorf("%w: %s", ErrInvalidJSON, err.Error())
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
+	// The decoder's own message is included as text, and its identity is
+	// deliberately kept out of the chain.
+	//
+	// encoding/json returns io.EOF and io.ErrUnexpectedEOF for input that
+	// ends early, and this package's callers use errors.Is(err, io.EOF) to
+	// mean "the request had no body at all" — a different answer, with a
+	// different status code. Wrapping the cause would make a truncated body
+	// indistinguishable from an absent one. The package's own fuzz test
+	// caught exactly that when this was briefly written as %w.
 	if err := decoder.Decode(dst); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+		return fmt.Errorf("%w: %s", ErrInvalidJSON, err.Error())
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			err = errors.New("more than one JSON value")
 		}
-		return fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+		return fmt.Errorf("%w: %s", ErrInvalidJSON, err.Error())
 	}
 	return nil
 }

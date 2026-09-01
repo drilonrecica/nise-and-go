@@ -46,7 +46,11 @@ func NewSettings(maxConns, minConns int, maxLifetime, maxIdle, healthPeriod, con
 		return Settings{}, err
 	}
 	settings := Settings{
-		MaxConns:          int32(maxConns),
+		// #nosec G115 -- both are validated above against explicit bounds
+		// far inside int32; the errs slice is joined immediately before
+		// this, so an out-of-range value never reaches here.
+		MaxConns: int32(maxConns),
+		// #nosec G115 -- see above.
 		MinConns:          int32(minConns),
 		MaxConnLifetime:   maxLifetime,
 		MaxConnIdleTime:   maxIdle,

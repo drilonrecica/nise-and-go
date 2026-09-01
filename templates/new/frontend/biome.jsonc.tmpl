@@ -1,0 +1,105 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+//
+// Biome rather than ESLint, for the same reason .golangci.yml is a short
+// curated list rather than every linter that exists: ESLint is a linter plus
+// a plugin ecosystem, and this project would acquire a parser, a plugin, a
+// config preset, and their transitive versions before it had checked a single
+// file. Biome is one dependency and a configuration a reader can hold in
+// their head.
+//
+// It is one of three checks and does not replace either of the others:
+//
+//   - `biome check`   — TypeScript and the script blocks inside .svelte.
+//   - `svelte-check`  — Svelte's own type checking, including the markup.
+//   - `scripts/`      — this project's own rules: Svelte 5 runes only, and
+//                       the colour-contrast floor in app.css.
+//
+// A .jsonc rather than a .json because two of the rules below are switched
+// off for a reason worth writing down, and a configuration that cannot
+// explain itself gets changed by whoever finds it inconvenient.
+{
+  "$schema": "https://biomejs.dev/schemas/{{.BiomeVersion}}/schema.json",
+  "vcs": { "enabled": false, "clientKind": "git", "useIgnoreFile": false },
+  "files": {
+    "includes": [
+      "src/**/*.ts",
+      "src/**/*.js",
+      "src/**/*.svelte",
+      "e2e/**/*.ts",
+      "scripts/**/*.mjs",
+      // Generated: openapi-typescript owns this file and replaces it
+      // wholesale, so linting it means either editing something about to be
+      // overwritten or suppressing findings in it forever.
+      "!src/lib/api/schema.d.ts",
+      // Paraglide's compiled message modules, likewise.
+      "!src/lib/paraglide/**"
+    ]
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        // console.log left in shipped code is a debugging session somebody
+        // forgot to end. warn and error are how a browser reports something
+        // a user should know about, so those stay.
+        "noConsole": { "level": "error", "options": { "allow": ["warn", "error"] } }
+      },
+      "style": {
+        // A non-null assertion is a claim the type system cannot check. In
+        // production code it is worth justifying; in a test it is how you
+        // reach into a fixture you just built, so it is allowed there — see
+        // the override below.
+        "noNonNullAssertion": "error",
+        "useConst": "error"
+      }
+    }
+  },
+  // Formatting is Prettier's or nobody's. Two formatters disagreeing over
+  // the same files is worse than one, and this project has not adopted
+  // either — so Biome lints and leaves the layout alone.
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false },
+  "overrides": [
+    {
+      // Biome parses a .svelte file's <script> block and not its markup, so
+      // it cannot see that `let { children } = $props()` is used by
+      // `{@render children()}`, or that a `$derived` value appears in a
+      // template expression. Left on, these two rules report every component
+      // in the project — 187 findings in a freshly generated one — and the
+      // only way to keep them would be an underscore prefix or a suppression
+      // comment on almost every declaration, which is a linter nobody reads
+      // the output of any more.
+      //
+      // svelte-check does see the markup and does report a genuinely unused
+      // declaration, so the defect class is covered. It is covered by the
+      // tool that can actually tell.
+      "includes": ["**/*.svelte"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnusedVariables": "off",
+            "noUnusedImports": "off"
+          }
+        }
+      }
+    },
+    {
+      // In a test, `!` reaches into a fixture the test itself just built,
+      // and a wrong assumption fails the test rather than a user's request.
+      // The rule earns its keep in production code and only produces noise
+      // here.
+      "includes": ["**/*.test.ts", "**/*.browser.test.ts", "e2e/**/*.ts"],
+      "linter": {
+        "rules": {
+          "style": { "noNonNullAssertion": "off" }
+        }
+      }
+    }
+  ]
+}

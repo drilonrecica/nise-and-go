@@ -130,7 +130,7 @@ func (o *Organizations) Create(ctx context.Context, name, slug, creatorUserID st
 	}
 	creator, err := parseUUID(creatorUserID)
 	if err != nil {
-		return Organization{}, fmt.Errorf("%w: %s", ErrInvalid, err)
+		return Organization{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 
 	var row store.Organization
@@ -216,7 +216,7 @@ func (o *Organizations) AddMember(ctx context.Context, orgID, userID, role strin
 	}
 	user, err := parseUUID(userID)
 	if err != nil {
-		return Member{}, fmt.Errorf("%w: %s", ErrInvalid, err)
+		return Member{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 
 	var row store.OrganizationMember
@@ -291,6 +291,7 @@ func (o *Organizations) Members(ctx context.Context, orgID string, limit int) ([
 	var rows []store.OrganizationMember
 	err = o.transactor.WithinTenant(ctx, orgID, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var txErr error
+		// #nosec G115 -- limit is clamped to MaxMemberPageSize above.
 		rows, txErr = store.New(tx).ListMembers(ctx, store.ListMembersParams{OrgID: org, Limit: int32(limit)})
 		return txErr
 	})

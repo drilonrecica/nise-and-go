@@ -101,10 +101,15 @@ func (db *recordingDirectPGXDB) CopyFrom(ctx context.Context, table pgx.Identifi
 	return 2, db.copyErr
 }
 
+// directPGXProbeKey is this test's own context key type.
+type directPGXProbeKey struct{}
+
 func TestReviewedDirectPGXAdapter(t *testing.T) {
 	t.Parallel()
-	contextKey := struct{}{}
-	ctx := context.WithValue(context.Background(), contextKey, "sentinel")
+	// A named type, not an anonymous empty struct: every anonymous struct{}
+	// is the same type, so two packages using one as a context key would
+	// silently read each other's values.
+	ctx := context.WithValue(context.Background(), directPGXProbeKey{}, "sentinel")
 	db := &recordingDirectPGXDB{}
 	adapter := newReviewedDirectPGXAdapter(db)
 

@@ -439,7 +439,8 @@ func (s *Sessions) List(ctx context.Context, userID, currentSessionID string, li
 	err = s.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := store.New(tx).ListUserSessions(ctx, store.ListUserSessionsParams{
 			UserID: user,
-			Limit:  int32(limit),
+			// #nosec G115 -- limit is clamped above to a bound far inside int32.
+			Limit: int32(limit),
 		})
 		if err != nil {
 			return fmt.Errorf("listing sessions: %w", err)
@@ -478,7 +479,8 @@ func (s *Sessions) DeleteExpired(ctx context.Context, limit int) (int64, error) 
 		var err error
 		removed, err = store.New(tx).DeleteExpiredSessions(ctx, store.DeleteExpiredSessionsParams{
 			ExpiresAt: timestamp(now),
-			Limit:     int32(limit),
+			// #nosec G115 -- limit is clamped above to a bound far inside int32.
+			Limit: int32(limit),
 		})
 		if err != nil {
 			return fmt.Errorf("sweeping expired sessions: %w", err)

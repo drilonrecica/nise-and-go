@@ -307,7 +307,7 @@ func TestRecoveryResponseWriterCarriesStagedResponseIntoHijack(t *testing.T) {
 	if !writer.passthrough {
 		t.Fatal("successful hijack did not mark the response irreversible")
 	}
-	if err := readWriter.Writer.Flush(); err != nil {
+	if err := readWriter.Flush(); err != nil {
 		t.Fatalf("flush hijacked writer: %v", err)
 	}
 	for _, fragment := range []string{"HTTP/1.1 202 Accepted", "X-Staged: yes", "staged body", "Content-Security-Policy: " + policy.ContentSecurityPolicy()} {
@@ -383,6 +383,9 @@ func TestRecoveryResponseWriterSupportsRealHTTP1FullDuplex(t *testing.T) {
 		err      error
 	}, 1)
 	go func() {
+		// nolint:bodyclose // The body is closed by the t.Cleanup below,
+		// which the analyzer cannot follow because the response reaches the
+		// test goroutine through a channel.
 		response, err := client.Do(request)
 		responseResult <- struct {
 			response *http.Response

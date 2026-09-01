@@ -43,8 +43,14 @@ const (
 	ReasonOriginMismatch = "origin_mismatch"
 	// ReasonTokenMissing means an authenticated request carried no
 	// anti-forgery token.
+	//
+	// #nosec G101 -- this is the name of a refusal, written into an audit
+	// record and a log line. It is a reason code, not a credential, and it
+	// is flagged only because gosec matches on the word "token".
 	ReasonTokenMissing = "csrf_token_missing"
 	// ReasonTokenMismatch means the token did not belong to this session.
+	//
+	// #nosec G101 -- a reason code, as above.
 	ReasonTokenMismatch = "csrf_token_mismatch"
 )
 
@@ -70,7 +76,7 @@ func NewOriginPolicy(origins []string) (OriginPolicy, error) {
 	for i, origin := range origins {
 		value, err := normalizeOrigin(strings.TrimSpace(origin))
 		if err != nil {
-			return OriginPolicy{}, fmt.Errorf("%w: entry %d: %v", ErrOrigins, i+1, err)
+			return OriginPolicy{}, fmt.Errorf("%w: entry %d: %w", ErrOrigins, i+1, err)
 		}
 		if slices.Contains(normalized, value) {
 			return OriginPolicy{}, fmt.Errorf("%w: entry %d (%s) is repeated", ErrOrigins, i+1, value)
