@@ -98,13 +98,26 @@ Three bundles, and the boundaries between them are the reason there are three:
 
 | Role | May |
 |---|---|
-| `member` | Read resources; create, view, cancel, check out, and return **their own** reservations |
+| `member` | Read resources and the calendar; create, cancel, check out, and return **their own** reservations |
 | `steward` | Everything a member may, plus manage **anyone's** reservation in their organization, and create and edit resources |
-| `admin` | Everything, plus invite people, grant roles, and retire a resource |
+| `administrator` | Everything, plus invite people, grant roles, and retire a resource |
+| `auditor` | Read the log, the directory, the resources, and the calendar. Change nothing. |
+
+The interesting boundary is not between the roles but inside them: acting on
+**your own** reservation needs no permission at all, because it is yours. The
+`reservations.manage` permission exists solely for acting on somebody else's,
+and the check in the use case is "holder **or** `reservations.manage`" rather
+than a permission test. That asymmetry is what makes `steward` a real role
+instead of a bigger `member`.
+
+`auditor` is there for the property it makes testable: a role that holds no
+write permission, ever, checked separately from the permission matrix so that
+making the table agree with a mistake does not make the test pass.
 
 Retiring a resource requires reauthentication, for the same reason granting a
 role does: it withdraws capability from everybody at once and cannot be undone
-by the person it surprises.
+by the person it surprises. Editing a resource's description does not — a
+matrix that covers everything is one somebody turns off.
 
 ## What it deliberately is not
 
