@@ -33,6 +33,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Generated frontend](frontend.md)
 - [Security model](security.md)
 - [Threat model](threat-model.md)
+- [Repository security and maintainer recovery](repository-security.md)
 - [Password hashing](passwords.md)
 - [Sessions](sessions.md)
 - [Audit log](audit.md)

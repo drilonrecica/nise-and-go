@@ -663,6 +663,31 @@ release that worked on the day it was published. The scheduled run installs
 whatever is currently the latest published release — which is what somebody
 following the documentation today would get.
 
+## Branch and tag protection
+
+The rules that decide what may reach the default branch, and whether a
+published tag can move, are committed as GitHub ruleset exports under
+`.github/rulesets/` — a branch-protection setting that lives only in a web form
+is a claim nobody can review, and one nobody notices being turned off.
+
+`test/release` reads them and fails when the eight required status checks stop
+matching `ci.yml`'s jobs. That is the drift that actually happens: a job is
+added to CI, nobody adds it to the ruleset, and it silently stops gating
+anything. It also refuses a bypass actor (a hole in every rule beneath it) and
+a non-strict status-check policy (under which a branch that passed CI *before*
+an incompatible change landed can still merge).
+
+Tags are protected against deletion and against being **moved**, which is the
+classic supply-chain attack on a Go project: `go install …@v0.1.0` resolves a
+tag, and a tag moved after publication serves different code under a version
+people have already audited.
+
+Nothing in this repository can prove a ruleset is active on GitHub. See
+[repository-security.md](repository-security.md) for how to check that, for
+what each release control actually withstands, and for the maintainer-recovery
+procedure — including the part that has to be said plainly rather than implied
+away.
+
 ## What CI deliberately does not do
 
 - **No cross-platform test execution beyond three runners.** The release
