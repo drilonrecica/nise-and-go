@@ -74,7 +74,7 @@ frontend/src/lib/components dir 0755
 frontend/src/lib/components/LocaleControl.svelte file 0644 ab43b85f47d02188eb4b024dbb5b6ab11e8042fa8d8880e24c13597ef1fa249d
 frontend/src/lib/components/ThemeControl.svelte file 0644 581de32d5dbb8f9f96159fed91536b8838c56c3603434d3d9cd73b834633b452
 frontend/src/lib/components/shell dir 0755
-frontend/src/lib/components/shell/AccountMenu.svelte file 0644 2efc8747bff455bb784624d1f46d1d5fbe6598fcd02322ace8a8a33f3c6c5f7c
+frontend/src/lib/components/shell/AccountMenu.svelte file 0644 585555a222d6e070b7f8f78d7313f0d8b4e98e54967218bb4eb2ed69e4dd4dd7
 frontend/src/lib/components/shell/AppShell.svelte file 0644 6bb78ea6a24c03614aea37eea2c82bfe0c8e48f0a45c5ed54e6fb01638dad32c
 frontend/src/lib/components/shell/Breadcrumbs.svelte file 0644 00022a11aefb67ebc4364ee4e3100dc3f326fc8078fa5a64ef6ac5b815f65a57
 frontend/src/lib/components/shell/NavDrawer.svelte file 0644 3cf371590ea1388aa3b4b693310fbed008b3a6fc22da324684ab8f965d58cf95
@@ -96,7 +96,7 @@ frontend/src/lib/components/ui/FieldProbe.svelte file 0644 72b3b2c94d2a2958201fe
 frontend/src/lib/components/ui/Icon.svelte file 0644 88175bfa382279c4ebe682d0b755e78c8394468db9901165b0fa47f100d1a74a
 frontend/src/lib/components/ui/Input.svelte file 0644 90fca93ab8fc1007f016be331332430aaec012ad39dd5e85c465261c3601d305
 frontend/src/lib/components/ui/Menu.browser.test.ts file 0644 5c2001b37cc3b521cfd87c931ac0754a64afa52fe2b63fac6693e3e2f9fb38c7
-frontend/src/lib/components/ui/Menu.svelte file 0644 5d5172030bbf7ff3314c270f7edce862841370965b3f82cc5cf891c3121506b6
+frontend/src/lib/components/ui/Menu.svelte file 0644 f92576533b645c4c09e56727372530385bdd9c85a5779a6b747bda7a4e2fb92a
 frontend/src/lib/components/ui/MenuProbe.svelte file 0644 4a1b4b114961511ef0249e4c1ebae9b5960d67ceed129c8e90d231051772bfdd
 frontend/src/lib/components/ui/Pagination.svelte file 0644 b9c48e6d27981c1bedd4f8c13df10247c87238f5a09b5ea90c02e5905c47f774
 frontend/src/lib/components/ui/ProblemAlert.svelte file 0644 ba6de817d23728cc3f16fed3ed04a70de5fb8d1ad0fa39a9b7b7a5b0a59ec0f5
