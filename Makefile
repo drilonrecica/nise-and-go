@@ -151,7 +151,15 @@ osv: ## Report known vulnerabilities in every required module, called or not.
 		echo "install it with: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@$(OSV_SCANNER_VERSION)" >&2; \
 		exit 1; \
 	}
-	osv-scanner scan source --lockfile=go.mod
+	# --no-call-analysis=go: this target's whole point is the modules go.mod
+	# requires, called or not. Reachability is govulncheck's question and it is
+	# asked next door, in `vulncheck`. Leaving call analysis on also breaks the
+	# scan outright here: it loads the module's packages, and examples/reference/app
+	# is Go source for a *different* module (workbench) living inside this tree,
+	# which this module's package patterns cannot resolve. That failure was
+	# invisible for as long as there were vulnerabilities to report -- osv-scanner
+	# exits 1 for findings and 127 for a general error, and the finding wins.
+	osv-scanner scan source --lockfile=go.mod --no-call-analysis=go
 
 secrets: ## Scan the whole commit history for committed credentials.
 	@command -v gitleaks >/dev/null 2>&1 || { \
