@@ -130,7 +130,10 @@ type Upload struct {
 	ContentType  string
 	Size         int64
 	Checksum     []byte
-	StagedAt     time.Time
+	// ScannedBy names the malware scanner that examined this object, or is
+	// empty when none was configured. See ADR 0027.
+	ScannedBy string
+	StagedAt  time.Time
 	ExpiresAt    time.Time
 	FinalizedAt  time.Time
 	RejectedBy   string
@@ -192,6 +195,9 @@ type Uploads struct {
 	transactor *database.Transactor
 	store      storage.Store
 	accepted   AcceptedTypes
+	// scanner is nil unless the application configured one. See scan.go and
+	// ADR 0027.
+	scanner Scanner
 	now        func() time.Time
 	// keys generates the unguessable component of a quarantine key. It is
 	// injected only by tests; production uses the system random source.
@@ -207,6 +213,16 @@ func WithClock(now func() time.Time) Option {
 	return func(u *Uploads) {
 		if now != nil {
 			u.now = now
+		}
+	}
+}
+
+// WithScanner configures a malware scanner, consulted while an object is
+// still in quarantine. A generated application has none; see [Scanner].
+func WithScanner(scanner Scanner) Option {
+	return func(u *Uploads) {
+		if scanner != nil {
+			u.scanner = scanner
 		}
 	}
 }
@@ -392,6 +408,20 @@ func (u *Uploads) Finalize(ctx context.Context, id string, ownerUserID string) (
 		return Upload{}, u.reject(ctx, upload, "the stored object is not of the type that was declared", measured.size, measured.contentType)
 	}
 
+	// The scan runs last among the checks and before the move: an object
+	// that is the wrong type or size never costs a scan, and an object a
+	// scanner refuses has never existed at a reachable key.
+	scannedBy, err := u.scan(ctx, upload)
+	if err != nil {
+		if errors.Is(err, ErrScanUnavailable) {
+			// The scanner could not run. That is not a verdict, so the
+			// upload stays staged and finalization can be retried — and
+			// nobody's file is deleted on the strength of a broken daemon.
+			return Upload{}, fmt.Errorf("uploads: %w", err)
+		}
+		return Upload{}, u.reject(ctx, upload, "the stored object was refused by the malware scanner", measured.size, measured.contentType)
+	}
+
 	finalKey, err := storage.JoinKey(ObjectPrefix, strings.TrimPrefix(upload.StorageKey, QuarantinePrefix+"/"))
 	if err != nil {
 		return Upload{}, fmt.Errorf("uploads: deriving the final key: %w", err)
@@ -409,6 +439,7 @@ func (u *Uploads) Finalize(ctx context.Context, id string, ownerUserID string) (
 			ContentType: pgtype.Text{String: measured.contentType, Valid: true},
 			Size:        pgtype.Int8{Int64: measured.size, Valid: true},
 			Checksum:    measured.checksum,
+			ScannedBy:   optionalText(scannedBy),
 		})
 		return txErr
 	})

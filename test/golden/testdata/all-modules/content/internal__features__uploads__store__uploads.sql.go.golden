@@ -29,7 +29,7 @@ func (q *Queries) CountUploadsByState(ctx context.Context, arg CountUploadsBySta
 const getUpload = `-- name: GetUpload :one
 SELECT id, state, owner_user_id, storage_key, filename, declared_type,
        declared_size, content_type, size, checksum, staged_at, expires_at,
-       finalized_at, rejected_reason
+       finalized_at, rejected_reason, scanned_by
 FROM uploads
 WHERE id = $1
 `
@@ -56,6 +56,7 @@ func (q *Queries) GetUpload(ctx context.Context, arg GetUploadParams) (Upload, e
 		&i.ExpiresAt,
 		&i.FinalizedAt,
 		&i.RejectedReason,
+		&i.ScannedBy,
 	)
 	return i, err
 }
@@ -63,7 +64,7 @@ func (q *Queries) GetUpload(ctx context.Context, arg GetUploadParams) (Upload, e
 const getUploadForUpdate = `-- name: GetUploadForUpdate :one
 SELECT id, state, owner_user_id, storage_key, filename, declared_type,
        declared_size, content_type, size, checksum, staged_at, expires_at,
-       finalized_at, rejected_reason
+       finalized_at, rejected_reason, scanned_by
 FROM uploads
 WHERE id = $1
 FOR UPDATE
@@ -91,6 +92,7 @@ func (q *Queries) GetUploadForUpdate(ctx context.Context, arg GetUploadForUpdate
 		&i.ExpiresAt,
 		&i.FinalizedAt,
 		&i.RejectedReason,
+		&i.ScannedBy,
 	)
 	return i, err
 }
@@ -98,7 +100,7 @@ func (q *Queries) GetUploadForUpdate(ctx context.Context, arg GetUploadForUpdate
 const listExpiredStagedUploads = `-- name: ListExpiredStagedUploads :many
 SELECT id, state, owner_user_id, storage_key, filename, declared_type,
        declared_size, content_type, size, checksum, staged_at, expires_at,
-       finalized_at, rejected_reason
+       finalized_at, rejected_reason, scanned_by
 FROM uploads
 WHERE state = 'staged' AND expires_at <= $1
 ORDER BY expires_at
@@ -134,6 +136,7 @@ func (q *Queries) ListExpiredStagedUploads(ctx context.Context, arg ListExpiredS
 			&i.ExpiresAt,
 			&i.FinalizedAt,
 			&i.RejectedReason,
+			&i.ScannedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -152,11 +155,12 @@ SET state = 'available',
     content_type = $3,
     size = $4,
     checksum = $5,
+    scanned_by = $6,
     finalized_at = now()
 WHERE id = $1 AND state = 'staged'
 RETURNING id, state, owner_user_id, storage_key, filename, declared_type,
           declared_size, content_type, size, checksum, staged_at, expires_at,
-          finalized_at, rejected_reason
+          finalized_at, rejected_reason, scanned_by
 `
 
 type MarkUploadAvailableParams struct {
@@ -165,6 +169,7 @@ type MarkUploadAvailableParams struct {
 	ContentType pgtype.Text
 	Size        pgtype.Int8
 	Checksum    []byte
+	ScannedBy   pgtype.Text
 }
 
 func (q *Queries) MarkUploadAvailable(ctx context.Context, arg MarkUploadAvailableParams) (Upload, error) {
@@ -174,6 +179,7 @@ func (q *Queries) MarkUploadAvailable(ctx context.Context, arg MarkUploadAvailab
 		arg.ContentType,
 		arg.Size,
 		arg.Checksum,
+		arg.ScannedBy,
 	)
 	var i Upload
 	err := row.Scan(
@@ -191,6 +197,7 @@ func (q *Queries) MarkUploadAvailable(ctx context.Context, arg MarkUploadAvailab
 		&i.ExpiresAt,
 		&i.FinalizedAt,
 		&i.RejectedReason,
+		&i.ScannedBy,
 	)
 	return i, err
 }
@@ -202,7 +209,7 @@ SET state = 'expired',
 WHERE id = $1 AND state = 'staged'
 RETURNING id, state, owner_user_id, storage_key, filename, declared_type,
           declared_size, content_type, size, checksum, staged_at, expires_at,
-          finalized_at, rejected_reason
+          finalized_at, rejected_reason, scanned_by
 `
 
 type MarkUploadExpiredParams struct {
@@ -227,6 +234,7 @@ func (q *Queries) MarkUploadExpired(ctx context.Context, arg MarkUploadExpiredPa
 		&i.ExpiresAt,
 		&i.FinalizedAt,
 		&i.RejectedReason,
+		&i.ScannedBy,
 	)
 	return i, err
 }
@@ -241,7 +249,7 @@ SET state = 'rejected',
 WHERE id = $1 AND state = 'staged'
 RETURNING id, state, owner_user_id, storage_key, filename, declared_type,
           declared_size, content_type, size, checksum, staged_at, expires_at,
-          finalized_at, rejected_reason
+          finalized_at, rejected_reason, scanned_by
 `
 
 type MarkUploadRejectedParams struct {
@@ -274,6 +282,7 @@ func (q *Queries) MarkUploadRejected(ctx context.Context, arg MarkUploadRejected
 		&i.ExpiresAt,
 		&i.FinalizedAt,
 		&i.RejectedReason,
+		&i.ScannedBy,
 	)
 	return i, err
 }
@@ -286,7 +295,7 @@ INSERT INTO uploads (
 )
 RETURNING id, state, owner_user_id, storage_key, filename, declared_type,
           declared_size, content_type, size, checksum, staged_at, expires_at,
-          finalized_at, rejected_reason
+          finalized_at, rejected_reason, scanned_by
 `
 
 type StageUploadParams struct {
@@ -323,6 +332,7 @@ func (q *Queries) StageUpload(ctx context.Context, arg StageUploadParams) (Uploa
 		&i.ExpiresAt,
 		&i.FinalizedAt,
 		&i.RejectedReason,
+		&i.ScannedBy,
 	)
 	return i, err
 }

@@ -380,6 +380,7 @@ var templateFiles = []templateFile{
 	{Template: "internal/features/organizations/store/querier.go.tmpl", Output: "internal/features/organizations/store/querier.go", Owner: OwnerNise, Raw: true, Module: recipe.ModuleOrganizations},
 	{Template: "internal/features/uploads/convert.go.tmpl", Output: "internal/features/uploads/convert.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
 	{Template: "internal/features/uploads/queries/uploads.sql.tmpl", Output: "internal/features/uploads/queries/uploads.sql", Owner: OwnerApp, Raw: true, Module: recipe.ModuleUploads},
+	{Template: "internal/features/uploads/scan.go.tmpl", Output: "internal/features/uploads/scan.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
 	{Template: "internal/features/uploads/sweep.go.tmpl", Output: "internal/features/uploads/sweep.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
 	{Template: "internal/features/uploads/sqlc.yaml.tmpl", Output: "internal/features/uploads/sqlc.yaml", Owner: OwnerApp, Raw: true, Module: recipe.ModuleUploads},
 	{Template: "internal/features/uploads/store/db.go.tmpl", Output: "internal/features/uploads/store/db.go", Owner: OwnerNise, Raw: true, Module: recipe.ModuleUploads},

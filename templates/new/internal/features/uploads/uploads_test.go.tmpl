@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -40,11 +42,16 @@ type harness struct {
 	store   *storage.Local
 	uploads *Uploads
 	owner   string
+	scanner *recordingScanner
 	now     func() time.Time
 	advance func(time.Duration)
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T) *harness { return newHarnessWithScanner(t, nil) }
+
+// newHarnessWithScanner builds the harness with an optional malware scanner.
+// A nil one is the position a generated application ships in; see ADR 0027.
+func newHarnessWithScanner(t *testing.T, scanner *recordingScanner) *harness {
 	t.Helper()
 
 	testDatabase := dbtest.New(t)
@@ -88,7 +95,11 @@ func newHarness(t *testing.T) *harness {
 
 	current := fixedNow
 	clock := func() time.Time { return current }
-	uploads, err := New(transactor, objects, WithClock(clock))
+	options := []Option{WithClock(clock)}
+	if scanner != nil {
+		options = append(options, WithScanner(scanner))
+	}
+	uploads, err := New(transactor, objects, options...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -98,6 +109,7 @@ func newHarness(t *testing.T) *harness {
 		pool:    pool,
 		store:   objects,
 		uploads: uploads,
+		scanner: scanner,
 		now:     clock,
 		advance: func(d time.Duration) { current = current.Add(d) },
 	}
@@ -524,5 +536,153 @@ func TestALocalStoreIssuesNoUploadURL(t *testing.T) {
 	}
 	if staged.UploadURL != "" {
 		t.Errorf("a local store issued an upload URL: %q", staged.UploadURL)
+	}
+}
+
+
+// --- the malware-scanning boundary (ADR 0027) ---
+
+// recordingScanner is a scanner a test controls.
+type recordingScanner struct {
+	name string
+	// verdict is returned from Scan.
+	verdict error
+	// bytes is how much Scan was given.
+	bytes int64
+	// called counts invocations.
+	called int
+}
+
+func (s *recordingScanner) Name() string { return s.name }
+
+func (s *recordingScanner) Scan(_ context.Context, r io.Reader) error {
+	s.called++
+	n, err := io.Copy(io.Discard, r)
+	if err != nil {
+		return err
+	}
+	s.bytes = n
+	return s.verdict
+}
+
+// TestNoScannerIsConfiguredByDefault states the shipped position, so a change
+// to it is a change to a test rather than a surprise.
+func TestNoScannerIsConfiguredByDefault(t *testing.T) {
+	h := newHarness(t)
+	content := pngBytes(512)
+	staged := h.stageAndUpload(t, content, "image/png", int64(len(content)))
+
+	final, err := h.uploads.Finalize(h.ctx, staged.ID, h.owner)
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if final.ScannedBy != "" {
+		t.Errorf("ScannedBy = %q with no scanner configured", final.ScannedBy)
+	}
+
+	var scannedBy *string
+	if err := h.pool.QueryRow(h.ctx, `SELECT scanned_by FROM uploads WHERE id = $1`, staged.ID).Scan(&scannedBy); err != nil {
+		t.Fatalf("reading scanned_by: %v", err)
+	}
+	if scannedBy != nil {
+		t.Errorf("scanned_by = %q, want NULL so that an unscanned object is recognisable", *scannedBy)
+	}
+}
+
+// TestAScannerSeesTheStoredBytesAndIsRecorded covers the accepting path.
+func TestAScannerSeesTheStoredBytesAndIsRecorded(t *testing.T) {
+	h := newHarnessWithScanner(t, &recordingScanner{name: "probe"})
+	content := pngBytes(2048)
+	staged := h.stageAndUpload(t, content, "image/png", int64(len(content)))
+
+	final, err := h.uploads.Finalize(h.ctx, staged.ID, h.owner)
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if final.ScannedBy != "probe" {
+		t.Errorf("ScannedBy = %q, want the scanner's name", final.ScannedBy)
+	}
+	if h.scanner.called != 1 {
+		t.Errorf("the scanner ran %d times, want 1", h.scanner.called)
+	}
+	if h.scanner.bytes != int64(len(content)) {
+		t.Errorf("the scanner saw %d bytes, want the whole stored object (%d)", h.scanner.bytes, len(content))
+	}
+}
+
+// TestARefusedObjectNeverLeavesQuarantine is the reason the scan happens
+// before the move: there is no window in which a refused object is reachable,
+// and no cleanup to get wrong.
+func TestARefusedObjectNeverLeavesQuarantine(t *testing.T) {
+	h := newHarnessWithScanner(t, &recordingScanner{name: "probe", verdict: errors.New("EICAR-Test-Signature")})
+	content := pngBytes(512)
+	staged := h.stageAndUpload(t, content, "image/png", int64(len(content)))
+
+	_, err := h.uploads.Finalize(h.ctx, staged.ID, h.owner)
+	if !errors.Is(err, ErrRejected) {
+		t.Fatalf("Finalize = %v, want ErrRejected", err)
+	}
+	if h.stateOf(t, staged.ID) != "rejected" {
+		t.Errorf("state = %q, want rejected", h.stateOf(t, staged.ID))
+	}
+	if h.objectExists(t, staged.StorageKey) {
+		t.Error("the refused object was left in quarantine")
+	}
+	// And it never reached the final prefix.
+	finalKey := strings.Replace(staged.StorageKey, QuarantinePrefix+"/", ObjectPrefix+"/", 1)
+	if h.objectExists(t, finalKey) {
+		t.Error("a refused object exists at a reachable key")
+	}
+}
+
+// TestAnUnavailableScannerDoesNotDeleteTheFile is the distinction that
+// decides what happens to somebody's upload. "We could not check" and "we
+// checked and it is malicious" are different facts, and only one of them
+// should delete a file.
+func TestAnUnavailableScannerDoesNotDeleteTheFile(t *testing.T) {
+	h := newHarnessWithScanner(t, &recordingScanner{
+		name:    "probe",
+		verdict: fmt.Errorf("dialing clamd: %w", ErrScanUnavailable),
+	})
+	content := pngBytes(512)
+	staged := h.stageAndUpload(t, content, "image/png", int64(len(content)))
+
+	_, err := h.uploads.Finalize(h.ctx, staged.ID, h.owner)
+	if !errors.Is(err, ErrScanUnavailable) {
+		t.Fatalf("Finalize = %v, want ErrScanUnavailable", err)
+	}
+	if errors.Is(err, ErrRejected) {
+		t.Error("an unreachable scanner was reported as a rejection")
+	}
+	if h.stateOf(t, staged.ID) != "staged" {
+		t.Errorf("state = %q, want the upload still staged so finalization can be retried", h.stateOf(t, staged.ID))
+	}
+	if !h.objectExists(t, staged.StorageKey) {
+		t.Fatal("the object was deleted because the scanner was unreachable; that is data loss caused by an outage")
+	}
+
+	// And once the scanner recovers, the same upload finalizes.
+	h.scanner.verdict = nil
+	final, err := h.uploads.Finalize(h.ctx, staged.ID, h.owner)
+	if err != nil {
+		t.Fatalf("Finalize after the scanner recovered: %v", err)
+	}
+	if !final.Available() {
+		t.Errorf("state = %q, want available", final.State)
+	}
+}
+
+// TestACheapRefusalCostsNoScan pins the ordering: an object that is the wrong
+// type never reaches the scanner.
+func TestACheapRefusalCostsNoScan(t *testing.T) {
+	h := newHarnessWithScanner(t, &recordingScanner{name: "probe"})
+	script := []byte("<html><script>alert(1)</script></html>")
+	staged := h.stageAndUpload(t, script, "image/png", int64(len(script)))
+
+	if _, err := h.uploads.Finalize(h.ctx, staged.ID, h.owner); !errors.Is(err, ErrRejected) {
+		t.Fatalf("Finalize = %v, want ErrRejected", err)
+	}
+	if h.scanner.called != 0 {
+		t.Errorf("the scanner ran %d times for an object refused by its type", h.scanner.called)
 	}
 }
