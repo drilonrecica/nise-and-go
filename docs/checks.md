@@ -470,9 +470,32 @@ make release-check     # validate .goreleaser.yaml
 make release-snapshot  # cross-compile all six, publish nothing
 ```
 
+### What a release publishes about itself
+
+Three artifacts, answering three different questions:
+
+| Artifact | Answers | What it cannot answer |
+|---|---|---|
+| `checksums.txt` | Is this the file that was published? | Who published it — it sits beside the artifacts, and whoever can replace one can replace both |
+| A GitHub build attestation, per file | Who built it, from which commit and workflow? | Whether that workflow was honest |
+| `<archive>.spdx.json` | What is compiled into it? | Whether any of it is safe |
+
+The attestation is keyless: signed with a short-lived certificate minted for
+one workflow run and recorded in a public transparency log, so there is no
+signing key for this project to hold, lose, or rotate. It covers the archives,
+the SBOMs, **and** `checksums.txt` — a checksum file nobody attested is one
+somebody can substitute along with the artifacts it covers.
+
+SBOMs come from syft, pinned in the workflow. If syft were absent GoReleaser
+would skip the SBOM step silently, which is why `test/release` asserts the
+install step exists rather than only the configuration block.
+
 `test/release` checks that the configuration, `docs/supported-platforms.md`,
-the Makefile pin, and the workflow pin all agree, and that the release stamps
-the three variables `internal/version` reads.
+the Makefile pin, and the workflow pin all agree; that the release stamps the
+three variables `internal/version` reads; that all three artifact kinds are
+produced and attested; and that every action in every workflow is pinned to a
+full commit SHA, first-party ones included — "first-party" describes who wrote
+an action, not what a moved tag would run.
 
 ## What CI deliberately does not do
 

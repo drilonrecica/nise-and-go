@@ -235,3 +235,120 @@ func TestTheGoReleaserPinsAgree(t *testing.T) {
 		t.Errorf("the Makefile pins GoReleaser %s and the release workflow pins %s", makefile[1], workflow[1])
 	}
 }
+
+// A release publishes three different claims about its artifacts, and they
+// answer three different questions. Losing any one of them silently is the
+// failure this section is here to prevent.
+
+// checksums.txt answers "is this the file that was published".
+func TestTheReleasePublishesChecksums(t *testing.T) {
+	t.Parallel()
+	source := goreleaserConfig(t)
+
+	if !regexp.MustCompile(`(?m)^checksum:`).MatchString(source) {
+		t.Fatal("the release produces no checksum file")
+	}
+	if !strings.Contains(source, "algorithm: sha256") {
+		t.Error("the checksum file does not declare sha256")
+	}
+	if !strings.Contains(source, `name_template: "checksums.txt"`) {
+		t.Error("the checksum file is not named checksums.txt, which is what the documentation tells people to run sha256sum against")
+	}
+}
+
+// An SBOM answers "what is inside it" for somebody who cannot run this
+// project's toolchain. A Go binary already carries its module graph — `go
+// version -m` reads it — so the SBOM is not new information; it is that
+// information in a format a scanner or a procurement review can read.
+func TestTheReleasePublishesAnSBOMPerArchive(t *testing.T) {
+	t.Parallel()
+	source := goreleaserConfig(t)
+
+	if !regexp.MustCompile(`(?m)^sboms:`).MatchString(source) {
+		t.Fatal("the release produces no software bill of materials")
+	}
+	if !strings.Contains(source, "artifacts: archive") {
+		t.Error("the SBOM is not generated per archive, so the six platforms do not each get one")
+	}
+	// SPDX rather than CycloneDX: it is the ISO-standardised one, and a
+	// project shipping both ships two things to keep consistent.
+	if !strings.Contains(source, ".spdx.json") {
+		t.Error("the SBOM is not SPDX JSON")
+	}
+}
+
+// A build attestation answers "who built it", which is the question a
+// checksum published beside the artifact by whoever published the artifact
+// cannot answer at all.
+func TestTheReleaseAttestsWhatItPublishes(t *testing.T) {
+	t.Parallel()
+	workflow := readFile(t, ".github/workflows/release.yml")
+
+	if !strings.Contains(workflow, "actions/attest-build-provenance@") {
+		t.Fatal("the release workflow records no build attestation")
+	}
+	// The attestation is signed with a short-lived OIDC token minted for the
+	// run. Without both permissions the step fails at release time, which is
+	// the worst moment to find out.
+	for _, permission := range []string{"id-token: write", "attestations: write"} {
+		if !strings.Contains(workflow, permission) {
+			t.Errorf("the release workflow does not grant %q, so the attestation step cannot run", permission)
+		}
+	}
+	// Every artifact a person can download has to be covered. An archive
+	// nobody attested is one somebody can substitute.
+	for _, subject := range []string{"dist/*.tar.gz", "dist/*.zip", "dist/*.spdx.json", "dist/checksums.txt"} {
+		if !strings.Contains(workflow, subject) {
+			t.Errorf("the attestation does not cover %s", subject)
+		}
+	}
+}
+
+// Every action, first-party or not, is pinned by commit — "first-party"
+// describes who wrote an action, not what a moved tag would run.
+func TestEveryActionIsPinnedByCommit(t *testing.T) {
+	t.Parallel()
+
+	workflows, err := filepath.Glob(filepath.Join(repoRoot(t), ".github", "workflows", "*.yml"))
+	if err != nil {
+		t.Fatalf("listing workflows: %v", err)
+	}
+	if len(workflows) == 0 {
+		t.Fatal("no workflows were found, so this test proves nothing")
+	}
+
+	uses := regexp.MustCompile(`uses:\s*(\S+)`)
+	pinned := regexp.MustCompile(`^[^@]+@[0-9a-f]{40}$`)
+	for _, path := range workflows {
+		data, err := os.ReadFile(path) // #nosec G304 -- path came from Glob over this repository.
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		for _, match := range uses.FindAllStringSubmatch(string(data), -1) {
+			// A local action is a path into this repository and has nothing
+			// to pin.
+			if strings.HasPrefix(match[1], "./") {
+				continue
+			}
+			if !pinned.MatchString(match[1]) {
+				t.Errorf("%s uses %s, which is not pinned to a full commit SHA", filepath.Base(path), match[1])
+			}
+		}
+	}
+}
+
+// The syft pin lives in the workflow only, because nothing local needs it —
+// but a missing or malformed one means GoReleaser finds no syft and skips the
+// SBOMs, which is a silent omission rather than a failure.
+func TestTheSyftPinIsAVersion(t *testing.T) {
+	t.Parallel()
+	workflow := readFile(t, ".github/workflows/release.yml")
+
+	pin := regexp.MustCompile(`SYFT_VERSION:\s*"(v[0-9]+\.[0-9]+\.[0-9]+)"`)
+	if !pin.MatchString(workflow) {
+		t.Error("the release workflow does not pin syft to an exact version")
+	}
+	if !strings.Contains(workflow, "go install github.com/anchore/syft/cmd/syft@${{ env.SYFT_VERSION }}") {
+		t.Error("the release workflow does not install syft at the pinned version, so GoReleaser would find none and skip the SBOMs")
+	}
+}

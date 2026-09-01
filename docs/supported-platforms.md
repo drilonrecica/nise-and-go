@@ -104,7 +104,9 @@ portability.
 - `test/release` reads `.goreleaser.yaml` and the release table above and
   fails if they disagree.
 - `make release-snapshot` was run: six archives, each containing the binary,
-  `LICENSE`, and `README.md`, plus `checksums.txt`. The Linux/amd64 binary is
+  `LICENSE`, and `README.md`, plus one SPDX bill of materials per archive and
+  a `checksums.txt` covering all twelve files. The Linux/amd64 binary is
   statically linked and reports its stamped version; the macOS and Windows
   binaries are Mach-O and PE32+ respectively. Two consecutive runs produced
-  identical checksums.
+  identical checksums. `sha256sum --check` passes on all twelve and fails
+  after a single appended byte.
