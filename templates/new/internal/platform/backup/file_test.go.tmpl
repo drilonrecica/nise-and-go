@@ -1,0 +1,215 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package backup
+
+import (
+	"bytes"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+// writeFramed produces a file with a valid frame around arbitrary contents,
+// so a test can damage exactly one thing at a time.
+func writeFramed(t *testing.T, header Header, body []byte) string {
+	t.Helper()
+	encoded, err := json.Marshal(header)
+	if err != nil {
+		t.Fatalf("marshalling the header: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := writeHeader(&buf, encoded); err != nil {
+		t.Fatalf("writeHeader: %v", err)
+	}
+	buf.Write(body)
+
+	path := filepath.Join(t.TempDir(), "probe.backup")
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
+	return path
+}
+
+func validHeader() Header {
+	return Header{
+		Magic:         Magic,
+		Format:        Format,
+		Database:      "probe",
+		SchemaVersion: 9,
+		CreatedAt:     time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC),
+		PgDumpVersion: "pg_dump (PostgreSQL) 17.6",
+	}
+}
+
+func TestAHeaderSurvivesTheRoundTrip(t *testing.T) {
+	t.Parallel()
+	want := validHeader()
+	path := writeFramed(t, want, []byte("sealed body"))
+
+	got, err := Describe(path)
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if got != want {
+		t.Errorf("Describe = %+v, want %+v", got, want)
+	}
+}
+
+// Describe must not need the key. An operator holding a directory of backups
+// has to be able to tell which is which without unlocking any of them.
+func TestDescribeNeedsNoKey(t *testing.T) {
+	t.Parallel()
+	key, err := NewKey()
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+	header := validHeader()
+	encoded, err := json.Marshal(header)
+	if err != nil {
+		t.Fatalf("marshalling: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := writeHeader(&buf, encoded); err != nil {
+		t.Fatalf("writeHeader: %v", err)
+	}
+	if err := seal(&buf, bytes.NewReader([]byte("a small database")), key, encoded); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "sealed.backup")
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	if _, err := Describe(path); err != nil {
+		t.Fatalf("Describe of a sealed backup: %v", err)
+	}
+}
+
+func TestSomethingThatIsNotABackupSaysSo(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	cases := map[string][]byte{
+		"an empty file":               {},
+		"a text file":                 []byte("this is somebody's notes, not a backup\n"),
+		"a plain pg_dump archive":     []byte("PGDMP\x00\x01"),
+		"the marker and nothing else": []byte(Magic),
+	}
+	for name, contents := range cases {
+		path := filepath.Join(dir, "probe")
+		if err := os.WriteFile(path, contents, 0o600); err != nil {
+			t.Fatalf("writing %s: %v", name, err)
+		}
+		// The message must not read like a wrong key: somebody told their
+		// key is wrong goes looking for the key, and the file was the
+		// problem.
+		if _, err := Describe(path); !errors.Is(err, ErrNotABackup) {
+			t.Errorf("%s: error = %v, want ErrNotABackup", name, err)
+		}
+	}
+}
+
+func TestABackupFromAnUnknownFormatIsRefused(t *testing.T) {
+	t.Parallel()
+	header := validHeader()
+	header.Format = Format + 1
+	path := writeFramed(t, header, []byte("sealed body"))
+
+	_, err := Describe(path)
+	if !errors.Is(err, ErrFormat) {
+		t.Fatalf("error = %v, want ErrFormat", err)
+	}
+	// Guessing at a future layout is how a restore silently produces the
+	// wrong database, so the refusal has to name both versions.
+	if !bytes.Contains([]byte(err.Error()), []byte("format 2")) {
+		t.Errorf("error %q does not say which format the file is", err)
+	}
+}
+
+func TestAnImplausibleHeaderLengthIsRefusedBeforeAllocating(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	for name, declared := range map[string]uint32{
+		"zero":           0,
+		"over the cap":   maxHeaderBytes + 1,
+		"four gigabytes": 1 << 31,
+	} {
+		var buf bytes.Buffer
+		buf.WriteString(Magic)
+		var length [4]byte
+		binary.BigEndian.PutUint32(length[:], declared)
+		buf.Write(length[:])
+		buf.WriteString(`{"magic":"NISEBAK1","format":1}`)
+
+		path := filepath.Join(dir, "probe")
+		if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+			t.Fatalf("writing: %v", err)
+		}
+		if _, err := Describe(path); !errors.Is(err, ErrNotABackup) {
+			t.Errorf("a header length of %s: error = %v, want ErrNotABackup", name, err)
+		}
+	}
+}
+
+func TestAMissingFileIsReportedByPath(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "not-here.backup")
+	_, err := Describe(path)
+	if err == nil {
+		t.Fatal("Describe accepted a path that does not exist")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte(path)) {
+		t.Errorf("error %q does not name the path that was not found", err)
+	}
+}
+
+// The header is authenticated by being the additional data, not by being
+// re-encoded and compared. This proves the binding: editing the header alone
+// leaves a file whose body no longer opens.
+func TestEditingTheHeaderBreaksTheBody(t *testing.T) {
+	t.Parallel()
+	key, err := NewKey()
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+	honest, err := json.Marshal(validHeader())
+	if err != nil {
+		t.Fatalf("marshalling: %v", err)
+	}
+	lying := bytes.Replace(honest, []byte(`"schema_version":9`), []byte(`"schema_version":8`), 1)
+	if bytes.Equal(honest, lying) {
+		t.Fatal("the header was not edited, so this test proves nothing")
+	}
+
+	var buf bytes.Buffer
+	if err := writeHeader(&buf, lying); err != nil {
+		t.Fatalf("writeHeader: %v", err)
+	}
+	if err := seal(&buf, bytes.NewReader([]byte("a small database")), key, honest); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+
+	parsed, err := readHeader(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("readHeader: %v", err)
+	}
+	if parsed.header.SchemaVersion != 8 {
+		t.Fatalf("the edited header was not read back; SchemaVersion = %d", parsed.header.SchemaVersion)
+	}
+	if err := open(&bytes.Buffer{}, parsed.reader, key, parsed.additional); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("error = %v, want ErrCorrupt when the header was edited after sealing", err)
+	}
+}
+
+func TestAnOversizedHeaderIsRefusedOnTheWayOut(t *testing.T) {
+	t.Parallel()
+	err := writeHeader(&bytes.Buffer{}, make([]byte, maxHeaderBytes+1))
+	if err == nil {
+		t.Fatal("writeHeader accepted a header over the limit")
+	}
+}

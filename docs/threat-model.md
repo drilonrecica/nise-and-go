@@ -138,6 +138,19 @@ A backup is a complete copy of the data with none of the application's access
 control. Its custody is the operator's problem, and it is a larger one than
 the application's own.
 
+The generated `db backup` command encrypts every backup with AES-256-GCM under
+the STREAM construction, so a backup that has been modified, reordered,
+truncated, appended to, or whose header was edited fails to open rather than
+restoring into a database missing part of itself. `db verify` restores a
+backup into a scratch database rather than checking a checksum. See
+[Backups](backups.md).
+
+What that leaves: the key. `BACKUP_ENCRYPTION_KEY` has no rotation procedure
+and no re-encryption command, so an archive is only as separable from a leaked
+key as the operator's own key management makes it. That is stated here as an
+unsolved problem rather than implied away, and it is listed among the
+[residual risks](security.md#residual-risks).
+
 ## What is deliberately out of scope
 
 Naming these is the point of the section. Each is a real risk that this

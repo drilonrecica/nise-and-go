@@ -14,6 +14,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"{{.ModulePath}}/internal/app"
@@ -33,6 +34,25 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout io.Writer) error {
+	if len(args) > 1 && args[0] == "db" && app.IsBackupAction(args[1]) {
+		request, jsonOutput, err := parseBackupArgs(args[1], args[2:])
+		if err != nil {
+			return err
+		}
+		result, err := app.RunBackup(ctx, request)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			if err := json.NewEncoder(stdout).Encode(result); err != nil {
+				return fmt.Errorf("encoding backup result: %w", err)
+			}
+			return nil
+		}
+		_, err = fmt.Fprintln(stdout, result.String())
+		return err
+	}
+
 	if len(args) > 0 && args[0] == "db" {
 		action, jsonOutput, err := parseDatabaseArgs(args[1:])
 		if err != nil {
@@ -171,11 +191,11 @@ func parsePasswordArgs(args []string) (request app.PasswordBenchmarkRequest, jso
 
 func parseDatabaseArgs(args []string) (action string, jsonOutput bool, err error) {
 	if len(args) == 0 {
-		return "", false, fmt.Errorf("database action is required; use db migrate or db status")
+		return "", false, fmt.Errorf("database action is required; use one of: %s", strings.Join(databaseActions, ", "))
 	}
 	action = args[0]
 	if action != "migrate" && action != "status" {
-		return "", false, fmt.Errorf("unknown database action %q; use db migrate or db status", action)
+		return "", false, fmt.Errorf("unknown database action %q; use one of: %s", action, strings.Join(databaseActions, ", "))
 	}
 	fs := flag.NewFlagSet("db "+action, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -187,4 +207,51 @@ func parseDatabaseArgs(args []string) (action string, jsonOutput bool, err error
 		return "", false, fmt.Errorf("db %s takes no positional arguments, found %q", action, fs.Arg(0))
 	}
 	return action, jsonOutput, nil
+}
+
+// databaseActions is what `db` accepts, named in one place so an unknown
+// action is told about the ones that were added after it was written.
+var databaseActions = append([]string{"migrate", "status"}, app.BackupActions...)
+
+// parseBackupArgs parses the flags of `db backup`, `db restore`, and
+// `db verify`.
+//
+// The path flag is named for what each action does with it — -out for the
+// file that is written, -from for the file that is read — rather than a
+// single -path for all three. A restore is the one command here that destroys
+// something, and the word "from" is a small reminder of which direction it
+// runs in.
+func parseBackupArgs(action string, args []string) (app.BackupRequest, bool, error) {
+	fs := flag.NewFlagSet("db "+action, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var (
+		jsonOutput   bool
+		path         string
+		confirmation string
+	)
+	fs.BoolVar(&jsonOutput, "json", false, "write one JSON result")
+	if action == "backup" {
+		fs.StringVar(&path, "out", "", "file to write the backup to")
+	} else {
+		fs.StringVar(&path, "from", "", "backup file to read")
+	}
+	if action == "restore" {
+		fs.StringVar(&confirmation, "confirm", "", "name of the database whose contents are to be replaced")
+	}
+
+	if err := fs.Parse(args); err != nil {
+		return app.BackupRequest{}, false, fmt.Errorf("parse db %s flags: %w", action, err)
+	}
+	if fs.NArg() != 0 {
+		return app.BackupRequest{}, false, fmt.Errorf("db %s takes no positional arguments, found %q", action, fs.Arg(0))
+	}
+	if path == "" {
+		flagName := "-from"
+		if action == "backup" {
+			flagName = "-out"
+		}
+		return app.BackupRequest{}, false, fmt.Errorf("db %s requires %s <path>", action, flagName)
+	}
+	return app.BackupRequest{Action: action, Path: path, Confirmation: confirmation}, jsonOutput, nil
 }

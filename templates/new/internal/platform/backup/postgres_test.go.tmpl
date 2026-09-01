@@ -1,0 +1,397 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package backup
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	migrationdb "{{.ModulePath}}/db"
+	"{{.ModulePath}}/internal/platform/database"
+	"{{.ModulePath}}/internal/platform/database/dbtest"
+)
+
+// requireTools skips when pg_dump and pg_restore are not installed.
+//
+// They are required in CI, where the PostgreSQL service is present and their
+// absence is a broken image rather than an ordinary developer machine. The
+// same variable that makes the database mandatory makes these mandatory.
+func requireTools(t *testing.T) {
+	t.Helper()
+	if _, _, err := RequireTools(); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("CI is set and the PostgreSQL client tools are missing: %v", err)
+		}
+		t.Skipf("skipping: %v", err)
+	}
+}
+
+// probe is one migrated test database plus a row to look for after a restore.
+type probe struct {
+	settings Settings
+	url      string
+	password string
+	version  int64
+}
+
+const probeMarker = "the row that has to come back"
+
+func newProbe(t *testing.T) probe {
+	t.Helper()
+	requireTools(t)
+
+	testDatabase := dbtest.New(t)
+	url := testDatabase.URL().Reveal()
+	password := testDatabase.Password().Reveal()
+
+	ctx := context.Background()
+	migrator, err := database.OpenMigrator(ctx, url, password, 10*time.Second, migrationdb.Migrations())
+	if err != nil {
+		t.Fatalf("OpenMigrator: %v", err)
+	}
+	if _, err := migrator.Up(ctx); err != nil {
+		_ = migrator.Close()
+		t.Fatalf("applying migrations: %v", err)
+	}
+	if err := migrator.Close(); err != nil {
+		t.Fatalf("closing the migrator: %v", err)
+	}
+
+	conn := connectProbe(t, url, password)
+	if _, err := conn.Exec(ctx, `CREATE TABLE backup_probe (note text primary key)`); err != nil {
+		t.Fatalf("creating the probe table: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `INSERT INTO backup_probe (note) VALUES ($1)`, probeMarker); err != nil {
+		t.Fatalf("inserting the probe row: %v", err)
+	}
+
+	var version int64
+	if err := conn.QueryRow(ctx, `SELECT max(version_id) FROM goose_db_version WHERE is_applied`).Scan(&version); err != nil {
+		t.Fatalf("reading the schema head: %v", err)
+	}
+	if version < 1 {
+		t.Fatalf("the probe database is at schema version %d, so it was never migrated", version)
+	}
+
+	key, err := NewKey()
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+	settings, err := NewSettings(url, password, key)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+	return probe{settings: settings, url: url, password: password, version: version}
+}
+
+func connectProbe(t *testing.T, url, password string) *pgx.Conn {
+	t.Helper()
+	config, err := pgx.ParseConfig(url)
+	if err != nil {
+		t.Fatalf("parsing the test database URL: %v", err)
+	}
+	if password != "" {
+		config.Password = password
+	}
+	conn, err := pgx.ConnectConfig(context.Background(), config)
+	if err != nil {
+		t.Fatalf("connecting to the test database: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	return conn
+}
+
+func TestABackupCanBeVerifiedAndRestored(t *testing.T) {
+	p := newProbe(t)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "probe.backup")
+
+	created, err := Create(ctx, p.settings, path)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.SchemaVersion != p.version {
+		t.Errorf("the backup records schema %d, want %d", created.SchemaVersion, p.version)
+	}
+	if created.Bytes == 0 {
+		t.Error("the backup reports dumping no bytes")
+	}
+
+	// The backup must not be readable as a dump. If pg_restore can list it,
+	// nothing was encrypted and every property this package claims is
+	// vacuous.
+	// #nosec G204 -- path is this test's own t.TempDir() file.
+	if output, err := exec.Command("pg_restore", "--list", path).CombinedOutput(); err == nil {
+		t.Fatalf("pg_restore read the backup as a plain archive:\n%s", output)
+	}
+
+	// Verify restores it into a scratch database. This is the real check:
+	// the bytes being intact says nothing about pg_restore accepting them.
+	verified, err := Verify(ctx, p.settings, path)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !verified.Verified || verified.SchemaVersion != p.version {
+		t.Errorf("Verify = %+v, want a verified result at schema %d", verified, p.version)
+	}
+
+	// The scratch database is gone afterwards. One left behind per
+	// verification is how a nightly drill fills a disk.
+	assertNoScratchDatabases(t, p)
+
+	// Then destroy the data and restore it.
+	conn := connectProbe(t, p.url, p.password)
+	if _, err := conn.Exec(ctx, `DELETE FROM backup_probe`); err != nil {
+		t.Fatalf("emptying the probe table: %v", err)
+	}
+	if _, err := Restore(ctx, p.settings, path); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	var note string
+	if err := conn.QueryRow(ctx, `SELECT note FROM backup_probe`).Scan(&note); err != nil {
+		t.Fatalf("reading the probe row after the restore: %v", err)
+	}
+	if note != probeMarker {
+		t.Errorf("the restored row is %q, want %q", note, probeMarker)
+	}
+}
+
+func TestVerifyRefusesABackupSealedWithAnotherKey(t *testing.T) {
+	p := newProbe(t)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "probe.backup")
+
+	if _, err := Create(ctx, p.settings, path); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	otherKey, err := NewKey()
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+	stranger, err := NewSettings(p.url, p.password, otherKey)
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+
+	if _, err := Verify(ctx, stranger, path); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("error = %v, want ErrCorrupt", err)
+	}
+	// A failed verification must clean up after itself too. The failing path
+	// is exactly the one somebody runs repeatedly while working out what
+	// went wrong.
+	assertNoScratchDatabases(t, p)
+}
+
+func TestVerifyRefusesATruncatedBackup(t *testing.T) {
+	p := newProbe(t)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "probe.backup")
+
+	if _, err := Create(ctx, p.settings, path); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the backup: %v", err)
+	}
+	if len(contents) < 64 {
+		t.Fatalf("the backup is %d bytes, which is too small for this test to mean anything", len(contents))
+	}
+	// #nosec G703 -- path is this test's own t.TempDir() file.
+	if err := os.WriteFile(path, contents[:len(contents)-16], 0o600); err != nil {
+		t.Fatalf("truncating the backup: %v", err)
+	}
+
+	if _, err := Verify(ctx, p.settings, path); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("error = %v, want ErrCorrupt for a truncated backup", err)
+	}
+	assertNoScratchDatabases(t, p)
+}
+
+// This is the test that proves Verify restores rather than reads.
+//
+// It seals a real dump under a header that claims a schema version the dump
+// does not contain — honestly signed, so nothing in the file is detectably
+// wrong. The only way to notice is to restore it and look. A Verify that
+// checked a checksum, or that reported the header's own version back, would
+// pass every other test in this file and fail this one.
+func TestVerifyNoticesADumpThatIsNotTheSchemaTheHeaderClaims(t *testing.T) {
+	p := newProbe(t)
+	ctx := context.Background()
+
+	honest := filepath.Join(t.TempDir(), "honest.backup")
+	created, err := Create(ctx, p.settings, honest)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Take the same dump apart and re-seal it under a lying header.
+	plaintext := dumpPlaintext(t, p, honest)
+	header := Header{
+		Magic:         Magic,
+		Format:        Format,
+		Database:      created.Database,
+		SchemaVersion: created.SchemaVersion + 1,
+		CreatedAt:     created.CreatedAt,
+		PgDumpVersion: "pg_dump (PostgreSQL) 17.6",
+	}
+	forged := filepath.Join(t.TempDir(), "forged.backup")
+	writeSealed(t, forged, p.settings.Key, header, plaintext)
+
+	// The forgery is internally consistent: it parses, and its body opens.
+	if _, err := Describe(forged); err != nil {
+		t.Fatalf("the forged backup does not even parse, so this test proves nothing: %v", err)
+	}
+
+	_, err = Verify(ctx, p.settings, forged)
+	if !errors.Is(err, ErrSchemaMismatch) {
+		t.Fatalf("error = %v, want ErrSchemaMismatch; Verify did not restore the dump", err)
+	}
+	assertNoScratchDatabases(t, p)
+}
+
+// dumpPlaintext recovers the pg_dump archive inside a backup this test took.
+func dumpPlaintext(t *testing.T, p probe, path string) []byte {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("opening %s: %v", path, err)
+	}
+	defer func() { _ = file.Close() }()
+
+	parsed, err := readHeader(file)
+	if err != nil {
+		t.Fatalf("reading the header: %v", err)
+	}
+	var plaintext bytes.Buffer
+	if err := open(&plaintext, parsed.reader, p.settings.Key, parsed.additional); err != nil {
+		t.Fatalf("opening the body: %v", err)
+	}
+	if plaintext.Len() == 0 {
+		t.Fatal("the recovered dump is empty")
+	}
+	return plaintext.Bytes()
+}
+
+// writeSealed writes a well-formed backup around arbitrary header and dump
+// bytes, which only a test has any business doing.
+func writeSealed(t *testing.T, path string, key []byte, header Header, plaintext []byte) {
+	t.Helper()
+	encoded, err := json.Marshal(header)
+	if err != nil {
+		t.Fatalf("marshalling the header: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := writeHeader(&buf, encoded); err != nil {
+		t.Fatalf("writeHeader: %v", err)
+	}
+	if err := seal(&buf, bytes.NewReader(plaintext), key, encoded); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
+}
+
+func TestDescribeReadsABackupWithoutTheKey(t *testing.T) {
+	p := newProbe(t)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "probe.backup")
+
+	created, err := Create(ctx, p.settings, path)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	header, err := Describe(path)
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if header.SchemaVersion != created.SchemaVersion || header.Database != created.Database {
+		t.Errorf("Describe = %+v, want the database and schema Create reported", header)
+	}
+	if !strings.Contains(header.PgDumpVersion, "pg_dump") {
+		t.Errorf("the header records pg_dump version %q", header.PgDumpVersion)
+	}
+}
+
+func TestAFailedBackupLeavesNoFileThatLooksFinished(t *testing.T) {
+	p := newProbe(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "probe.backup")
+
+	// Point at a database that does not exist, so pg_dump fails after the
+	// file has been created and the header written.
+	brokenURL := strings.Replace(p.url, "/"+mustDatabaseName(t, p.settings), "/no_such_database_here", 1)
+	if brokenURL == p.url {
+		t.Fatalf("could not redirect %q at a missing database", p.url)
+	}
+	broken, err := NewSettings(brokenURL, p.password, mustKey(t))
+	if err != nil {
+		t.Fatalf("NewSettings: %v", err)
+	}
+
+	if _, err := Create(context.Background(), broken, path); err == nil {
+		t.Fatal("Create succeeded against a database that does not exist")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", dir, err)
+	}
+	for _, entry := range entries {
+		t.Errorf("a failed backup left %s behind", entry.Name())
+	}
+}
+
+func mustDatabaseName(t *testing.T, settings Settings) string {
+	t.Helper()
+	name, err := DatabaseName(settings)
+	if err != nil {
+		t.Fatalf("DatabaseName: %v", err)
+	}
+	return name
+}
+
+func mustKey(t *testing.T) []byte {
+	t.Helper()
+	key, err := NewKey()
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+	return key
+}
+
+// assertNoScratchDatabases fails when a verification left one behind.
+func assertNoScratchDatabases(t *testing.T, p probe) {
+	t.Helper()
+	maintenance := strings.Replace(p.url, "/"+mustDatabaseName(t, p.settings), "/postgres", 1)
+	conn := connectProbe(t, maintenance, p.password)
+
+	rows, err := conn.Query(context.Background(),
+		`SELECT datname FROM pg_database WHERE datname LIKE 'nise\_verify\_%'`)
+	if err != nil {
+		t.Fatalf("listing databases: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scanning a database name: %v", err)
+		}
+		t.Errorf("a scratch database was left behind: %s", name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("listing databases: %v", err)
+	}
+}

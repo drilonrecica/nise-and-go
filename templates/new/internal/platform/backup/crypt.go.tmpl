@@ -1,0 +1,229 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package backup
+
+import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+)
+
+// Streaming authenticated encryption for a backup.
+//
+// A backup does not fit in memory and must not be trusted until it has been
+// verified, so neither "encrypt the whole thing" nor "decrypt and hope" is
+// available. What is needed is a construction where each chunk is
+// authenticated on its own *and* the sequence of chunks is authenticated as a
+// whole — because an attacker who cannot forge a chunk can still reorder,
+// duplicate, or truncate a file of them, and a restore from a truncated
+// backup is a database that is missing the end of itself and says nothing
+// about it.
+//
+// This is the STREAM construction. Each chunk is sealed with AES-256-GCM
+// under a nonce built from three parts:
+//
+//	[ 7-byte random prefix | 4-byte big-endian counter | 1-byte final flag ]
+//
+// The random prefix makes nonces unique across files sealed with one key. The
+// counter makes them unique within a file and binds each chunk to its
+// position, so a reordered or duplicated chunk fails to open. The final flag
+// is set only on the last chunk, so a truncated file fails to open rather
+// than decrypting to a prefix of itself — which is the property a plain
+// per-chunk AEAD does not have and the one that matters most here.
+//
+// Written out rather than taken from a dependency because it is forty lines
+// of standard library, and because a backup format nobody can read without
+// this application is a backup format.
+
+const (
+	// chunkSize is the plaintext size of each sealed chunk. 1 MiB keeps the
+	// memory cost of a restore flat regardless of the backup's size, and is
+	// large enough that the per-chunk overhead is under a thousandth.
+	chunkSize = 1 << 20
+	// noncePrefixBytes, counterBytes, and finalFlagBytes are the STREAM
+	// nonce layout. They sum to AES-GCM's 12-byte nonce.
+	noncePrefixBytes = 7
+	counterBytes     = 4
+	finalFlagBytes   = 1
+	// KeyBytes is the length of a backup encryption key.
+	KeyBytes = 32
+	// maxChunks bounds a file at the counter's width, which at 1 MiB per
+	// chunk is four petabytes. Reaching it means something is wrong.
+	maxChunks = 1<<32 - 1
+)
+
+// ErrKeyLength reports a key that is not KeyBytes long.
+var ErrKeyLength = fmt.Errorf("backup: an encryption key must be exactly %d bytes", KeyBytes)
+
+// ErrCorrupt reports a backup that failed authentication.
+//
+// It never says how. A backup that reports "wrong key" separately from
+// "modified ciphertext" tells whoever is probing it which of the two they got
+// wrong, and the caller can do nothing different with the distinction anyway.
+var ErrCorrupt = errors.New("backup: the backup is not authentic; it was produced with a different key, or it has been altered or truncated")
+
+// sealer encrypts a stream.
+type sealer struct {
+	aead   cipher.AEAD
+	prefix [noncePrefixBytes]byte
+}
+
+func newSealer(key []byte) (*sealer, error) {
+	aead, err := newAEAD(key)
+	if err != nil {
+		return nil, err
+	}
+	s := &sealer{aead: aead}
+	if _, err := io.ReadFull(rand.Reader, s.prefix[:]); err != nil {
+		return nil, fmt.Errorf("backup: generating a nonce prefix: %w", err)
+	}
+	return s, nil
+}
+
+func newAEAD(key []byte) (cipher.AEAD, error) {
+	if len(key) != KeyBytes {
+		return nil, ErrKeyLength
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("backup: preparing the cipher: %w", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("backup: preparing authenticated encryption: %w", err)
+	}
+	return aead, nil
+}
+
+// nonce builds the STREAM nonce for one chunk.
+func nonce(prefix [noncePrefixBytes]byte, counter uint32, final bool) []byte {
+	out := make([]byte, noncePrefixBytes+counterBytes+finalFlagBytes)
+	copy(out, prefix[:])
+	binary.BigEndian.PutUint32(out[noncePrefixBytes:], counter)
+	if final {
+		out[noncePrefixBytes+counterBytes] = 1
+	}
+	return out
+}
+
+// seal reads plaintext from src and writes the nonce prefix followed by
+// sealed chunks to dst.
+//
+// The additional authenticated data is the caller's, and is what binds the
+// ciphertext to the header the reader has already parsed — so a backup whose
+// header was edited to claim a different schema version fails to open rather
+// than restoring under a false description.
+func seal(dst io.Writer, src io.Reader, key, additional []byte) error {
+	s, err := newSealer(key)
+	if err != nil {
+		return err
+	}
+	if _, err := dst.Write(s.prefix[:]); err != nil {
+		return fmt.Errorf("backup: writing the nonce prefix: %w", err)
+	}
+
+	plaintext := make([]byte, chunkSize)
+	sealed := make([]byte, 0, chunkSize+s.aead.Overhead())
+	var counter uint32
+
+	for {
+		n, readErr := io.ReadFull(src, plaintext)
+		final := readErr == io.EOF || readErr == io.ErrUnexpectedEOF
+		if readErr != nil && !final {
+			return fmt.Errorf("backup: reading the dump: %w", readErr)
+		}
+		if counter > maxChunks {
+			return errors.New("backup: the dump is larger than this format can seal")
+		}
+		// An empty final read still produces a final chunk. Without it a
+		// dump whose length is an exact multiple of the chunk size would
+		// have no chunk carrying the final flag, and would be
+		// indistinguishable from a truncated one.
+		sealed = s.aead.Seal(sealed[:0], nonce(s.prefix, counter, final), plaintext[:n], additional)
+		if _, err := dst.Write(sealed); err != nil {
+			return fmt.Errorf("backup: writing a chunk: %w", err)
+		}
+		if final {
+			return nil
+		}
+		counter++
+	}
+}
+
+// open reads sealed chunks from src and writes plaintext to dst.
+//
+// Nothing is written until the chunk carrying it has been authenticated, and
+// the stream ends only at a chunk marked final — so a truncated file produces
+// an error rather than a short restore.
+func open(dst io.Writer, src io.Reader, key, additional []byte) error {
+	aead, err := newAEAD(key)
+	if err != nil {
+		return err
+	}
+
+	var prefix [noncePrefixBytes]byte
+	if _, err := io.ReadFull(src, prefix[:]); err != nil {
+		return fmt.Errorf("%w: it is too short to contain a header", ErrCorrupt)
+	}
+
+	sealed := make([]byte, chunkSize+aead.Overhead())
+	plaintext := make([]byte, 0, chunkSize)
+	var counter uint32
+
+	for {
+		n, readErr := io.ReadFull(src, sealed)
+		last := readErr == io.EOF || readErr == io.ErrUnexpectedEOF
+		if readErr != nil && !last {
+			return fmt.Errorf("backup: reading the backup: %w", readErr)
+		}
+		if n < aead.Overhead() && (!last || n != 0) {
+			return fmt.Errorf("%w: a chunk is too short", ErrCorrupt)
+		}
+
+		// A full read is not necessarily a non-final chunk: the last chunk
+		// is full when the plaintext divides evenly. So try the non-final
+		// nonce first and fall back to the final one, and treat failure of
+		// both as corruption.
+		out, openErr := aead.Open(plaintext[:0], nonce(prefix, counter, false), sealed[:n], additional)
+		final := false
+		if openErr != nil {
+			out, openErr = aead.Open(plaintext[:0], nonce(prefix, counter, true), sealed[:n], additional)
+			final = true
+		}
+		if openErr != nil {
+			return ErrCorrupt
+		}
+		if _, err := dst.Write(out); err != nil {
+			return fmt.Errorf("backup: writing the restored dump: %w", err)
+		}
+		if final {
+			// Anything after a chunk marked final is an appended forgery
+			// attempt or a corrupted file. Either way it is not this
+			// backup.
+			var trailing [1]byte
+			if _, err := io.ReadFull(src, trailing[:]); err == nil {
+				return fmt.Errorf("%w: there is data after the final chunk", ErrCorrupt)
+			}
+			return nil
+		}
+		if last {
+			// The file ended without a final chunk, which is exactly what
+			// truncation looks like.
+			return fmt.Errorf("%w: it ends without a final chunk, so it is truncated", ErrCorrupt)
+		}
+		counter++
+	}
+}
+
+// NewKey generates a backup encryption key.
+func NewKey() ([]byte, error) {
+	key := make([]byte, KeyBytes)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		return nil, fmt.Errorf("backup: generating a key: %w", err)
+	}
+	return key, nil
+}

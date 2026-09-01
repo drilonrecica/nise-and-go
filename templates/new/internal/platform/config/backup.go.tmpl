@@ -1,0 +1,50 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package config
+
+import (
+	"encoding/base64"
+	"fmt"
+
+	rtconfig "github.com/drilonrecica/nise-and-go/runtime/config"
+
+	"{{.ModulePath}}/internal/platform/backup"
+)
+
+// BackupKeyVar is the environment variable carrying the backup encryption
+// key, base64 of exactly 32 random bytes. Generate one with:
+//
+//	openssl rand -base64 32
+const BackupKeyVar = "BACKUP_ENCRYPTION_KEY"
+
+// BackupKey reads and decodes the backup encryption key.
+//
+// It is read here rather than in Load, and is not a Config field. Only the
+// backup commands need it, and a key reachable from every holder of a Config
+// is a key present in the memory of every web replica that will never take a
+// backup. BACKUP_ENCRYPTION_KEY_FILE works the same way it does for every
+// other secret.
+//
+// There is no default and no generated fallback. An unset cursor key can
+// generate an ephemeral one because the cost is cursors that stop verifying
+// after a restart; an unset backup key would produce a backup nobody can ever
+// read, which is discovered on the day it is needed.
+func BackupKey() ([]byte, error) {
+	loader := rtconfig.NewLoader()
+	secret := loader.Secret(BackupKeyVar)
+	if err := loader.Err(); err != nil {
+		return nil, fmt.Errorf("%w\nGenerate one with: openssl rand -base64 %d", err, backup.KeyBytes)
+	}
+
+	key, err := base64.StdEncoding.DecodeString(secret.Reveal())
+	if err != nil {
+		// The error from base64 is not wrapped: it quotes the offending
+		// input, and the offending input here is the key.
+		return nil, fmt.Errorf("%s: the value is not valid base64", BackupKeyVar)
+	}
+	if len(key) != backup.KeyBytes {
+		return nil, fmt.Errorf("%s: decodes to %d bytes and must be exactly %d\nGenerate one with: openssl rand -base64 %d",
+			BackupKeyVar, len(key), backup.KeyBytes, backup.KeyBytes)
+	}
+	return key, nil
+}

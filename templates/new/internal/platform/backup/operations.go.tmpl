@@ -1,0 +1,268 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package backup
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+// Result is what an operation reports.
+type Result struct {
+	Action        string    `json:"action"`
+	Path          string    `json:"path,omitempty"`
+	Database      string    `json:"database"`
+	SchemaVersion int64     `json:"schema_version"`
+	Bytes         int64     `json:"bytes,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	// Verified is set by Verify, and says the backup was restored into a
+	// scratch database and arrived at the schema version it claims.
+	Verified bool `json:"verified,omitempty"`
+}
+
+// String renders an operator-readable single line.
+func (r Result) String() string {
+	switch r.Action {
+	case "backup":
+		return fmt.Sprintf("backup written: path=%s database=%s schema=%d dumped_bytes=%d",
+			r.Path, r.Database, r.SchemaVersion, r.Bytes)
+	case "restore":
+		return fmt.Sprintf("backup restored: database=%s schema=%d from=%s taken=%s",
+			r.Database, r.SchemaVersion, r.Path, r.CreatedAt.Format(time.RFC3339))
+	case "verify":
+		return fmt.Sprintf("backup verified by restoring it: path=%s schema=%d taken=%s",
+			r.Path, r.SchemaVersion, r.CreatedAt.Format(time.RFC3339))
+	default:
+		return fmt.Sprintf("%s: database=%s schema=%d", r.Action, r.Database, r.SchemaVersion)
+	}
+}
+
+// Create takes a backup and writes it to path.
+//
+// The dump is streamed: pg_dump's output is encrypted chunk by chunk as it
+// arrives, so a backup of any size costs one chunk of memory and no plaintext
+// copy of the database is ever written to disk.
+func Create(ctx context.Context, settings Settings, path string) (Result, error) {
+	if !settings.valid {
+		return Result{}, errUnvalidatedSettings
+	}
+	pgDumpVersion, _, err := RequireTools()
+	if err != nil {
+		return Result{}, err
+	}
+
+	database, err := databaseName(settings.DatabaseURL)
+	if err != nil {
+		return Result{}, err
+	}
+	schemaVersion, err := currentSchemaVersion(ctx, settings)
+	if err != nil {
+		return Result{}, err
+	}
+
+	header := Header{
+		Magic:         Magic,
+		Format:        Format,
+		Database:      database,
+		SchemaVersion: schemaVersion,
+		CreatedAt:     time.Now().UTC(),
+		PgDumpVersion: pgDumpVersion,
+	}
+	headerBytes, err := json.Marshal(header)
+	if err != nil {
+		return Result{}, fmt.Errorf("backup: encoding the header: %w", err)
+	}
+
+	// The file is written under a temporary name beside its destination and
+	// renamed into place, so a failed or interrupted backup never leaves a
+	// file that looks like a finished one. A half-written backup nobody
+	// notices is worse than no backup, because it is the one somebody
+	// reaches for.
+	temporary := path + ".partial"
+	// #nosec G304 -- writing to the path the operator named is what this
+	// command is. O_EXCL means an existing file is refused rather than
+	// clobbered, and 0600 keeps a backup readable only by its owner.
+	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return Result{}, fmt.Errorf("backup: creating %s: %w", temporary, err)
+	}
+	removeTemporary := func() { _ = os.Remove(temporary) }
+	defer removeTemporary()
+
+	dumped, err := dumpInto(ctx, settings, file, headerBytes)
+	if closeErr := file.Close(); err == nil && closeErr != nil {
+		err = fmt.Errorf("backup: closing %s: %w", temporary, closeErr)
+	}
+	if err != nil {
+		return Result{}, err
+	}
+
+	if err := os.Rename(temporary, path); err != nil {
+		return Result{}, fmt.Errorf("backup: publishing %s: %w", path, err)
+	}
+	return Result{
+		Action:        "backup",
+		Path:          path,
+		Database:      database,
+		SchemaVersion: schemaVersion,
+		Bytes:         dumped,
+		CreatedAt:     header.CreatedAt,
+	}, nil
+}
+
+// dumpInto runs pg_dump and seals its output into w, reporting how many
+// plaintext bytes the dump produced.
+func dumpInto(ctx context.Context, settings Settings, w io.Writer, headerBytes []byte) (int64, error) {
+	buffered := bufio.NewWriterSize(w, 1<<20)
+	if err := writeHeader(buffered, headerBytes); err != nil {
+		return 0, err
+	}
+
+	dumpCtx, cancel := context.WithTimeout(ctx, commandTimeout)
+	defer cancel()
+	// #nosec G204 -- the URL is this application's own configuration and the
+	// flags are literals. The password is not here; see environment().
+	cmd := exec.CommandContext(dumpCtx, "pg_dump",
+		"--format="+dumpFormat,
+		"--no-owner", "--no-privileges",
+		settings.DatabaseURL,
+	)
+	cmd.Env = environment(settings.Password)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return 0, fmt.Errorf("backup: reading pg_dump output: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("backup: starting pg_dump: %w", err)
+	}
+
+	counted := &countingReader{reader: stdout}
+	sealErr := seal(buffered, counted, settings.Key, headerBytes)
+	waitErr := cmd.Wait()
+
+	// pg_dump's own failure is reported first. A seal that stopped early
+	// because the dump died mid-stream would otherwise report a write error
+	// and hide the reason, which is usually in that stderr.
+	if waitErr != nil {
+		return 0, fmt.Errorf("backup: pg_dump failed: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
+	}
+	if sealErr != nil {
+		return 0, sealErr
+	}
+	if err := buffered.Flush(); err != nil {
+		return 0, fmt.Errorf("backup: writing the backup: %w", err)
+	}
+	return counted.count, nil
+}
+
+// Restore replaces the configured database's contents with a backup's.
+//
+// This is destructive and irreversible. Nothing here asks for confirmation —
+// obtaining it is the caller's job, and burying the question inside a
+// function that also does the work is how it ends up being skipped by the
+// second caller.
+func Restore(ctx context.Context, settings Settings, path string) (Result, error) {
+	if !settings.valid {
+		return Result{}, errUnvalidatedSettings
+	}
+	if _, _, err := RequireTools(); err != nil {
+		return Result{}, err
+	}
+	header, sealed, closeBackup, err := openBackup(path)
+	if err != nil {
+		return Result{}, err
+	}
+	defer closeBackup()
+
+	if err := restoreInto(ctx, settings, settings.DatabaseURL, sealed); err != nil {
+		return Result{}, err
+	}
+	return Result{
+		Action:        "restore",
+		Path:          path,
+		Database:      header.Database,
+		SchemaVersion: header.SchemaVersion,
+		CreatedAt:     header.CreatedAt,
+	}, nil
+}
+
+// Verify restores a backup into a scratch database and checks that the schema
+// arrives where the header says it should.
+//
+// This is the whole point of the command. A checksum proves the bytes are the
+// bytes; it says nothing about whether pg_restore will accept them, or
+// whether what comes out is a schema this application understands. A backup
+// nobody has restored is a hypothesis.
+//
+// The scratch database is created beside the real one and dropped afterwards,
+// including when the restore fails.
+func Verify(ctx context.Context, settings Settings, path string) (Result, error) {
+	if !settings.valid {
+		return Result{}, errUnvalidatedSettings
+	}
+	if _, _, err := RequireTools(); err != nil {
+		return Result{}, err
+	}
+	header, sealed, closeBackup, err := openBackup(path)
+	if err != nil {
+		return Result{}, err
+	}
+	defer closeBackup()
+
+	scratch, scratchURL, err := createScratchDatabase(ctx, settings)
+	if err != nil {
+		return Result{}, err
+	}
+	// context.WithoutCancel so that a verification cancelled halfway still
+	// cleans up after itself. Handing the drop a context that is already
+	// done is how the scratch database survives exactly the interruption it
+	// most needs to be cleaned up after.
+	defer dropScratchDatabase(context.WithoutCancel(ctx), settings, scratch)
+
+	if err := restoreInto(ctx, settings, scratchURL, sealed); err != nil {
+		return Result{}, err
+	}
+
+	scratchSettings := settings
+	scratchSettings.DatabaseURL = scratchURL
+	restored, err := currentSchemaVersion(ctx, scratchSettings)
+	if err != nil {
+		return Result{}, fmt.Errorf("backup: reading the restored schema version: %w", err)
+	}
+	if restored != header.SchemaVersion {
+		return Result{}, fmt.Errorf("%w: the backup says %d and restoring it produced %d",
+			ErrSchemaMismatch, header.SchemaVersion, restored)
+	}
+
+	return Result{
+		Action:        "verify",
+		Path:          path,
+		Database:      header.Database,
+		SchemaVersion: restored,
+		CreatedAt:     header.CreatedAt,
+		Verified:      true,
+	}, nil
+}
+
+// Describe reads a backup's header, which needs no key.
+func Describe(path string) (Header, error) {
+	header, _, closeBackup, err := openBackup(path)
+	if err != nil {
+		return Header{}, err
+	}
+	closeBackup()
+	return header, nil
+}
+
+var errUnvalidatedSettings = errors.New("backup: settings must come from NewSettings")

@@ -60,6 +60,7 @@ Nise & Go is currently in design and pre-alpha development. These pages describe
 - [Checks](checks.md)
 - [Linting](linting.md)
 - [Deployment](deployment.md)
+- [Backups](backups.md)
 - [Versioning and compatibility](versioning.md)
 - [Public roadmap](roadmap.md)
 - [Architecture Decision Records](adr/README.md) ([template](adr/template.md))

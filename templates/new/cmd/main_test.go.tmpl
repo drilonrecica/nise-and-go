@@ -22,7 +22,7 @@ func TestParseDatabaseArgs(t *testing.T) {
 	}{
 		{name: "migrate", args: []string{"migrate"}, wantAction: "migrate"},
 		{name: "status JSON", args: []string{"status", "--json"}, wantAction: "status", wantJSON: true},
-		{name: "missing", wantError: "db migrate or db status"},
+		{name: "missing", wantError: "database action is required"},
 		{name: "unknown", args: []string{"repair"}, wantError: "unknown database action"},
 		{name: "extra", args: []string{"status", "extra"}, wantError: "takes no positional arguments"},
 	}
@@ -43,6 +43,92 @@ func TestParseDatabaseArgs(t *testing.T) {
 				t.Errorf("result = %q/%v, want %q/%v", action, jsonOutput, tc.wantAction, tc.wantJSON)
 			}
 		})
+	}
+}
+
+func TestParseBackupArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		action    string
+		args      []string
+		want      app.BackupRequest
+		wantJSON  bool
+		wantError string
+	}{
+		{
+			name:   "backup",
+			action: "backup",
+			args:   []string{"-out", "/backups/today.backup"},
+			want:   app.BackupRequest{Action: "backup", Path: "/backups/today.backup"},
+		},
+		{
+			name:     "verify with JSON",
+			action:   "verify",
+			args:     []string{"-from", "/backups/today.backup", "-json"},
+			want:     app.BackupRequest{Action: "verify", Path: "/backups/today.backup"},
+			wantJSON: true,
+		},
+		{
+			name:   "restore carries its confirmation",
+			action: "restore",
+			args:   []string{"-from", "/backups/today.backup", "-confirm", "myapp"},
+			want:   app.BackupRequest{Action: "restore", Path: "/backups/today.backup", Confirmation: "myapp"},
+		},
+		// The path flag is named for the direction each command runs in, so
+		// -out on a restore is a mistake worth catching rather than a synonym.
+		{name: "backup without a path", action: "backup", args: nil, wantError: "requires -out"},
+		{name: "verify without a path", action: "verify", args: nil, wantError: "requires -from"},
+		{name: "restore given -out", action: "restore", args: []string{"-out", "/x"}, wantError: "flag provided but not defined"},
+		{name: "backup given -confirm", action: "backup", args: []string{"-out", "/x", "-confirm", "myapp"}, wantError: "flag provided but not defined"},
+		{name: "extra", action: "verify", args: []string{"-from", "/x", "extra"}, wantError: "takes no positional arguments"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			request, jsonOutput, err := parseBackupArgs(tc.action, tc.args)
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("error = %v, want text %q", err, tc.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseBackupArgs: %v", err)
+			}
+			if request != tc.want || jsonOutput != tc.wantJSON {
+				t.Errorf("result = %+v/%v, want %+v/%v", request, jsonOutput, tc.want, tc.wantJSON)
+			}
+		})
+	}
+}
+
+// The two surfaces under `db` must not overlap: an action routed to the wrong
+// one either loses its flags or reports the wrong result shape.
+func TestTheTwoDatabaseSurfacesDoNotOverlap(t *testing.T) {
+	t.Parallel()
+
+	for _, action := range []string{"migrate", "status"} {
+		if app.IsBackupAction(action) {
+			t.Errorf("%q is routed to the backup surface", action)
+		}
+	}
+	for _, action := range app.BackupActions {
+		if _, _, err := parseDatabaseArgs([]string{action}); err == nil {
+			t.Errorf("parseDatabaseArgs accepted %q, which belongs to the backup surface", action)
+		}
+	}
+	// An unknown action must still name every action that exists, including
+	// the ones added after that message was written.
+	_, _, err := parseDatabaseArgs([]string{"repair"})
+	if err == nil {
+		t.Fatal("parseDatabaseArgs accepted an unknown action")
+	}
+	for _, action := range databaseActions {
+		if !strings.Contains(err.Error(), action) {
+			t.Errorf("the error for an unknown action does not mention %q: %v", action, err)
+		}
 	}
 }
 

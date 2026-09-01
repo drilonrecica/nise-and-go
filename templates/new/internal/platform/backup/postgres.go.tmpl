@@ -1,0 +1,252 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package backup
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base32"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// maintenanceDatabase is the database a scratch database is created from. It
+// exists on every PostgreSQL server and is never the application's own, which
+// matters because CREATE DATABASE cannot run from inside the database being
+// created.
+const maintenanceDatabase = "postgres"
+
+// scratchPrefix names verification databases recognizably, so one left behind
+// by a killed process is obviously not somebody's data.
+const scratchPrefix = "nise_verify_"
+
+// databaseName extracts the database a connection string points at.
+func databaseName(databaseURL string) (string, error) {
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		return "", fmt.Errorf("backup: the database URL does not parse: %w", err)
+	}
+	name := strings.TrimPrefix(parsed.Path, "/")
+	if name == "" {
+		return "", errors.New("backup: the database URL does not name a database")
+	}
+	return name, nil
+}
+
+// withDatabase returns the same connection string pointed at another
+// database on the same server, preserving every connection parameter.
+func withDatabase(databaseURL, name string) (string, error) {
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		return "", fmt.Errorf("backup: the database URL does not parse: %w", err)
+	}
+	parsed.Path = "/" + name
+	return parsed.String(), nil
+}
+
+// connect opens one connection, with the password supplied out of band.
+//
+// The password is set on the parsed configuration rather than interpolated
+// into the URL, because a password containing a `#`, a `/`, or an `@` would
+// otherwise have to be percent-encoded and silently produces a connection
+// string that parses into something else when it is not.
+func connect(ctx context.Context, databaseURL, password string) (*pgx.Conn, error) {
+	config, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("backup: the database URL does not parse: %w", err)
+	}
+	if password != "" {
+		config.Password = password
+	}
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("backup: connecting to the database: %w", err)
+	}
+	return conn, nil
+}
+
+// currentSchemaVersion reads the Goose migration head.
+//
+// It reads the history rather than counting the embedded migration files,
+// because the point is what the *database* is at. A backup labelled with the
+// binary's own target version would claim a schema the dump may not contain.
+func currentSchemaVersion(ctx context.Context, settings Settings) (int64, error) {
+	conn, err := connect(ctx, settings.DatabaseURL, settings.Password)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+
+	var present bool
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('goose_db_version') IS NOT NULL`).Scan(&present); err != nil {
+		return 0, fmt.Errorf("backup: looking for the migration history: %w", err)
+	}
+	if !present {
+		// A database with no history is one no migration has run against.
+		// That is a legitimate thing to back up — an empty database is a
+		// state worth being able to return to — and version zero says so.
+		return 0, nil
+	}
+
+	var version int64
+	err = conn.QueryRow(ctx,
+		`SELECT coalesce(max(version_id), 0) FROM goose_db_version WHERE is_applied`).Scan(&version)
+	if err != nil {
+		return 0, fmt.Errorf("backup: reading the migration history: %w", err)
+	}
+	return version, nil
+}
+
+// restoreInto pipes a backup's decrypted body into pg_restore.
+//
+// Decryption and restoration happen at the same time, over a pipe. There is
+// no point at which a plaintext copy of the database exists on disk: a
+// verification that wrote one would leave the very thing the encryption is
+// for lying in a temporary directory, and on the day it is interrupted it
+// would leave it there.
+//
+// `--clean --if-exists` drops each object the dump contains before recreating
+// it. It does not empty the target first — an object that exists in the
+// database and not in the backup survives the restore. That is pg_restore's
+// semantics and it is stated here because it is the difference between
+// "restored" and "restored onto".
+func restoreInto(ctx context.Context, settings Settings, targetURL string, sealed body) error {
+	restoreCtx, cancel := context.WithTimeout(ctx, commandTimeout)
+	defer cancel()
+
+	// #nosec G204 -- targetURL is this application's own configuration or a
+	// scratch name this file generated; the flags are literals. The password
+	// is not on the command line; see environment().
+	cmd := exec.CommandContext(restoreCtx, "pg_restore",
+		"--dbname="+targetURL,
+		"--clean", "--if-exists",
+		"--no-owner", "--no-privileges",
+		"--exit-on-error",
+	)
+	cmd.Env = environment(settings.Password)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("backup: preparing pg_restore input: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("backup: starting pg_restore: %w", err)
+	}
+
+	openErr := open(stdin, sealed.reader, settings.Key, sealed.additional)
+	closeErr := stdin.Close()
+	waitErr := cmd.Wait()
+
+	// The decryption error is reported first when there is one. pg_restore
+	// failing on a stream that never authenticated is a consequence, and
+	// leading with "pg_restore: unexpected end of file" would send somebody
+	// looking at their database instead of at their key.
+	if openErr != nil {
+		return openErr
+	}
+	if closeErr != nil && !errors.Is(closeErr, io.ErrClosedPipe) {
+		return fmt.Errorf("backup: closing pg_restore input: %w", closeErr)
+	}
+	if waitErr != nil {
+		return fmt.Errorf("backup: pg_restore failed: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// createScratchDatabase makes an empty database for a verification restore
+// and returns its name and connection string.
+//
+// The name is random rather than derived from the backup, so two
+// verifications running at once — a scheduled one and an operator's — do not
+// collide and silently verify each other's restore.
+func createScratchDatabase(ctx context.Context, settings Settings) (string, string, error) {
+	name, err := scratchName()
+	if err != nil {
+		return "", "", err
+	}
+	maintenanceURL, err := withDatabase(settings.DatabaseURL, maintenanceDatabase)
+	if err != nil {
+		return "", "", err
+	}
+	conn, err := connect(ctx, maintenanceURL, settings.Password)
+	if err != nil {
+		return "", "", fmt.Errorf("backup: connecting to %s to create a scratch database: %w", maintenanceDatabase, err)
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+
+	// TEMPLATE template0 so the scratch database inherits nothing somebody
+	// installed into template1; the restore is supposed to be the only
+	// source of what ends up in it.
+	//
+	// The identifier is quoted through pgx's own quoting rather than
+	// concatenated, even though scratchName produced it: CREATE DATABASE
+	// cannot take a parameter, and an identifier built by concatenation is
+	// how the next person to edit this line introduces an injection.
+	statement := "CREATE DATABASE " + pgx.Identifier{name}.Sanitize() + " TEMPLATE template0"
+	if _, err := conn.Exec(ctx, statement); err != nil {
+		return "", "", fmt.Errorf("backup: creating the scratch database: %w", err)
+	}
+
+	scratchURL, err := withDatabase(settings.DatabaseURL, name)
+	if err != nil {
+		return "", "", err
+	}
+	return name, scratchURL, nil
+}
+
+// dropScratchDatabase removes a verification database.
+//
+// It is called on every exit from Verify, including the failing ones. A
+// verification that leaves a database behind when it fails turns a routine
+// drill into a cleanup task, and the second time that happens people stop
+// running it.
+func dropScratchDatabase(ctx context.Context, settings Settings, name string) {
+	dropCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	maintenanceURL, err := withDatabase(settings.DatabaseURL, maintenanceDatabase)
+	if err != nil {
+		return
+	}
+	conn, err := connect(dropCtx, maintenanceURL, settings.Password)
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(dropCtx)) }()
+
+	// WITH (FORCE) disconnects anything still attached. pg_restore's
+	// connection is gone by now on the ordinary path; on the path where it
+	// was killed, it may not be, and a drop that blocks forever on a dead
+	// process's connection is how the scratch database survives anyway.
+	statement := "DROP DATABASE IF EXISTS " + pgx.Identifier{name}.Sanitize() + " WITH (FORCE)"
+	_, _ = conn.Exec(dropCtx, statement)
+}
+
+// scratchName generates a database name that is a valid unquoted identifier
+// and cannot collide.
+func scratchName() (string, error) {
+	raw := make([]byte, 10)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("backup: naming the scratch database: %w", err)
+	}
+	// Lowercase base32 without padding: PostgreSQL folds unquoted
+	// identifiers to lowercase, and a name that changes when it is folded is
+	// a name that does not match itself.
+	suffix := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw))
+	return scratchPrefix + suffix, nil
+}
+
+// DatabaseName reports which database these settings point at, for a caller
+// that has to name it — a confirmation prompt, or an operator log line.
+func DatabaseName(settings Settings) (string, error) {
+	return databaseName(settings.DatabaseURL)
+}

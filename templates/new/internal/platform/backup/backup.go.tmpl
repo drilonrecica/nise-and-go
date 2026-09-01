@@ -1,0 +1,175 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+// Package backup takes, restores, and verifies database backups.
+//
+// # What this does and does not do itself
+//
+// The dump and the restore are `pg_dump` and `pg_restore`. This package
+// orchestrates them, encrypts what comes out, and refuses when something is
+// wrong — it does not reimplement them. A logical dump has to handle
+// extensions, sequences, ownership, large objects, and dependency ordering
+// correctly, and a hand-written approximation of that is a backup that
+// restores into a database subtly unlike the one it came from, which is worse
+// than no backup because somebody is relying on it.
+//
+// Those two binaries are therefore required, and their absence is an error
+// with the fix in it rather than a silent fallback. They are not in this
+// application's runtime image, which carries no shell and no client tools by
+// design — so backups run from an operator machine, a scheduled job, or a
+// sidecar that has them.
+//
+// # Verification means restoring
+//
+// `Verify` does not check a checksum and call it verified. It restores the
+// backup into a scratch database, checks that the schema arrives at the
+// migration head this binary expects, and drops it.
+//
+// A checksum proves the bytes are the bytes. It says nothing about whether
+// `pg_restore` will accept them, whether the schema is the one this
+// application understands, or whether the dump was taken from a database that
+// was in a state worth returning to. The only honest verification of a backup
+// is a restore, and a backup nobody has restored is a hypothesis.
+package backup
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+// Format is the on-disk layout version. A reader refuses a version it does
+// not know rather than guessing at the bytes.
+const Format = 1
+
+// Magic identifies the file, so a wrong path fails with "this is not a
+// backup" rather than with a decryption error that reads like a wrong key.
+const Magic = "NISEBAK1"
+
+// dumpFormat is pg_dump's custom format: compressed, and the only one
+// pg_restore can reorder and select from. Plain SQL would be readable and
+// would lose the ability to restore anything but the whole thing in the order
+// it was written.
+const dumpFormat = "custom"
+
+// commandTimeout bounds a dump or restore. A backup that hangs holds a
+// connection and a schedule slot; six hours is far beyond any database this
+// framework is aimed at and short enough to notice.
+const commandTimeout = 6 * time.Hour
+
+// Header describes a backup, in the clear, at the front of the file.
+//
+// It is readable without the key on purpose: an operator holding a directory
+// of backups needs to know which database, which schema version, and when,
+// and needing the key to find out is how a restore drill turns into a search.
+//
+// It is authenticated, though. The header's own bytes are the additional data
+// for every sealed chunk, so a header edited to claim a different schema
+// version makes the body fail to open rather than restoring under a false
+// description.
+type Header struct {
+	Magic string `json:"magic"`
+	// Format is the layout version of this file.
+	Format int `json:"format"`
+	// Database is the name the dump was taken from.
+	Database string `json:"database"`
+	// SchemaVersion is the migration version the source database was at.
+	// Verify checks a restore reaches it.
+	SchemaVersion int64 `json:"schema_version"`
+	// CreatedAt is when the dump finished.
+	CreatedAt time.Time `json:"created_at"`
+	// PgDumpVersion records the tool that produced it, because pg_restore
+	// refuses a dump from a newer pg_dump than itself.
+	PgDumpVersion string `json:"pg_dump_version"`
+}
+
+// Errors this package returns.
+var (
+	// ErrToolMissing reports pg_dump or pg_restore not being on PATH.
+	ErrToolMissing = errors.New("backup: the PostgreSQL client tools are not available")
+	// ErrNotABackup reports a file that does not begin with Magic.
+	ErrNotABackup = errors.New("backup: this file is not a backup produced by this application")
+	// ErrFormat reports a format version this binary does not know.
+	ErrFormat = errors.New("backup: this backup was written in a format this version does not read")
+	// ErrSchemaMismatch reports a restore that did not arrive at the
+	// expected migration version.
+	ErrSchemaMismatch = errors.New("backup: the restored schema is not the version the backup claims")
+)
+
+// Settings are the validated inputs a backup operation needs.
+type Settings struct {
+	// DatabaseURL is the connection string, without a password.
+	DatabaseURL string
+	// Password is supplied separately and passed through the environment,
+	// never on a command line — an argument is visible in `ps` to every
+	// account on the machine.
+	Password string
+	// Key is the encryption key, exactly KeyBytes long.
+	Key []byte
+
+	valid bool
+}
+
+// NewSettings validates them.
+func NewSettings(databaseURL, password string, key []byte) (Settings, error) {
+	if strings.TrimSpace(databaseURL) == "" {
+		return Settings{}, errors.New("backup: a database URL is required")
+	}
+	if len(key) != KeyBytes {
+		return Settings{}, ErrKeyLength
+	}
+	return Settings{DatabaseURL: databaseURL, Password: password, Key: key, valid: true}, nil
+}
+
+// RequireTools reports whether pg_dump and pg_restore are available, and at
+// what version.
+//
+// The version matters: pg_dump must be at least the server's version, and
+// pg_restore must be at least pg_dump's. A dump taken by an older pg_dump
+// than the server silently omits features the server has, which is the
+// failure that appears at restore time on the worst day.
+func RequireTools() (pgDump string, pgRestore string, err error) {
+	for _, tool := range []string{"pg_dump", "pg_restore"} {
+		if _, lookErr := exec.LookPath(tool); lookErr != nil {
+			return "", "", fmt.Errorf("%w: %s is not on PATH; install postgresql-client "+
+				"(Debian/Ubuntu) or postgresql (Fedora/Homebrew) and run backups from there, because "+
+				"this application's own image deliberately carries no client tools", ErrToolMissing, tool)
+		}
+	}
+	pgDump, err = toolVersion("pg_dump")
+	if err != nil {
+		return "", "", err
+	}
+	pgRestore, err = toolVersion("pg_restore")
+	if err != nil {
+		return "", "", err
+	}
+	return pgDump, pgRestore, nil
+}
+
+func toolVersion(tool string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// #nosec G204 -- tool is one of this file's own two literals.
+	out, err := exec.CommandContext(ctx, tool, "--version").Output()
+	if err != nil {
+		return "", fmt.Errorf("backup: running %s --version: %w", tool, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// environment builds the environment a PostgreSQL client tool runs with.
+//
+// The password goes in PGPASSWORD rather than in the URL or an argument. A
+// command line is visible in `ps` to every account on the machine, and a
+// password inside a URL has to be percent-encoded — a `#` or an `@` in a
+// generated password silently produces a connection string that parses into
+// something else.
+func environment(password string) []string {
+	env := append([]string{}, os.Environ()...)
+	env = append(env, "PGPASSWORD="+password)
+	return env
+}

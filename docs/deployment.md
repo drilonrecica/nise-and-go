@@ -152,7 +152,25 @@ Production runs migrations as an explicit release step before starting the new a
 
 ## Backup
 
-The production baseline requires encrypted database backups, retention, off-server copies, and automated restore verification. VPS snapshots are defense in depth, not the database backup plan. Critical systems may add PostgreSQL point-in-time recovery.
+A generated application takes, verifies, and restores its own encrypted backups:
+
+```sh
+./myapp db backup  -out /backups/myapp-2026-09-01.backup
+./myapp db verify  -from /backups/myapp-2026-09-01.backup
+./myapp db restore -from /backups/myapp-2026-09-01.backup -confirm myapp
+```
+
+`db verify` restores into a scratch database rather than checking a checksum,
+because a backup nobody has restored is a hypothesis. Run it on a schedule.
+
+These need `pg_dump` and `pg_restore`, which the runtime image deliberately
+does not carry — run them from an operator machine, a scheduled job, or a
+sidecar. See [Backups](backups.md) for the format, the encryption, and what
+`-confirm` is for.
+
+Retention, off-server copies, and PostgreSQL point-in-time recovery remain the
+operator's, and are not automated here. VPS snapshots are defence in depth,
+not the database backup plan.
 
 ## Releases and rollback
 
