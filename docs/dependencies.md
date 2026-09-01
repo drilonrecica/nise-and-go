@@ -101,6 +101,19 @@ version; those entries name the package only.
 Version numbers remain omitted only for dependencies whose implementing task
 has not yet pinned and verified a released tag.
 
+### Container base images (generated application)
+
+Pinned by digest as well as tag, because a tag moves and an image nobody can
+rebuild is one nobody can audit after an advisory. Bumping one is a deliberate
+edit to `internal/generator/versions.go`, with the digest resolved by
+`docker buildx imagetools inspect <image>:<tag>`.
+
+| Image | Why it is allowed |
+|---|---|
+| `node:22-bookworm-slim` | Builds the frontend. Slim rather than full, because the build needs a package manager and nothing else. Present only in a build stage; nothing from it ships. |
+| `golang:1.26` | Builds the binary, with `CGO_ENABLED=0` so the result is static and `GOTOOLCHAIN=local` so the build cannot fetch a different Go than the image has. Build stage only. |
+| `gcr.io/distroless/static-debian12:nonroot` | The runtime. It carries no shell, no package manager, and no libc — so the attack surface of the running container is the application binary and the kernel. `nonroot` rather than the default, because an image that runs as root unless configured otherwise eventually runs as root. |
+
 ### Frontend (generated application)
 
 Generated `package.json` pins every dependency exactly. Versions are shown

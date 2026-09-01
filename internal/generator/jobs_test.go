@@ -886,3 +886,70 @@ func TestGeneratedProjectsLintTheirOwnCode(t *testing.T) {
 		t.Error("the generated package.json has no lint script")
 	}
 }
+
+// TestTheImageIsMinimalNonRootAndPinned pins M10-001. Each assertion is a
+// property somebody could remove without any test noticing otherwise.
+func TestTheImageIsMinimalNonRootAndPinned(t *testing.T) {
+	t.Parallel()
+
+	dockerfile := planContent(t, defaultOptions())["deploy/Dockerfile"]
+	if dockerfile == "" {
+		t.Fatal("a generated project has no Dockerfile")
+	}
+
+	// Every base image is pinned by digest, not only by tag. A tag moves,
+	// and an image nobody can rebuild is one nobody can audit after an
+	// advisory.
+	for _, line := range strings.Split(dockerfile, "\n") {
+		if !strings.HasPrefix(line, "FROM ") {
+			continue
+		}
+		if !strings.Contains(line, "@sha256:") {
+			t.Errorf("this base image is not pinned by digest: %s", line)
+		}
+	}
+
+	for _, fragment := range []string{
+		// The runtime carries no shell, no package manager, and no libc.
+		"FROM " + generator.RuntimeImage + ":" + generator.RuntimeImageTag + "@" + generator.RuntimeImageDigest,
+		// It does not run as root.
+		"USER nonroot:nonroot",
+		// The binary is static, so the runtime needs no libc at all.
+		"CGO_ENABLED=0",
+		// The build cannot fetch a different toolchain than the image has.
+		"GOTOOLCHAIN=local",
+		// Two people building one commit get the same bytes.
+		"-trimpath",
+		// Provenance a scanner and an incident responder can read.
+		"org.opencontainers.image.base.digest",
+	} {
+		if !strings.Contains(dockerfile, fragment) {
+			t.Errorf("deploy/Dockerfile lacks %q", fragment)
+		}
+	}
+
+	// The lockfile must be required, and the failure must name the fix
+	// rather than leaving pnpm to suggest --no-frozen-lockfile.
+	if !strings.Contains(dockerfile, "test -f frontend/pnpm-lock.yaml") {
+		t.Error("the image build does not require a lockfile, so it would resolve dependencies at build time")
+	}
+	if !strings.Contains(dockerfile, "--frozen-lockfile") {
+		t.Error("the frontend install is not frozen")
+	}
+	// The flag may appear in prose — the check's own message tells the
+	// reader not to use it — but never on a line that installs.
+	for _, line := range strings.Split(dockerfile, "\n") {
+		if !strings.Contains(line, "pnpm") || !strings.Contains(line, "install") {
+			continue
+		}
+		if strings.Contains(line, "--no-frozen-lockfile") {
+			t.Errorf("the image build resolves dependencies rather than installing pinned ones: %s", strings.TrimSpace(line))
+		}
+	}
+
+	// A HEALTHCHECK in an image with no shell would need a second binary
+	// purely to call an endpoint the orchestrator can call directly.
+	if strings.Contains(dockerfile, "HEALTHCHECK") && !strings.Contains(dockerfile, "# No HEALTHCHECK") {
+		t.Error("the image declares a HEALTHCHECK, which it has no shell or HTTP client to run")
+	}
+}
