@@ -139,6 +139,42 @@ SPDX rather than CycloneDX because it is the ISO-standardised format and the
 one most policy tooling expects. Shipping both would mean keeping two things
 consistent for no additional reader.
 
+## Going back to an earlier version
+
+Every published release is immutable and stays downloadable, so going back is
+installing an older version rather than undoing anything.
+
+```sh
+# Release archive: download the older tag and verify it the same way.
+gh release download v0.1.0 --repo drilonrecica/nise-and-go --pattern 'nise_*_linux_amd64.tar.gz'
+
+# Go install: the version is part of the command, so there is nothing else to do.
+go install github.com/drilonrecica/nise-and-go/cmd/nise@v0.1.0
+
+# Homebrew: the tap serves one version, so a downgrade is a tap operation
+# rather than a local one. See below.
+```
+
+Verify a downgrade the same way you verified the original — the checks in
+[Verifying a download](#verifying-a-download) apply to an old tag exactly as
+they do to a new one, and an old release is the one whose assets have had the
+most time to be altered.
+
+Which is why they are checked. Each published release re-validates the version
+before it: every asset, its attestation, its hashes, the contents of each
+archive, and what the binary reports itself to be. A rollback target that
+decayed is reported at the last moment it can still be fixed calmly rather
+than at the moment somebody needs it. See
+[checks.md](checks.md#rollback-validation).
+
+Rolling the Homebrew tap back is deliberate and separate: the tap serves one
+version to everybody, so moving it backwards is a `workflow_dispatch` run with
+`allow-downgrade`, and the generator refuses to do it silently.
+
+Downgrading the CLI does not downgrade an application it generated. A
+generated project owns its own source and its own `go.mod`; the CLI version
+that created it is recorded in its recipe, and `nise doctor` compares them.
+
 ## The Homebrew tap
 
 ```sh

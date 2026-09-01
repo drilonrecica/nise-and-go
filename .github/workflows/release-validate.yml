@@ -1,0 +1,160 @@
+name: Release validation
+
+# Validates a published release, and the release somebody would roll back to.
+#
+# Everything upstream of this checks an *input*: CI checks the commit,
+# `goreleaser check` checks the configuration, test/release checks that the
+# configuration and the documentation agree. Nothing checks the output. Between
+# "goreleaser exited 0" and "a stranger downloads a file" there is an upload, a
+# draft, a human pressing publish, and a set of release assets anybody with
+# write access can add to or delete from.
+#
+# So this runs on the publish click and reads what that stranger would get:
+# every asset, its attestation, its hash, what is inside each archive, and what
+# the binary says it is.
+#
+# It runs over **two** releases, as a matrix. The second one is the rollback
+# validation. "Roll back to the previous version" is a promise the release
+# notes make and nothing keeps: the previous release's assets can be deleted,
+# its attestation can be for artifacts that are no longer there, and the whole
+# thing decays in silence until the moment somebody needs it, which is by
+# definition a bad moment. Checking it on every publish means the rollback
+# target was known good as recently as the last release.
+#
+# workflow_dispatch re-validates any published release on demand — a rollback
+# rehearsal, or a check that a release from a year ago is still installable.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published release tag to validate (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.5"
+
+jobs:
+  resolve:
+    name: Resolve the release and its rollback target
+    runs-on: ubuntu-latest
+    outputs:
+      tags: ${{ steps.resolve.outputs.tags }}
+    steps:
+      # The rollback target is the most recent published release that is
+      # neither a draft (its assets are not public) nor a prerelease (rolling
+      # back onto a release candidate is not a rollback anybody wants), and is
+      # not the release being validated. A repository with one release has no
+      # rollback target, which is a fact to state rather than a failure.
+      - name: Resolve
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          previous="$(gh release list --repo "$GH_REPO" --limit 30 \
+            --exclude-drafts --exclude-pre-releases \
+            --json tagName,publishedAt \
+            --jq "[.[] | select(.tagName != \"$TAG\")] | sort_by(.publishedAt) | reverse | .[0].tagName // empty")"
+
+          if [ -z "$previous" ]; then
+            echo "no earlier published release; validating $TAG alone" >&2
+            printf 'tags=%s\n' "$(printf '%s' "$TAG" | jq -R -c '[.]')" >> "$GITHUB_OUTPUT"
+          else
+            echo "rollback target for $TAG is $previous" >&2
+            printf 'tags=%s\n' "$(jq -n -c --arg a "$TAG" --arg b "$previous" '[$a,$b]')" >> "$GITHUB_OUTPUT"
+          fi
+
+  validate:
+    name: Validate ${{ matrix.tag }}
+    needs: resolve
+    runs-on: ubuntu-latest
+    strategy:
+      # Both are reported. A rollback target that broke is worth knowing about
+      # even when the release that just went out is perfect.
+      fail-fast: false
+      matrix:
+        tag: ${{ fromJSON(needs.resolve.outputs.tags) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The tag's commit is compared against what the binary reports, and
+          # a shallow clone has no tags to resolve it from.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      # Every asset, not a chosen few. The validator's first job is to notice
+      # an asset the release workflow did not build, and it cannot notice one
+      # that was never downloaded.
+      - name: Download every asset of ${{ matrix.tag }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          mkdir -p assets
+          gh release download "$TAG" --repo "$GH_REPO" --dir assets
+
+      # Provenance, which is the one property the offline validator cannot
+      # check: a signed statement in a public transparency log that these exact
+      # bytes came out of this repository's release workflow. Every file is
+      # verified, because an unattested file among attested ones is exactly the
+      # substitution this is here to catch.
+      - name: Verify the build attestation on every asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for asset in assets/*; do
+            echo "verifying $asset"
+            gh attestation verify "$asset" --repo "$GH_REPO"
+          done
+
+      # The binary is asked what it is. A release can be complete, correctly
+      # hashed, and fully attested while shipping a binary built from the wrong
+      # commit or with no ldflags applied at all.
+      - name: Ask this release's binary what it is
+        env:
+          TAG: ${{ matrix.tag }}
+        run: |
+          version="${TAG#v}"
+          mkdir -p extracted
+          tar -xzf "assets/nise_${version}_linux_amd64.tar.gz" -C extracted
+          ./extracted/nise --json version > version.json
+          cat version.json
+
+      - name: Validate the release
+        env:
+          TAG: ${{ matrix.tag }}
+        run: |
+          commit="$(git rev-parse "${TAG}^{commit}")"
+          go run ./cmd/release-validate \
+            -tag "$TAG" \
+            -dir assets \
+            -commit "$commit" \
+            -version-report version.json
+
+      # Installing is the claim the release actually makes, so the validated
+      # binary is made to do the thing people install it for. This is a smoke
+      # test, not the installation-channel matrix: it proves the artifact that
+      # just passed every integrity check is a working CLI rather than a
+      # correctly-checksummed file.
+      - name: Generate a project with the released binary
+        run: |
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/extracted/nise" new smoke --yes --json
+          test -f "$RUNNER_TEMP/smoke/go.mod"

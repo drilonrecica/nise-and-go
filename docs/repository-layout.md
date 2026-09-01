@@ -7,6 +7,7 @@ Go module path: `github.com/drilonrecica/nise-and-go` ([ADR 0007](adr/0007-modul
 ```text
 cmd/nise/            CLI entry point
 cmd/homebrew-formula/ Release tooling: generates the Homebrew tap formula
+cmd/release-validate/ Release tooling: validates a published release and its rollback target
 internal/cli/        CLI commands and presentation
 internal/generator/  Deterministic generation internals
 runtime/             Stable Go packages that applications import
