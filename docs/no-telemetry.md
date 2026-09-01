@@ -19,6 +19,12 @@ stops being true.
 - No hard-coded analytics hostname (PostHog, Segment, Sentry, Mixpanel,
   Google Analytics, or similar) appears anywhere in this source tree or in
   what it generates.
+- Nise never replaces, relocates, or re-execs its own binary. There is no
+  self-update path, and no command leaves a staged replacement behind.
+- Nise keeps **no state of its own**. Running any command against a fresh
+  home directory leaves nothing named for nise anywhere in it — no
+  configuration file, no cache, no "last update check" timestamp, no queued
+  event.
 
 See `docs/cli-and-distribution.md`'s "Updates and privacy" section for the
 product-level version of this promise: no self-update, no automatic update
@@ -27,7 +33,7 @@ user-invoked command.
 
 ## How it is enforced
 
-Three automated proofs live under `test/nonetwork/` and run in CI on every
+Five automated proofs live under `test/nonetwork/` and run in CI on every
 change (via `make test` / `make test-race` — see the note on wiring below):
 
 1. **Static: the import graph.** `test/nonetwork/static_test.go` shells out
@@ -116,11 +122,57 @@ change (via `make test` / `make test-race` — see the note on wiring below):
    host built at runtime through string concatenation or a
    `fmt.Sprintf` template, which no source-text grep can see. Those are
    both gaps this proof shares with any pattern-based static check; they
-   are why the dynamic and static-import proofs above exist as separate,
-   independent layers rather than this one being asked to catch
-   everything.
+   are why the dynamic and static-import proofs above, and the artifact
+   proofs below, exist as separate independent layers rather than this one
+   being asked to catch everything.
 
-Run all three, plus everything else in `test/nonetwork`, with:
+4. **No self-replacement, and no state of its own.**
+   `test/nonetwork/selfupdate_test.go` is the half of this page that is not
+   about the network at all. Before a self-updater can reach one it has to
+   replace the running binary, and before an update checker or a telemetry
+   client can reach one it has to remember something between runs — so those
+   two mechanisms are checked directly, and mechanically:
+
+   - Every non-interactive command runs from a **private copy** of the binary,
+     which is hashed before and after. A self-update's entire purpose is to end
+     with different bytes on disk than it started with; if the bytes never
+     change, no command has one, whatever the source says. Size and mode are
+     compared separately from the hash, so a permission change staged for a
+     later replacement is visible too, and the directory is checked for a
+     second file appearing beside the binary.
+   - Every command runs against an **empty home directory**, with `HOME`,
+     `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, and all four `XDG_*` variables
+     pointed into it, and the test asserts nothing named for nise appears
+     anywhere underneath. An update checker that does not record when it last
+     looked is not a checker but a beacon, and a telemetry client has to buffer
+     events between flushes; both need a durable file, and nise has none.
+   - A static grep refuses `os.Executable`, `syscall.Exec`, `os.UserHomeDir`,
+     `os.UserConfigDir`, and `os.UserCacheDir` in production source without an
+     allowlist entry giving the reason. None of those is forbidden in
+     principle; nise simply has no reason to reach for one, so an appearance
+     should be argued rather than discovered.
+
+   The home-directory check is deliberately "nothing **named for nise**"
+   rather than "the directory is untouched": `nise doctor` runs `go version`,
+   and the Go toolchain writes its own cache. That is the same distinction
+   this page already draws for a container image pull below — a spawned tool
+   doing what you asked is a different claim from nise keeping state.
+
+5. **The artifact, not the source.**
+   The three proofs above read this repository. Two more read what is actually
+   built and shipped:
+
+   - `go version -m` on the compiled binary lists every module linked into it,
+     including one pulled in transitively by a dependency nobody read — which
+     is how an analytics SDK realistically arrives. That list is checked
+     against the same telemetry markers.
+   - A project is **generated** into a scratch directory and every one of its
+     files is scanned. `templates/` is the input; the generated tree is the
+     output, and they are not the same file set — the generator composes,
+     renames, and writes files that exist in no template, and a generated
+     frontend manifest names dependencies no `.go` or `.tmpl` file mentions.
+
+Run all five, plus everything else in `test/nonetwork`, with:
 
 ```sh
 go test ./test/... -race -count=1

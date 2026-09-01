@@ -241,7 +241,22 @@ worked on the day it was published.
 
 ## Updates and privacy
 
-Nise does not self-update, collect telemetry, or perform automatic update checks. An explicit check may report instructions appropriate to the detected installation channel. The project recipe records CLI and runtime versions for compatibility checks.
+Nise does not self-update, collect telemetry, or perform automatic update
+checks. An explicit check may report instructions appropriate to the detected
+installation channel. The project recipe records CLI and runtime versions for
+compatibility checks.
+
+Those are checked rather than promised, and checked on the built binary rather
+than on the source. Every non-interactive command runs from a private copy that
+is hashed before and after — a self-update ends with different bytes on disk,
+and these bytes never change — and against an empty home directory, in which
+nothing named for nise ever appears. Nise keeps no configuration file, no
+cache, and no record of when it last did anything, which is a stronger
+statement than any promise about what its code does with a socket: an update
+checker that does not remember when it last looked is a beacon, not a checker.
+
+See [no-telemetry.md](no-telemetry.md) for all five proofs and, just as
+importantly, for what each of them does not reach.
 
 ## AI
 
