@@ -1,0 +1,141 @@
+# GoReleaser configuration for the nise CLI.
+#
+# Six binaries per release: Linux, macOS, and Windows, each on amd64 and
+# arm64. Those six are what docs/supported-platforms.md names as release
+# targets, and this file is the only place they are actually produced — so the
+# two must agree, and a test in this repository checks that they do.
+#
+# Run it locally without publishing anything:
+#
+#	make release-snapshot
+#
+# That is a real cross-compile of all six, and it is the check worth running
+# before tagging. A release workflow that first cross-compiles on the day of
+# the release is a release workflow that discovers a build tag problem in
+# front of an audience.
+version: 2
+
+project_name: nise
+
+before:
+  hooks:
+    # A release must not be the first time anybody notices the module graph is
+    # inconsistent, and `go mod tidy` here would be the wrong fix: it would
+    # silently change what is being released. This only verifies.
+    - go mod verify
+
+builds:
+  - id: nise
+    main: ./cmd/nise
+    binary: nise
+
+    # No cgo, so every one of the six is a static binary that runs on a
+    # distribution older than the one that built it and needs no system
+    # library at the destination. The CLI calls nothing that requires it.
+    env:
+      - CGO_ENABLED=0
+
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+    # -trimpath removes the builder's filesystem layout from the binary, which
+    # is both a small information leak and the most common reason two builds
+    # of the same commit differ.
+    flags:
+      - -trimpath
+
+    # -s -w drop the symbol table and DWARF data. A CLI does not ship a
+    # debugger's view of itself, and this is a third of the binary.
+    #
+    # The three -X values are the ones internal/version reads. They are not
+    # decoration: `nise doctor` and the project recipe compare the CLI version
+    # against what a generated project records, so a release that reported
+    # "dev" would make those comparisons wrong rather than merely ugly.
+    ldflags:
+      - -s -w
+      - -X github.com/drilonrecica/nise-and-go/internal/version.Version={{ .Version }}
+      - -X github.com/drilonrecica/nise-and-go/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/drilonrecica/nise-and-go/internal/version.Date={{ .CommitDate }}
+
+    # The commit's timestamp, not the build's. Two builds of one tag then
+    # produce byte-identical binaries, which is what makes a checksum somebody
+    # else computes worth anything.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: nise
+    ids:
+      - nise
+    # A predictable name people can write in a script:
+    # nise_v0.1.0_linux_amd64.tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    # Windows gets a zip, because Windows has no tar in the places people
+    # unpack things and a .tar.gz there is an invitation to install something.
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  # One file with a SHA-256 for every archive. Publishing it is M10-006's
+  # subject; producing it belongs here, beside the artifacts it covers.
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  # A local snapshot is clearly not a release. Naming it after the commit
+  # rather than the next tag means a snapshot binary that escapes onto
+  # somebody's PATH says so when asked its version.
+  version_template: "0.0.0-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  # The changelog is grouped by conventional-commit prefix, because that is
+  # what this repository writes. Anything that is not a change to the released
+  # artifact is excluded: a reader of release notes wants to know what is
+  # different about the binary, not that a test was renamed.
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^feat(\(.+\))?!?:'
+      order: 0
+    - title: Fixes
+      regexp: '^fix(\(.+\))?!?:'
+      order: 1
+    - title: Documentation
+      regexp: '^docs(\(.+\))?!?:'
+      order: 2
+    - title: Other
+      order: 99
+  filters:
+    exclude:
+      - '^test(\(.+\))?!?:'
+      - '^chore(\(.+\))?!?:'
+      - '^ci(\(.+\))?!?:'
+      - '^refactor(\(.+\))?!?:'
+
+release:
+  # A release is never published silently. It is created as a draft, and a
+  # human looks at the notes and the six archives before anybody can install
+  # them.
+  draft: true
+  prerelease: auto
+  name_template: "{{ .Tag }}"
+  footer: |
+    ## Verifying what you downloaded
+
+    ```sh
+    sha256sum --check --ignore-missing checksums.txt
+    ```
+
+    Nise does not self-update, phone home, or check for new versions.

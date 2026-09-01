@@ -445,11 +445,40 @@ confirming it fires.
 public log. The file and line are enough to act on; printing the value would
 turn every true positive into a second leak.
 
+## Releases
+
+`.github/workflows/release.yml` runs on a `v*` tag. It runs `make check`
+first — a tag can point at any object in history, including one CI never saw,
+and "the tests passed on some ancestor" is not the claim a release makes —
+then cross-compiles the six release binaries with GoReleaser and creates a
+**draft** release. Nothing is installable until a human has looked at the
+archives and the notes.
+
+It is a separate workflow from `ci.yml` because it is triggered by something
+different and needs `contents: write`, which no other job here has. GoReleaser
+is installed through the module proxy at a pinned version rather than through
+its own action, for the same reason as the scanners in `security.yml`: one
+fewer third-party action to pin by SHA.
+
+`workflow_dispatch` builds everything and publishes nothing, so the workflow
+itself can be changed and proven without cutting a release.
+
+Locally:
+
+```sh
+make release-check     # validate .goreleaser.yaml
+make release-snapshot  # cross-compile all six, publish nothing
+```
+
+`test/release` checks that the configuration, `docs/supported-platforms.md`,
+the Makefile pin, and the workflow pin all agree, and that the release stamps
+the three variables `internal/version` reads.
+
 ## What CI deliberately does not do
 
-- **No release workflow.** Building or publishing the six release binaries
-  (Linux/macOS/Windows × amd64/arm64) is milestone M10. Nothing under
-  `.github/workflows/` attempts it.
+- **No cross-platform test execution beyond three runners.** The release
+  builds six platform pairs; CI runs tests on three of them. See
+  [supported-platforms.md](supported-platforms.md).
 - **No frontend build or test job.** See "Frontend targets are not wired in
   yet" above.
 

@@ -55,13 +55,18 @@ GOVULNCHECK_VERSION := v1.7.0
 OSV_SCANNER_VERSION := v2.5.1
 GITLEAKS_VERSION := v8.30.1
 
+# GoReleaser builds the six release binaries. Pinned for the same reason as
+# every other tool here: a release built by a different version is a release
+# whose artifacts nobody can reproduce.
+GORELEASER_VERSION := v2.17.1
+
 # A literal '#' inside a recipe line starts a Makefile comment even inside
 # shell quotes, unless escaped. HASH lets docs-check build shell patterns
 # and parameter expansions that contain '#' without that ever appearing as
 # a raw character in this file. See docs/checks.md for the full write-up.
 HASH := $(shell printf '\043')
 
-.PHONY: fmt fmt-check vet lint test test-race migration-test generate generate-diff docs-check check vulncheck osv secrets security fuzz help
+.PHONY: fmt fmt-check vet lint test test-race migration-test generate generate-diff docs-check check vulncheck osv secrets security fuzz release-check release-snapshot help
 
 fmt: ## Format Go source in place (gofmt -s -w) over cmd, internal, runtime.
 	gofmt -s -w $(GO_FMT_DIRS)
@@ -173,6 +178,25 @@ fuzz: ## Run every fuzz target for FUZZTIME each (default 30s).
 	@failed=0; 	for pkg in $$(go list $(GO_PACKAGES)); do 		targets="$$(go test -list '^Fuzz' "$$pkg" 2>/dev/null | grep '^Fuzz' || true)"; 		for target in $$targets; do 			echo "fuzz $$pkg $$target ($(FUZZTIME))"; 			go test "$$pkg" -run '^$$' -fuzz "^$$target$$" -fuzztime $(FUZZTIME) || failed=1; 		done; 	done; 	exit $$failed
 
 check: fmt-check vet lint test test-race generate-diff docs-check ## Run every hermetic CI check.
+
+release-check: ## Validate .goreleaser.yaml without building anything.
+	@command -v goreleaser >/dev/null 2>&1 || { \
+		echo "goreleaser is not installed." >&2; \
+		echo "install it with: go install github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION)" >&2; \
+		exit 1; \
+	}
+	goreleaser check
+
+# The check worth running before tagging. It cross-compiles all six release
+# targets and publishes nothing, so a build constraint or an import that only
+# resolves on one platform is found now rather than in front of an audience.
+release-snapshot: ## Cross-compile all six release binaries locally, publishing nothing.
+	@command -v goreleaser >/dev/null 2>&1 || { \
+		echo "goreleaser is not installed." >&2; \
+		echo "install it with: go install github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION)" >&2; \
+		exit 1; \
+	}
+	goreleaser release --snapshot --clean --skip=publish
 
 help: ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
