@@ -3,8 +3,10 @@
 package storage
 
 import (
+	"path"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestValidateKeyRefusesEverythingThatIsNotAKey is the security boundary of
@@ -134,6 +136,13 @@ func TestSanitizeFilenameNeverProducesAPath(t *testing.T) {
 		"a\x00b.txt":                 "a_b.txt",
 		"a\nb.txt":                   "a_b.txt",
 		strings.Repeat("a", 400):     strings.Repeat("a", MaxKeyComponentBytes),
+		// Truncation must not leave a separator at the end. A name cut to
+		// the limit that ends in "-" or "." is not idempotent — sanitizing
+		// it again would remove it — and a trailing "." is not a legal
+		// filename on Windows. A fuzz target found this.
+		// 199 zeros, a space, and two more. The space becomes "-", so the
+		// cut at 200 lands on it.
+		strings.Repeat("0", MaxKeyComponentBytes-1) + " 00": strings.Repeat("0", MaxKeyComponentBytes-1),
 	}
 	for input, want := range cases {
 		if got := SanitizeFilename(input); got != want {
@@ -181,4 +190,114 @@ func TestJoinKeyComposesAndValidates(t *testing.T) {
 	if _, err := JoinKey(); err == nil {
 		t.Error("JoinKey produced a key from nothing")
 	}
+}
+
+// FuzzValidateKeyNeverAcceptsAnEscape is the upload-metadata fuzz target, and
+// it asserts the property rather than a list of inputs.
+//
+// A key that ValidateKey accepts is one the local backend will pass to a
+// rename and the S3 backend will interpolate into a path. So an accepted key
+// must be one that cannot mean anything but itself: already canonical, one
+// path component per separator, and made only of characters that no
+// filesystem, URL parser, or S3 clone reads as an instruction.
+func FuzzValidateKeyNeverAcceptsAnEscape(f *testing.F) {
+	f.Add("uploads/a.bin")
+	f.Add("../escaped")
+	f.Add("uploads/../../etc/passwd")
+	f.Add("uploads//a")
+	f.Add("/uploads/a")
+	f.Add("uploads/a\x00b")
+	f.Add("uploads/a\nb")
+	f.Add("uploads/%2e%2e/a")
+	f.Add("uploads/\xff")
+	f.Add("a")
+	f.Add("")
+
+	f.Fuzz(func(t *testing.T, key string) {
+		if err := ValidateKey(key); err != nil {
+			return
+		}
+
+		// Accepted. Everything below must therefore hold.
+		if path.Clean(key) != key {
+			t.Fatalf("accepted %q, which is not its own cleaned form (%q)", key, path.Clean(key))
+		}
+		if strings.HasPrefix(key, "/") || strings.HasSuffix(key, "/") {
+			t.Fatalf("accepted %q, which has a leading or trailing separator", key)
+		}
+		if !utf8.ValidString(key) {
+			t.Fatalf("accepted %q, which is not valid UTF-8", key)
+		}
+		if len(key) == 0 || len(key) > MaxKeyBytes {
+			t.Fatalf("accepted %q, which is %d bytes", key, len(key))
+		}
+		for _, component := range strings.Split(key, "/") {
+			if component == "" || component == "." || component == ".." {
+				t.Fatalf("accepted %q, which has the component %q", key, component)
+			}
+			if len(component) > MaxKeyComponentBytes {
+				t.Fatalf("accepted %q, whose component %q is %d bytes", key, component, len(component))
+			}
+		}
+		for _, r := range key {
+			if !allowedKeyRune(r) {
+				t.Fatalf("accepted %q, which contains %q", key, r)
+			}
+		}
+		// A backslash is a separator on one of the platforms this runs on,
+		// so an accepted key containing one would mean two different things
+		// on two different machines.
+		if strings.ContainsAny(key, `\`) {
+			t.Fatalf("accepted %q, which contains a backslash", key)
+		}
+	})
+}
+
+// FuzzSanitizeFilenameAlwaysProducesOneUsableComponent covers the other half
+// of upload metadata: the name that comes from the client.
+//
+// Whatever arrives, what comes back must be usable as exactly one path
+// component and must never be empty — because the caller is about to put it
+// in a database column and offer it as a download name, and a
+// SanitizeFilename that could return "" or "../x" would move the problem
+// rather than solve it.
+func FuzzSanitizeFilenameAlwaysProducesOneUsableComponent(f *testing.F) {
+	f.Add("report.pdf")
+	f.Add("../../etc/passwd")
+	f.Add(`..\..\windows\system32`)
+	f.Add("")
+	f.Add(".")
+	f.Add("..")
+	f.Add("/")
+	f.Add("a\x00b")
+	f.Add("réport.pdf")
+	f.Add(strings.Repeat("a", 1000))
+
+	f.Fuzz(func(t *testing.T, name string) {
+		got := SanitizeFilename(name)
+
+		if got == "" {
+			t.Fatalf("SanitizeFilename(%q) returned an empty name", name)
+		}
+		if strings.Contains(got, "/") || strings.Contains(got, `\`) {
+			t.Fatalf("SanitizeFilename(%q) = %q, which spans more than one component", name, got)
+		}
+		if got == "." || got == ".." {
+			t.Fatalf("SanitizeFilename(%q) = %q, which is a dot segment", name, got)
+		}
+		if len(got) > MaxKeyComponentBytes {
+			t.Fatalf("SanitizeFilename(%q) returned %d bytes", name, len(got))
+		}
+		// It must be usable as a key component, because that is what a
+		// caller composing a key with it will do.
+		if err := ValidateKey(got); err != nil {
+			t.Fatalf("SanitizeFilename(%q) = %q, which is not a usable component: %v", name, got, err)
+		}
+		// Sanitizing twice must change nothing. A function that is not
+		// idempotent here means the value stored and the value used can
+		// differ.
+		if again := SanitizeFilename(got); again != got {
+			t.Fatalf("SanitizeFilename is not idempotent: %q -> %q -> %q", name, got, again)
+		}
+	})
 }
