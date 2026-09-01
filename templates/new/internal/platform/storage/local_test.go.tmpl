@@ -410,27 +410,36 @@ func TestConcurrentMovesLeaveExactlyOneWinner(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	var (
-		wg        sync.WaitGroup
-		mu        sync.Mutex
-		succeeded int
-	)
-	for i := range 8 {
+	const destinations = 8
+	var wg sync.WaitGroup
+	for i := range destinations {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			to := "objects/" + string(rune('a'+i)) + ".bin"
-			if err := store.Move(ctx, from, to); err == nil {
-				mu.Lock()
-				succeeded++
-				mu.Unlock()
-			}
+			_ = store.Move(ctx, from, "objects/"+string(rune('a'+i))+".bin")
 		}()
 	}
 	wg.Wait()
 
-	if succeeded != 1 {
-		t.Errorf("%d concurrent moves of one object succeeded, want exactly 1", succeeded)
+	// What is asserted is where the object ended up, not how many calls
+	// returned nil.
+	//
+	// The second is not portable: whether a rename that lost the race
+	// reports failure is a filesystem's business, and Windows and Unix do
+	// not agree. The first is the property the upload lifecycle actually
+	// depends on — an object leaves quarantine once, to one key — and it
+	// holds wherever rename is atomic.
+	landed := make([]string, 0, 1)
+	for i := range destinations {
+		key := "objects/" + string(rune('a'+i)) + ".bin"
+		if _, err := store.Stat(ctx, key); err == nil {
+			landed = append(landed, key)
+		} else if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("Stat %s: %v", key, err)
+		}
+	}
+	if len(landed) != 1 {
+		t.Errorf("after %d concurrent moves the object is at %d keys (%v), want exactly 1", destinations, len(landed), landed)
 	}
 	if _, err := store.Stat(ctx, from); !errors.Is(err, ErrNotFound) {
 		t.Errorf("the source survived: %v", err)
