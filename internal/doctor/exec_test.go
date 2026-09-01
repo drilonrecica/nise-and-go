@@ -8,6 +8,19 @@ import (
 	"time"
 )
 
+// spawnTimeout is the budget the tests below give a real process to start,
+// write a line, and exit. It is deliberately far larger than any of them
+// needs, because it is not what they are measuring -- TestExecRunnerTimeout
+// owns the timeout behaviour and passes its own short budget.
+//
+// One second was the original value and it was not enough. On the Windows
+// runner `sh` resolves to Git for Windows' sh.exe, whose process startup
+// alone can exceed a second, so TestExecRunnerCapturesStderr failed with "sh
+// did not respond within 1s" on a runner where stderr capture was working
+// fine. A success-path assertion should fail because the behaviour is wrong,
+// not because the slowest supported platform is slow.
+const spawnTimeout = 30 * time.Second
+
 // requireUnixTool skips the test when name is not on PATH, so this file
 // stays safe to run on a machine (or a future CI image) that lacks the
 // coreutils this test relies on, rather than failing for an unrelated
@@ -24,7 +37,7 @@ func TestExecRunnerSuccess(t *testing.T) {
 	requireUnixTool(t, "echo")
 
 	r := NewRunner()
-	out, err := r.Run(context.Background(), time.Second, "echo", "hello", "doctor")
+	out, err := r.Run(context.Background(), spawnTimeout, "echo", "hello", "doctor")
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -48,7 +61,7 @@ func TestExecRunnerCapturesStderr(t *testing.T) {
 	requireUnixTool(t, "sh")
 
 	r := NewRunner()
-	out, err := r.Run(context.Background(), time.Second, "sh", "-c", "echo to-stderr 1>&2")
+	out, err := r.Run(context.Background(), spawnTimeout, "sh", "-c", "echo to-stderr 1>&2")
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}

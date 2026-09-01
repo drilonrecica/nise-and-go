@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -203,7 +204,13 @@ func TestTheBuildScriptIsRunnable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("examples/reference/build.sh: %v", err)
 	}
-	if info.Mode().Perm()&0o111 == 0 {
+	// Windows has no execute bit. Go synthesizes a file's mode there from the
+	// read-only attribute, so Perm()&0o111 is 0 for every checked-out file and
+	// this assertion would report a missing mode bit that the platform does
+	// not have to give. The bit is a real property of the committed file --
+	// git tracks it, and the Linux and macOS legs check it -- so guard the
+	// assertion rather than dropping it.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		t.Error("build.sh is not executable, and the specification tells a reader to run it directly")
 	}
 
