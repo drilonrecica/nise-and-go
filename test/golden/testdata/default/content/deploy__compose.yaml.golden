@@ -1,9 +1,53 @@
 # Generated once by nise; owned by this application. Nise will not overwrite it.
 #
 # Run from the repository root:
+#
+#   export POSTGRES_PASSWORD="$(openssl rand -base64 24)"
+#   export CURSOR_SIGNING_KEY="k1:$(openssl rand -base64 32)"
 #   docker compose -f deploy/compose.yaml up --build
+#
+# This runs the application the way production does — APP_ENV=production, so
+# every fail-closed check applies. That is deliberate: a recipe that runs in
+# development mode proves the image starts and proves nothing about whether
+# your deployment will.
+#
+# The `:?` on each secret below is Compose's own "fail if unset". It is used
+# rather than a default because a default for a signing key is a signing key
+# everybody who copied this file shares.
 
 services:
+  # Migrations run as their own service, to completion, before the
+  # application starts. They are not run by the application on startup, and
+  # that is a decision rather than an omission: an application that migrates
+  # when it boots migrates once per replica, concurrently, during a rolling
+  # deploy — and the second replica's migration runs against a schema the
+  # first one is halfway through changing.
+  #
+  # Running them here also makes the failure legible. A migration that fails
+  # stops the deploy with the migration's own error, rather than starting an
+  # application that refuses to serve for a reason somebody has to go and
+  # find.
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["db", "migrate"]
+    environment:
+      APP_ENV: production
+      LOG_FORMAT: json
+      DATABASE_URL: postgres://myapp@db:5432/myapp?sslmode=disable
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      # The migration step loads the same configuration as the application,
+      # so production's required settings apply to it too.
+      CURSOR_SIGNING_KEY: ${CURSOR_SIGNING_KEY:?set CURSOR_SIGNING_KEY, e.g. k1:$(openssl rand -base64 32)}
+      MAIL_TRANSPORT: ${MAIL_TRANSPORT:-smtp}
+      MAIL_FROM: ${MAIL_FROM:-noreply@localhost}
+      SMTP_HOST: ${SMTP_HOST:-localhost}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
   app:
     build:
       context: ..
@@ -14,6 +58,10 @@ services:
       APP_ENV: production
       APP_MODE: all
       BIND_ADDR: 0.0.0.0
+      # A container that binds only to loopback is a container nothing can
+      # reach. The application refuses a public bind in production without
+      # this exact opt-in; setting it here is that check working, because
+      # inside a container the published ports are the boundary.
       ALLOW_PUBLIC_BIND: "true"
       PORT: "8080"
       LOG_FORMAT: json
@@ -22,9 +70,27 @@ services:
       DATABASE_URL: postgres://myapp@db:5432/myapp?sslmode=disable
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       DB_MAX_CONNS: "10"
+      # Pagination cursors are signed. Without a configured key the process
+      # generates one, and every restart and every replica then rejects
+      # cursors the others issued — so production refuses to start without
+      # it. Generate one with: openssl rand -base64 32
+      CURSOR_SIGNING_KEY: ${CURSOR_SIGNING_KEY:?set CURSOR_SIGNING_KEY, e.g. k1:$(openssl rand -base64 32)}
+      # Production refuses the log transport, because an application that
+      # silently sends no invitations is worse than one that will not start.
+      # Point these at a real relay before this recipe is more than a local
+      # trial.
+      MAIL_TRANSPORT: ${MAIL_TRANSPORT:-smtp}
+      MAIL_FROM: ${MAIL_FROM:-noreply@localhost}
+      SMTP_HOST: ${SMTP_HOST:-localhost}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_ENCRYPTION: ${SMTP_ENCRYPTION:-starttls}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   db:
     image: docker.io/library/postgres:17.6-alpine
@@ -41,12 +107,17 @@ services:
       retries: 30
       start_period: 10s
 
-# No healthcheck is declared for the application service. Its runtime image
-# is distroless: it carries no shell and no curl, so a Compose healthcheck
-# would have to run the application binary against itself, which proves
-# nothing an exited process does not already prove. Probe /healthz/ready from
-# outside instead — that is the endpoint your load balancer and orchestrator
-# should both use.
+# No healthcheck is declared for the application service. Its runtime image is
+# distroless: it carries no shell and no curl, so a Compose healthcheck would
+# have to run the application binary against itself, which proves nothing an
+# exited process does not already prove. Probe /readyz from outside instead —
+# that is the endpoint your load balancer and orchestrator should both use.
+#
+# This recipe runs the application as the same role that owns the tables. With
+# the organizations module that is refused in production, because a superuser
+# or a role with BYPASSRLS bypasses every row-level security policy. A
+# multitenant deployment needs a second, unprivileged role — see
+# docs/multitenancy.md.
 
 volumes:
   postgres-data:

@@ -1,0 +1,142 @@
+<!-- Generated once by nise; owned by this application. Nise will not overwrite it. -->
+
+# Deploying {{.AppName}} on Coolify
+
+Coolify is the first blessed recipe because it is the smallest thing that does
+the two jobs this application cannot do for itself: terminate TLS, and run a
+migration step before a new version starts serving.
+
+Everything here is ordinary Coolify. There is nothing Nise-specific to
+install.
+
+## 1. The application
+
+Create a **Dockerfile** application pointing at this repository, with:
+
+| Field | Value |
+|---|---|
+| Dockerfile location | `deploy/Dockerfile` |
+| Build context | the repository root (`.`) |
+| Port | `8080` |
+
+Before the first deploy, run `pnpm --dir frontend install` and commit
+`frontend/pnpm-lock.yaml`. The image build refuses to resolve dependencies
+itself, and will tell you so.
+
+## 2. The database
+
+Add a **PostgreSQL 17** resource. Coolify will give you an internal
+connection string; the application wants the password separately:
+
+- `DATABASE_URL` — the connection string **without** the password, e.g.
+  `postgres://{{.AppName}}@<host>:5432/{{.AppName}}?sslmode=disable`
+- `DATABASE_PASSWORD` — the password on its own
+
+Splitting them is not fussiness. A password inside a URL has to be
+percent-encoded, and a `#` or a `@` in a generated password silently produces
+a connection string that parses into something else.
+
+## 3. Environment
+
+Production refuses to start without these. That is the design: each one is a
+setting whose absence is invisible until it matters.
+
+| Variable | Value | Why it is required |
+|---|---|---|
+| `APP_ENV` | `production` | Enables every fail-closed check below |
+| `BIND_ADDR` | `0.0.0.0` | A container bound to loopback is unreachable |
+| `ALLOW_PUBLIC_BIND` | `true` | The explicit opt-in for the above |
+| `PORT` | `8080` | Matches the exposed port |
+| `LOG_FORMAT` | `json` | Production logs must be machine-readable |
+| `CURSOR_SIGNING_KEY` | `k1:<32 random bytes, base64>` | Without it each replica signs with its own key and rejects the others' pagination cursors |
+| `MAIL_TRANSPORT` | `smtp` | The log transport sends nothing, silently |
+| `MAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_ENCRYPTION` | your relay | |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | your relay | Credentials without encryption are refused at startup |
+
+Generate the signing key with:
+
+```
+echo "k1:$(openssl rand -base64 32)"
+```
+
+Rotate it by making the new key active and moving the old one to
+`CURSOR_RETIRED_KEYS`, so cursors already issued keep verifying.
+
+## 4. Migrations, as a pre-deploy command
+
+Set Coolify's **pre-deployment command** to:
+
+```
+db migrate
+```
+
+This is the step that makes a deploy safe, and running it here rather than at
+application startup is deliberate. An application that migrates when it boots
+migrates once per replica, concurrently, during a rolling deploy — and the
+second replica's migration runs against a schema the first is halfway through
+changing. Run here, a failed migration stops the deploy with the migration's
+own error, instead of starting an application that refuses to serve for a
+reason somebody has to go and find.
+
+The application still refuses to start against a schema it does not
+understand, which is the backstop rather than the mechanism.
+
+## 5. Health checks
+
+| Coolify field | Path |
+|---|---|
+| Health check | `/readyz` |
+
+`/healthz` is liveness — the process is alive — and `/readyz` additionally
+reports that the database answers. Use `/readyz` for the load balancer, so a
+replica that has lost its database stops receiving traffic instead of
+answering with errors.
+
+`/startupz` is separate again: it reports that wiring finished, and is the one
+to use for a startup probe on a platform that has them.
+
+## 6. TLS
+
+Let Coolify terminate TLS and set its own domain. Then set:
+
+- `TRUSTED_PROXY_COUNT` — how many proxies sit in front of this application
+  (`1` for a plain Coolify setup)
+- `TRUST_PROXY_HEADERS` — `true`, **only** with the above set
+
+Trusting forwarded headers while declaring there is no proxy is refused at
+startup, because a client can otherwise set its own address.
+
+Browser sessions use `__Host-` cookies, so the browser-facing edge must serve
+HTTPS. It will not work over plain HTTP, by design.
+
+## 7. The first administrator
+
+There is no signup page and no default account. Create the first
+administrator with a one-off command:
+
+```
+admin bootstrap --email you@example.com
+```
+
+It prints an invitation token once. That is the only time it exists.
+
+## Scaling to more than one process
+
+Run the same image twice, with different `APP_MODE`:
+
+- `APP_MODE=web` — serves HTTP
+- `APP_MODE=worker` — runs background jobs
+
+With the notifications module, the live-update listener runs in the `web`
+processes, because that is where the endpoint is served — see
+`docs/notifications.md` in the framework repository.
+
+## What this recipe does not do
+
+- **Backups.** Coolify can schedule PostgreSQL backups; whether they are
+  encrypted, where they go, and whether they restore is yours to decide and
+  yours to test.
+- **A separate database role.** This runs the application as the role that
+  owns the tables. With the organizations module that is refused in
+  production, because a superuser or a role with `BYPASSRLS` bypasses every
+  row-level security policy.

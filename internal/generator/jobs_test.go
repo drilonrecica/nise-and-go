@@ -953,3 +953,63 @@ func TestTheImageIsMinimalNonRootAndPinned(t *testing.T) {
 		t.Error("the image declares a HEALTHCHECK, which it has no shell or HTTP client to run")
 	}
 }
+
+// TestTheDeploymentRecipesCanActuallyStart pins M10-002. Every setting
+// asserted here is one production refuses to start without, and a recipe that
+// omits one is a recipe that has never been run.
+func TestTheDeploymentRecipesCanActuallyStart(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, defaultOptions())
+	compose := content["deploy/compose.yaml"]
+	if compose == "" {
+		t.Fatal("a generated project has no compose recipe")
+	}
+
+	// The production fail-closed set, from config.Load's validator.
+	for _, setting := range []string{
+		"APP_ENV: production",
+		"CURSOR_SIGNING_KEY:",
+		"MAIL_TRANSPORT:",
+		"ALLOW_PUBLIC_BIND: \"true\"",
+		"LOG_FORMAT: json",
+		"DEBUG: \"false\"",
+	} {
+		if !strings.Contains(compose, setting) {
+			t.Errorf("deploy/compose.yaml does not set %q, so the application would refuse to start", setting)
+		}
+	}
+
+	// Secrets use Compose's fail-if-unset form. A default for a signing key
+	// is a signing key shared by everybody who copied the file.
+	for _, secret := range []string{"POSTGRES_PASSWORD", "CURSOR_SIGNING_KEY"} {
+		if !strings.Contains(compose, "${"+secret+":?") {
+			t.Errorf("%s has a default or no guard; it must be ${%s:?...}", secret, secret)
+		}
+	}
+
+	// Migrations run as their own service, to completion, before the app.
+	if !strings.Contains(compose, `command: ["db", "migrate"]`) {
+		t.Error("the compose recipe has no migration step")
+	}
+	if !strings.Contains(compose, "condition: service_completed_successfully") {
+		t.Error("the application does not wait for migrations to complete")
+	}
+
+	coolify := content["deploy/coolify.md"]
+	if coolify == "" {
+		t.Fatal("a generated project has no Coolify recipe")
+	}
+	for _, fragment := range []string{
+		"CURSOR_SIGNING_KEY",
+		"MAIL_TRANSPORT",
+		"db migrate",
+		"/readyz",
+		"TRUSTED_PROXY_COUNT",
+		"What this recipe does not do",
+	} {
+		if !strings.Contains(coolify, fragment) {
+			t.Errorf("deploy/coolify.md lacks %q", fragment)
+		}
+	}
+}

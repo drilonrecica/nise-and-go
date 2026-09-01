@@ -7,7 +7,8 @@ Deployment artifacts for `{{.AppName}}`.
 | File | What it is |
 |---|---|
 | `Dockerfile` | Three-stage build: the frontend with Node, the binary with Go embedding it, and a non-root distroless runtime image carrying nothing else. |
-| `compose.yaml` | A local run of that image. |
+| `compose.yaml` | The image, a PostgreSQL, and a migration step that runs to completion before the application starts. Runs in production mode, so every fail-closed check applies. |
+| `coolify.md` | The blessed hosted recipe: every required variable, migrations as a pre-deployment command, which probe goes where, and what the recipe does not do. |
 
 ## Building the image
 

@@ -180,6 +180,7 @@ var templateFiles = []templateFile{
 	{Template: "db/migrations/module_uploads.sql.tmpl", Output: "db/migrations/{{.UploadsMigration}}_uploads.sql", Owner: OwnerApp, Module: recipe.ModuleUploads},
 	{Template: "deploy/Dockerfile.tmpl", Output: "deploy/Dockerfile", Owner: OwnerApp},
 	{Template: "deploy/README.md.tmpl", Output: "deploy/README.md", Owner: OwnerApp},
+	{Template: "deploy/coolify.md.tmpl", Output: "deploy/coolify.md", Owner: OwnerApp},
 	{Template: "deploy/compose.yaml.tmpl", Output: "deploy/compose.yaml", Owner: OwnerApp},
 	{Template: "frontend/README.md.tmpl", Output: "frontend/README.md", Owner: OwnerApp},
 	{Template: "frontend/gitignore.tmpl", Output: "frontend/.gitignore", Owner: OwnerApp},
