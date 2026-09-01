@@ -51,5 +51,12 @@ func versionCommand() *Command {
 			env.Out.Result(versionResult{version.Get()})
 			return nil
 		},
+		// `nise version check` is the explicit update check. It is nested
+		// under version rather than named `nise update` because `nise
+		// upgrade` already exists and upgrades a generated project — two
+		// near-synonyms meaning different things is a worse problem than a
+		// longer name — and because it does not update anything: it reports
+		// what to run for the channel you installed through.
+		Subcommands: []*Command{versionCheckCommand()},
 	}
 }

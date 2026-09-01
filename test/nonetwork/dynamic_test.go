@@ -1,11 +1,13 @@
 package nonetwork
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,9 +74,18 @@ func buildNiseBinary() (cleanup func(), err error) {
 // connRecorder records the remote address of every connection a
 // recordingProxy accepts. It exists so a test can assert "zero connection
 // attempts" as a number, not infer it from the absence of a crash.
+//
+// It also records where each connection was *going*, which the remote address
+// cannot say: through a proxy, every connection arrives from loopback. A
+// proxied client names its destination in the first request line — CONNECT
+// host:443 for TLS, an absolute-form GET for plain HTTP — so reading that one
+// line before closing turns "something dialled out" into "something dialled
+// out to this host". The zero-connection cases do not need it; the one command
+// that is *supposed* to dial does, or it could be reaching anywhere.
 type connRecorder struct {
-	mu       sync.Mutex
-	attempts []string
+	mu           sync.Mutex
+	attempts     []string
+	destinations []string
 }
 
 func (r *connRecorder) record(remote string) {
@@ -83,12 +94,52 @@ func (r *connRecorder) record(remote string) {
 	r.attempts = append(r.attempts, remote)
 }
 
+func (r *connRecorder) recordDestination(host string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.destinations = append(r.destinations, host)
+}
+
 func (r *connRecorder) snapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]string, len(r.attempts))
 	copy(out, r.attempts)
 	return out
+}
+
+func (r *connRecorder) destinationSnapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.destinations))
+	copy(out, r.destinations)
+	return out
+}
+
+// requestLineHost extracts the destination from a proxied request's first
+// line. It returns "" when the line names none, which every caller treats as
+// "the connection told us nothing" rather than as a host.
+func requestLineHost(line string) string {
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return ""
+	}
+	target := fields[1]
+	// CONNECT api.github.com:443 HTTP/1.1
+	if strings.EqualFold(fields[0], "CONNECT") {
+		host, _, err := net.SplitHostPort(target)
+		if err != nil {
+			return target
+		}
+		return host
+	}
+	// GET http://host/path HTTP/1.1 — absolute-form, which is how a client
+	// addresses a plain-HTTP proxy.
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	return parsed.Hostname()
 }
 
 // startRecordingProxy listens on loopback, records the remote address of
@@ -108,6 +159,7 @@ func startRecordingProxy(t *testing.T) (addr string, rec *connRecorder, stop fun
 	}
 	rec = &connRecorder{}
 	acceptDone := make(chan struct{})
+	var handling sync.WaitGroup
 	go func() {
 		defer close(acceptDone)
 		for {
@@ -116,12 +168,27 @@ func startRecordingProxy(t *testing.T) (addr string, rec *connRecorder, stop fun
 				return
 			}
 			rec.record(conn.RemoteAddr().String())
-			_ = conn.Close()
+			handling.Add(1)
+			go func() {
+				defer handling.Done()
+				// One line, under a short deadline, then closed as before.
+				// The deadline matters: a client that connects and sends
+				// nothing must not hold this goroutine open past the test.
+				_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+				line, readErr := bufio.NewReader(conn).ReadString('\n')
+				if readErr == nil {
+					if host := requestLineHost(line); host != "" {
+						rec.recordDestination(host)
+					}
+				}
+				_ = conn.Close()
+			}()
 		}
 	}()
 	stop = func() {
 		_ = ln.Close()
 		<-acceptDone
+		handling.Wait()
 	}
 	return ln.Addr().String(), rec, stop
 }
@@ -403,3 +470,64 @@ func TestDynamicNoOutboundConnectionsUnderLoad(t *testing.T) {
 			len(attempts), runs, strings.Join(attempts, ", "))
 	}
 }
+
+// TestDynamicTheUpdateCheckIsTheOneNetworkCommand is the inverse of every
+// other proof in this package, and it exists because a guarantee with one
+// exception is only as good as the exception being *exactly* one.
+//
+// `nise version check` is the explicit update check (docs/cli-and-distribution.md).
+// It is allowed to reach the network — a person typed a command whose entire
+// purpose is to ask a question of a server. Two things have to be true about
+// that, and neither is provable by reading source:
+//
+//  1. It actually does reach the network. An allowlist entry for a package
+//     that no longer dials is a permission nobody reviewed still standing, and
+//     an update check that silently stopped checking would pass every other
+//     test in this file.
+//  2. It reaches exactly one host, once. The dynamic proof's recording proxy
+//     is the same one every other case uses, so "one connection to one host"
+//     is measured on the same instrument that measures "none" everywhere else.
+func TestDynamicTheUpdateCheckIsTheOneNetworkCommand(t *testing.T) {
+	t.Parallel()
+
+	addr, rec, stop := startRecordingProxy(t)
+	defer stop()
+
+	// The recording proxy refuses every connection it receives, so this
+	// command necessarily fails. The failure is the point: what is being
+	// measured is the attempt, not the answer.
+	_ = runNise(t, t.TempDir(), hermeticEnv(addr), "version", "check")
+
+	attempts := rec.snapshot()
+	if len(attempts) == 0 {
+		t.Fatal("nise version check made no outbound connection attempt.\n" +
+			"Either the explicit update check no longer reaches the network — in which case " +
+			"networkAllowlist's entry for internal/release, and httpsHostAllowlist's entry for " +
+			"api.github.com, are permissions nobody reviewed still standing — or this proof's " +
+			"proxy trap no longer sees what it used to, in which case every other case in this " +
+			"file is passing for the wrong reason.")
+	}
+
+	destinations := rec.destinationSnapshot()
+	if len(destinations) == 0 {
+		t.Fatalf("nise version check made %d connection attempt(s) and named no destination in any of them; "+
+			"this proof cannot tell where the update check was going", len(attempts))
+	}
+	hosts := map[string]bool{}
+	for _, host := range destinations {
+		hosts[host] = true
+	}
+	if len(hosts) != 1 {
+		t.Errorf("nise version check contacted %d hosts (%v); the update check talks to one host or fails", len(hosts), hosts)
+	}
+	for host := range hosts {
+		if host != updateCheckHost {
+			t.Errorf("nise version check contacted %q, and the documented release index is %q", host, updateCheckHost)
+		}
+	}
+}
+
+// updateCheckHost is the one host any nise command may contact. It is written
+// out here rather than read from internal/release, so that a change to the
+// endpoint has to pass through a second place that says what was intended.
+const updateCheckHost = "api.github.com"

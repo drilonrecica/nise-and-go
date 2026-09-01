@@ -116,7 +116,17 @@ func commandHelp(path []string, cmd *Command) helpResult {
 
 	usage := "nise " + strings.Join(path, " ")
 	if len(cmd.Subcommands) > 0 {
-		usage += " <subcommand>"
+		// A group command (no Run of its own) does nothing without a
+		// subcommand, so its usage requires one. A command that has both —
+		// `nise version`, which prints the version and also nests `check` —
+		// is complete on its own, and telling a reader the subcommand is
+		// mandatory would be telling them the command they already run is
+		// malformed.
+		if cmd.Run == nil {
+			usage += " <subcommand>"
+		} else {
+			usage += " [subcommand]"
+		}
 	}
 	if cmd.Args != "" {
 		usage += " " + cmd.Args

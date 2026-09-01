@@ -210,10 +210,27 @@ go test ./test/... -race -count=1
   application then connects to the operator-configured `DATABASE_URL` because
   that is the command's requested purpose. `docs/commands/db.md` documents the
   process and credential boundaries.
-- **There is currently no Nise-owned network utility at all**
-  — no `nise upgrade`, no update checker, nothing. `docs/cli-and-distribution.md`
-  describes one as planned for a later milestone: an explicit check that
-  reports install-channel-appropriate instructions, never run implicitly.
-  When it exists, it becomes the one documented exception to "no command
-  performs an implicit network request" — implicit being the operative
-  word, since running it is still something you typed.
+- **`nise version check` is the one command that uses the network, and it is
+  the exception this page was always going to have.** It asks GitHub for the
+  latest published release and prints the command to install it for the
+  channel you installed through. It is the documented exception to "no command
+  performs an *implicit* network request" — implicit being the operative word,
+  since running it is something you typed.
+
+  What keeps that exception from widening: nothing schedules it, nothing runs
+  it as a side effect of another command, and it caches nothing — an update
+  check that remembered when it last looked would need a file to remember it
+  in, and proof 4 above shows nise writes none. The request carries a constant
+  `User-Agent` with no version in it, so it identifies nobody; no
+  authentication, no cookies, no body; and it refuses redirects, so it reaches
+  one host or fails.
+
+  It is proved in both directions. `TestDynamicNoOutboundConnections` shows
+  every other command reaches nothing, and
+  `TestDynamicTheUpdateCheckIsTheOneNetworkCommand` shows this one reaches
+  exactly one host, once — reading the destination out of the proxied request
+  line, on the same instrument that measures zero everywhere else. That second
+  half matters as much as the first: an allowlist entry for a package that no
+  longer dials is a permission nobody reviewed still standing.
+
+  See [commands/version.md](commands/version.md) for exactly what it sends.

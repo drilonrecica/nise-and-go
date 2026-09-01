@@ -54,6 +54,18 @@ var selfReplacementAllowlist = map[string]string{
 	// crash mid-dump cannot leave a truncated file that looks complete. It
 	// renames a backup onto a backup, never a binary onto a binary.
 	"templates/new/internal/platform/backup/operations.go.tmpl": "os.Rename for an atomic backup-file write; the source and target are both the operator's named backup path",
+
+	// The update check has to know how nise was installed in order to print
+	// the one instruction that will work — `brew upgrade` on a binary
+	// Homebrew does not own does nothing and reads like a bug in nise. The
+	// binary's own path is what distinguishes a Homebrew installation from a
+	// downloaded archive, since they are the same bytes.
+	//
+	// It **reads** the path and nothing else. The dynamic proofs in this file
+	// are what actually keep that true: every command runs from a private
+	// copy of the binary that is hashed before and after, `nise version
+	// check` included.
+	"internal/release/channel.go": "os.Executable to read the running binary's own path, so the update check can name the installation channel; the path is read, never written, and TestNiseNeverModifiesItsOwnBinary covers this command like every other",
 }
 
 // TestNoSelfReplacementMechanism greps production source for the calls a
@@ -366,7 +378,12 @@ func TestAGeneratedApplicationCarriesNoTelemetry(t *testing.T) {
 		t.Fatalf("generation did not produce a project, so this test proves nothing: %v", err)
 	}
 
-	var scanned int
+	// The walk collects names and the reads happen afterwards, through an
+	// os.Root scoped to the generated project. Nothing hostile is expected in
+	// a tree this test just created, but reading a path a directory walk
+	// handed you is the shape of a symlink-traversal defect, and a root-scoped
+	// read is not.
+	var names []string
 	err := filepath.WalkDir(project, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -374,14 +391,35 @@ func TestAGeneratedApplicationCarriesNoTelemetry(t *testing.T) {
 		if entry.IsDir() {
 			return nil
 		}
-		data, readErr := os.ReadFile(path) // #nosec G304 -- a path under this test's own t.TempDir().
-		if readErr != nil {
-			return readErr
-		}
-		scanned++
 		relative, relErr := filepath.Rel(project, path)
 		if relErr != nil {
 			return relErr
+		}
+		names = append(names, relative)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking the generated project: %v", err)
+	}
+	if len(names) == 0 {
+		t.Fatal("no generated files were found, so this test proves nothing")
+	}
+
+	root, err := os.OpenRoot(project)
+	if err != nil {
+		t.Fatalf("opening the generated project: %v", err)
+	}
+	defer func() { _ = root.Close() }()
+
+	for _, relative := range names {
+		file, openErr := root.Open(relative)
+		if openErr != nil {
+			t.Fatalf("opening %s: %v", relative, openErr)
+		}
+		data, readErr := io.ReadAll(file)
+		_ = file.Close()
+		if readErr != nil {
+			t.Fatalf("reading %s: %v", relative, readErr)
 		}
 		lowered := strings.ToLower(string(data))
 		for _, marker := range telemetryMarkers {
@@ -390,13 +428,6 @@ func TestAGeneratedApplicationCarriesNoTelemetry(t *testing.T) {
 					filepath.ToSlash(relative), marker)
 			}
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walking the generated project: %v", err)
 	}
-	if scanned == 0 {
-		t.Fatal("no generated files were scanned, so this test proves nothing")
-	}
-	t.Logf("scanned %d generated files for telemetry markers", scanned)
+	t.Logf("scanned %d generated files for telemetry markers", len(names))
 }

@@ -47,11 +47,21 @@ var telemetryMarkers = []string{
 }
 
 // httpsHostAllowlist is every hard-coded https:// host this repository's
-// production source is permitted to mention. Every entry here is a
-// documentation, specification, or install-instruction reference printed
-// or linked for a human to read — never a URL any command fetches. See
-// each command's own comment for why.
+// production source is permitted to mention. All but one entry here is a
+// documentation, specification, or install-instruction reference printed or
+// linked for a human to read. See each command's own comment for why.
+//
+// The exception is api.github.com, and it is called out here rather than
+// buried in the table because it is the single URL any nise command fetches.
+// `nise version check` — the explicit update check — is the one documented
+// exception to docs/no-telemetry.md, implicit being the operative word there:
+// nothing schedules it, nothing caches its answer, and no other command runs
+// it as a side effect. Whether that stays true is proved by
+// TestDynamicTheUpdateCheckIsTheOneNetworkCommand, not by this comment.
 var httpsHostAllowlist = map[string]string{
+	// The one fetched URL in the whole repository. See the note above.
+	"api.github.com": "the release index `nise version check` queries — the only URL any nise command fetches, from the one command a person has to type to cause it",
+
 	// The module path and its own GitHub repository: written into
 	// generated files (AGENTS.md) and doc comments (ADR links), never
 	// fetched.

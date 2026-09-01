@@ -90,6 +90,16 @@ var networkAllowlist = map[string]string{
 		"command, and it is the one command this test suite deliberately does not run non-" +
 		"interactively (it requires a generated project and a running frontend toolchain).",
 
+	modulePath + "/internal/release": "implements the explicit update check behind `nise version " +
+		"check` (docs/cli-and-distribution.md): one GET to GitHub's releases/latest endpoint, made " +
+		"only inside a command a person typed. This is the one documented exception to " +
+		"docs/no-telemetry.md's \"no command performs an implicit network request\" — implicit being " +
+		"the operative word. It is a separate package precisely so this entry points at a file whose " +
+		"whole purpose is that one request, rather than at every command nise has: the request " +
+		"carries a constant User-Agent with no version, no authentication, no cookies, and follows " +
+		"no redirect, and TestDynamicTheUpdateCheckIsTheOneNetworkCommand asserts it reaches exactly " +
+		"one host while every other command reaches none.",
+
 	modulePath + "/internal/cli": "package cli holds every command's registry entry in one Go " +
 		"package (registry.go's own doc comment: \"the one place a task adds a command\"). " +
 		"dev.go — nise dev's flag wiring and the loopback listener/http.Server it builds before " +
