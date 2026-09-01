@@ -1,0 +1,127 @@
+# Generated once by nise; owned by this application. Nise will not overwrite it.
+#
+# A curated linter set. Every linter here is justified by the defect class it
+# catches in *this* application; none of them is on because it exists.
+#
+# The rule that keeps this file short: do not enable a linter that would force
+# suppression comments across the tree. Either the code changes or the linter
+# does not belong here. A `//nolint` on every third function is not a stricter
+# codebase, it is a linter nobody reads the output of any more.
+#
+# `make lint` requires golangci-lint {{.GolangciLintVersion}}, which is the version Nise itself
+# is pinned to. Install it with:
+#
+#   go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v{{.GolangciLintVersion}}
+version: "2"
+
+linters:
+  default: none
+  enable:
+    # An unchecked error return is a silently swallowed failure, and this
+    # application fails closed — a dropped error is the mechanism by which a
+    # refusal becomes an acceptance.
+    - errcheck
+    # The standard suspicious-construct analyzers: printf mismatches, struct
+    # tag errors, lock copies. Bugs that compile and misbehave.
+    - govet
+    # An assignment never read afterwards is dead code or the wrong variable.
+    - ineffassign
+    # Broad, low-false-positive analysis beyond govet's scope.
+    - staticcheck
+    # Dead private surface left behind by refactors, which misleads readers.
+    - unused
+    # An unclosed http.Response.Body leaks a pooled connection. This
+    # application makes outbound HTTP calls — object storage, and whatever
+    # else it grows.
+    - bodyclose
+    # errors.Is/As mistakes silently defeat the wrapping chain, and this
+    # application's error handling is how its refusals are distinguished
+    # from its failures.
+    - errorlint
+    # Security-relevant static analysis: weak crypto, command injection,
+    # path traversal, unsafe file permissions.
+    - gosec
+    # A misspelling in a comment or a string literal ships verbatim into
+    # documentation and into what users read.
+    - misspell
+    # Exported identifiers without doc comments, error string conventions,
+    # and the rest of revive's defaults.
+    - revive
+    # A function that returns nil after checking an error is one that
+    # decided a failure did not matter. Sometimes that is right, and it
+    # should be written as an explicit discard rather than a nil return
+    # that reads like success.
+    - nilerr
+  settings:
+    revive:
+      # No explicit `rules:` list. Omitting it keeps revive's default set
+      # active; listing even one rule switches it into "explicit rules only"
+      # mode and silently disables the rest.
+      severity: warning
+  exclusions:
+    rules:
+      # gosec G304 (file inclusion via a variable) and G306 (file
+      # permissions) catch path traversal and over-permissive writes in
+      # production code, which are Critical-class findings here.
+      #
+      # Neither threat exists in a _test.go file that builds its own path
+      # under t.TempDir() and writes a fixture it reads back in the same
+      # process: the path is not attacker-controlled and the file's lifetime
+      # is the test's. Flagging every fixture would produce exactly the
+      # forest of suppression comments the rule at the top of this file
+      # warns about, and each rote #nosec dilutes a real one.
+      #
+      # Scoped three ways at once — test files only, gosec only, and those
+      # two rules only — so every other gosec rule, and these two in
+      # production code, stay at full strength.
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "G304|G306"
+      # gosec G101 ("hardcoded credentials") and G115 ("integer overflow
+      # conversion") in a test file, for the same reason and with the same
+      # scoping.
+      #
+      # A test's connection string is a literal the test wrote for a database
+      # it created and will drop; it is not a credential, and there is
+      # nothing to leak. A test's integer conversion is over a value the test
+      # itself chose, so an overflow would be a wrong test rather than a
+      # wrong program. Both fire on nearly every PostgreSQL-backed test in
+      # this project, and suppressing each one individually would bury the
+      # production findings that matter.
+      #
+      # Both rules stay at full strength outside test files.
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "G101|G115"
+      # gosec G704 ("SSRF via taint analysis") on the object-storage client.
+      #
+      # The rule follows a URL from an untrusted source to an outbound
+      # request. Here the URL is built from S3_ENDPOINT and S3_BUCKET —
+      # operator configuration, validated by NewS3Settings at startup — plus
+      # a key ValidateKey has already restricted to an allowlisted character
+      # set. Nothing a request supplies reaches the host, so there is no
+      # forgery to have; the analyzer cannot see that the endpoint is
+      # configuration because it is a string like any other.
+      #
+      # Scoped to that one file and that one rule, because the argument
+      # applies to that file and nowhere else. A project that adds an
+      # outbound call somewhere a request can influence still gets the
+      # finding.
+      - path: internal/platform/storage/s3\.go
+        linters:
+          - gosec
+        text: "G704"
+      # sqlc writes complete packages under each feature's store/ directory
+      # and replaces them wholesale on every regeneration. Linting tool
+      # output means either editing a file that is about to be overwritten
+      # or suppressing findings in it forever; neither is worth doing, and
+      # the ownership rule already says nobody hand-edits these.
+      - path: internal/features/[^/]+/store/
+        linters:
+          - errcheck
+          - gosec
+          - revive
+          - staticcheck
+          - unused

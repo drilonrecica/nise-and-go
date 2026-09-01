@@ -676,7 +676,8 @@ func (f *Factors) SweepChallenges(ctx context.Context, limit int) (int64, error)
 		var err error
 		removed, err = store.New(tx).DeleteExpiredChallenges(ctx, store.DeleteExpiredChallengesParams{
 			ExpiresAt: timestamp(now),
-			Limit:     int32(limit),
+			// #nosec G115 -- limit is clamped above to a bound far inside int32.
+			Limit: int32(limit),
 		})
 		if err != nil {
 			return fmt.Errorf("sweeping expired challenges: %w", err)

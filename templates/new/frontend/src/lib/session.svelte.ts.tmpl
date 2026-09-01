@@ -179,7 +179,7 @@ function client(fetcher?: typeof fetch): APIClient {
  * being rejected with an error nobody can act on.
  */
 export function safeNext(next: string | null, fallback = '/'): string {
-	if (!next || !next.startsWith('/') || next.startsWith('//')) {
+	if (!next?.startsWith('/') || next.startsWith('//')) {
 		return fallback;
 	}
 	return next;

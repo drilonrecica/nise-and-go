@@ -325,7 +325,10 @@ func newAPIRootCursorCollection(items []openapigen.APIRoot, page openapigen.Curs
 // the wire contract declares.
 func issueReportPage(totals pagination.Totals) openapigen.ReportPage {
 	return openapigen.ReportPage{
-		Page:       int32(totals.Page),
+		// #nosec G115 -- page and size come from validated pagination
+		// parameters, both bounded far inside int32 before a page is issued.
+		Page: int32(totals.Page),
+		// #nosec G115 -- see above.
 		Size:       int32(totals.Size),
 		Total:      totals.Total,
 		TotalPages: totals.TotalPages,

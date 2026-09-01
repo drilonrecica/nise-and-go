@@ -823,3 +823,66 @@ func TestTheMalwareScanningBoundaryIsDefinedAndEmpty(t *testing.T) {
 		t.Error("nothing records which scanner examined an object")
 	}
 }
+
+// TestGeneratedProjectsLintTheirOwnCode pins M9-001: a generated project
+// arrives with Go, SQL, TypeScript, and Svelte linting configured, and with
+// every rule that is switched off switched off for a stated reason.
+func TestGeneratedProjectsLintTheirOwnCode(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, allModulesOptions())
+
+	golangci := content[".golangci.yml"]
+	if golangci == "" {
+		t.Fatal("a generated project has no golangci-lint configuration")
+	}
+	for _, linter := range []string{"errcheck", "gosec", "errorlint", "nilerr", "bodyclose", "staticcheck", "revive"} {
+		if !strings.Contains(golangci, "- "+linter) {
+			t.Errorf(".golangci.yml does not enable %s", linter)
+		}
+	}
+	// Every exclusion must be scoped, not global. An unscoped one is a rule
+	// turned off everywhere by somebody who only meant it here.
+	if strings.Contains(golangci, "exclusions:") && !strings.Contains(golangci, "- path:") {
+		t.Error(".golangci.yml has an exclusion with no path scope")
+	}
+
+	biome := content["frontend/biome.jsonc"]
+	if biome == "" {
+		t.Fatal("a generated project has no frontend linter configuration")
+	}
+	if !strings.Contains(biome, `"noExplicitAny": "error"`) {
+		t.Error("the frontend linter permits `any`")
+	}
+	// Biome cannot see Svelte markup, so leaving these on would report every
+	// component in the project. The override must be scoped to .svelte and
+	// must say why.
+	if !strings.Contains(biome, `"includes": ["**/*.svelte"]`) {
+		t.Error("the unused-declaration rules are not scoped away from .svelte, where Biome cannot see the markup")
+	}
+	if !strings.Contains(biome, "svelte-check does see the markup") {
+		t.Error("the .svelte override does not say what still covers the defect class")
+	}
+	// Two formatters disagreeing over one tree is worse than none.
+	if !strings.Contains(biome, `"formatter": { "enabled": false }`) {
+		t.Error("the frontend linter also formats, which will fight whatever else does")
+	}
+
+	// The Makefile has to actually run all of it, and the Go linter has to
+	// refuse a version it was not configured for.
+	makefile := content["Makefile"]
+	for _, fragment := range []string{
+		"golangci-lint run $(GO_PACKAGES)",
+		"GOLANGCI_LINT_VERSION := " + generator.GolangciLintVersion,
+		"golangci-lint version mismatch",
+		"pnpm --dir frontend run lint",
+	} {
+		if !strings.Contains(makefile, fragment) {
+			t.Errorf("the generated Makefile lacks %q", fragment)
+		}
+	}
+
+	if !strings.Contains(content["frontend/package.json"], `"lint": "biome check`) {
+		t.Error("the generated package.json has no lint script")
+	}
+}

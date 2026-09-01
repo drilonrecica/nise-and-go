@@ -196,7 +196,7 @@ func (n *Notifications) Notify(ctx context.Context, tx pgx.Tx, content New) (Not
 
 	recipient, err := parseUUID(content.RecipientID)
 	if err != nil {
-		return Notification{}, fmt.Errorf("%w: %s", ErrInvalid, err)
+		return Notification{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	data := content.Data
 	if len(data) == 0 {
@@ -237,7 +237,7 @@ func (n *Notifications) Notify(ctx context.Context, tx pgx.Tx, content New) (Not
 func (n *Notifications) List(ctx context.Context, recipientID string, limit int, before time.Time) ([]Notification, error) {
 	recipient, err := parseUUID(recipientID)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrInvalid, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if limit <= 0 {
 		limit = DefaultPageSize
@@ -256,6 +256,7 @@ func (n *Notifications) List(ctx context.Context, recipientID string, limit int,
 		var txErr error
 		rows, txErr = store.New(tx).ListNotifications(ctx, store.ListNotificationsParams{
 			RecipientID: recipient,
+			// #nosec G115 -- limit is clamped above to a bound far inside int32.
 			Limit:       int32(limit),
 			Before:      cursor,
 		})
@@ -275,7 +276,7 @@ func (n *Notifications) List(ctx context.Context, recipientID string, limit int,
 func (n *Notifications) Unread(ctx context.Context, recipientID string) (int64, error) {
 	recipient, err := parseUUID(recipientID)
 	if err != nil {
-		return 0, fmt.Errorf("%w: %s", ErrInvalid, err)
+		return 0, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	var count int64
 	err = n.transactor.Within(ctx, transaction.Options{Access: transaction.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -346,7 +347,7 @@ func (n *Notifications) MarkRead(ctx context.Context, id, recipientID string) (N
 func (n *Notifications) MarkAllRead(ctx context.Context, recipientID string) (int64, error) {
 	recipient, err := parseUUID(recipientID)
 	if err != nil {
-		return 0, fmt.Errorf("%w: %s", ErrInvalid, err)
+		return 0, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	var changed int64
 	err = n.transactor.Within(ctx, transaction.Options{}, func(ctx context.Context, tx pgx.Tx) error {

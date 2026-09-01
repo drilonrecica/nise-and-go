@@ -13,6 +13,8 @@
     "messages:compile": "paraglide-js compile --project ./project.inlang --outdir ./src/lib/paraglide --strategy localStorage preferredLanguage baseLocale --disable-async-local-storage",
     "preview": "vite preview",
     "check": "pnpm run api:check && pnpm run messages:compile && pnpm run check:runes && pnpm run check:contrast && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "lint": "biome check src e2e scripts",
+    "lint:fix": "biome check --write src e2e scripts",
     "check:runes": "node scripts/check-runes.mjs src",
     "check:contrast": "node scripts/check-contrast.mjs src/app.css",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",

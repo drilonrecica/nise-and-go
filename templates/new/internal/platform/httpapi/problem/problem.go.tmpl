@@ -350,8 +350,10 @@ func newPayload(r *http.Request, definition Definition) (openapigen.Problem, err
 		return openapigen.Problem{}, fmt.Errorf("problem response requires valid request and correlation IDs")
 	}
 	return openapigen.Problem{
-		Type:          definition.typeURI,
-		Title:         definition.title,
+		Type:  definition.typeURI,
+		Title: definition.title,
+		// #nosec G115 -- a definition's status is an HTTP status code,
+		// validated on construction to the 4xx/5xx range.
 		Status:        int32(definition.status),
 		Detail:        definition.detail,
 		Code:          definition.code,

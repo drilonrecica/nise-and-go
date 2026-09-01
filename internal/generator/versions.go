@@ -127,6 +127,29 @@ const (
 	// component inside browser mode.
 	VitestBrowserSvelteVersion = "3.0.0"
 
+	// BiomeVersion pins the JavaScript and TypeScript linter.
+	//
+	// Biome rather than ESLint, for the same reason this repository's own
+	// golangci-lint configuration is a short curated list: ESLint is a
+	// linter plus a plugin ecosystem, and a generated project would acquire
+	// a parser, a plugin, a config preset, and their transitive versions
+	// before it had checked a single file. Biome is one binary, one
+	// dependency, and a configuration a reader can hold in their head.
+	//
+	// It lints TypeScript and the script blocks inside .svelte files.
+	// Svelte's own rules — markup, accessibility, and the Svelte 5 runes
+	// this project requires — are svelte-check's, which the generated
+	// project already runs, plus the two purpose-built scripts under
+	// frontend/scripts. The three cover different things and none of them
+	// substitutes for the others.
+	BiomeVersion = "2.5.11"
+
+	// GolangciLintVersion is the version a generated project's `make lint`
+	// requires. It matches this repository's own pin (docs/toolchain.md) so
+	// that a contributor moving between the two sees one linter, not two
+	// that disagree.
+	GolangciLintVersion = "2.11.3"
+
 	// ValibotVersion pins the schema library the generated forms validate
 	// with in the browser. It is the generated frontend's first package that
 	// ships in the bundle rather than only building it.
@@ -191,6 +214,7 @@ var frontendDependencies = []Dependency{
 	{Name: "@tailwindcss/vite", Version: "4.3.3"},
 	{Name: "@vitest/browser", Version: VitestVersion},
 	{Name: "@vitest/browser-playwright", Version: VitestVersion},
+	{Name: "@biomejs/biome", Version: BiomeVersion},
 	{Name: "axe-core", Version: AxeCoreVersion},
 	{Name: "@inlang/paraglide-js", Version: ParaglideVersion},
 	{Name: "@inlang/plugin-message-format", Version: MessageFormatPluginVersion},
