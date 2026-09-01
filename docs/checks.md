@@ -303,6 +303,56 @@ sixteen goroutines while a seventeenth signals continuously. Both are shapes
 that produce a rare, unreproducible crash in production and a deterministic
 failure under the race detector.
 
+## Performance budgets
+
+`test/budget/` and, in generated projects, the round-trip budgets in
+`internal/features/auth/budget_test.go`.
+
+The distinction the whole thing is built around is **what a shared runner can
+reproduce**.
+
+Wall-clock time cannot. A GitHub-hosted runner shares a machine, its CPU
+frequency is not ours to know, and the same commit measured twice can differ
+by a factor of three. A gate on it fails for reasons unrelated to the change —
+and a gate that fails for unrelated reasons is one people learn to re-run
+until it passes, which also teaches them to re-run the ones that matter.
+
+Allocation counts, byte sizes, and database round trips **are** reproducible.
+They are properties of the code rather than of the machine.
+
+| Budget | Gates |
+|---|---|
+| Allocations per call | The paths every request touches: permission checks, session token parsing, cursor encode/decode, log redaction |
+| Generated tree size | File count and total bytes, per recipe, plus a bound on any single file |
+| Generated tree shape | The set of top-level entries — every one is a claim about what a project is |
+| Database round trips | Named reference flows: issuing a session, authenticating one |
+
+Round trips are the number that goes wrong quietly. A loop reading one row per
+iteration is indistinguishable from a batch read in any test that only checks
+the result, and the difference between them is a page that loads and a page
+that times out on real data.
+
+Everything else — latency, throughput, memory under load — is measured and
+recorded in [performance baselines](performance-baselines.md) and reviewed by
+a person.
+
+### The check on the check
+
+`TestABudgetActuallyCounts` exists because the round-trip budgets counted
+**zero** when they were first written: the test harness opened its pool
+without a query tracer, so every budget passed at any cost and nothing else in
+the file noticed.
+
+Any test that asserts a threshold needs one of these. A gate that observes
+nothing passes exactly as quietly as a gate that is satisfied.
+
+### Raising a budget
+
+Each is set just above what is measured, deliberately — a budget with room for
+a doubling is not a budget, it is a note about the past. Exceeding one is not
+automatically a bug; it is a fact that needs a sentence. Raise the number in
+the same commit as the change, and say what the change bought.
+
 ## Fuzzing
 
 `make fuzz` runs every `Fuzz*` target in the repository for `FUZZTIME` each

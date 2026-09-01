@@ -1,0 +1,104 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+package auth
+
+import (
+	"context"
+	"testing"
+
+	"{{.ModulePath}}/internal/platform/database"
+)
+
+// Query-count budgets for the reference flows.
+//
+// A round trip to PostgreSQL is the one performance number that is both
+// deterministic and worth gating. It does not depend on the machine, it does
+// not move when the runner is busy, and it changes only when somebody changes
+// a query — which makes an unexpected change a fact rather than noise.
+//
+// It is also the number that goes wrong quietly. A loop that reads one row
+// per iteration is indistinguishable from a batch read in every test that
+// only checks the result, and the difference between them is the difference
+// between a page that loads and one that times out on real data.
+//
+// Each budget below is the count this flow is designed to make, with the
+// reasoning next to it. Exceeding one fails; the fix is either the query or
+// the budget, and raising the budget is a decision somebody writes down.
+const (
+	// budgetIssueSession is the login write path: begin, insert the
+	// session row, commit. It is measured through the whole use case rather
+	// than around one statement, so a helper that adds a lookup shows up
+	// here.
+	budgetIssueSession = 3
+
+	// budgetResolveSession is what every authenticated request pays, and it
+	// is the number most worth watching in this file. Three is begin, the
+	// lookup, and commit; a fourth would mean the session resolution grew a
+	// second query, which multiplies across every request rather than
+	// costing one.
+	budgetResolveSession = 3
+)
+
+// assertQueryBudget runs work with a round-trip budget and reports what it
+// actually used, so a passing test still records the number.
+func assertQueryBudget(t *testing.T, h *harness, name string, budget int64, work func(context.Context) error) {
+	t.Helper()
+
+	ctx, counter, err := database.WithQueryBudget(h.ctx, budget)
+	if err != nil {
+		t.Fatalf("WithQueryBudget: %v", err)
+	}
+	if err := work(ctx); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	t.Logf("%s used %d round trips (budget %d)", name, counter.Count(), budget)
+	if err := counter.Verify(); err != nil {
+		t.Errorf("%s: %v\n"+
+			"Either the flow gained a query or the budget is wrong. Both are worth a sentence in the commit.", name, err)
+	}
+}
+
+// TestReferenceFlowQueryBudgets is the deterministic performance gate.
+func TestReferenceFlowQueryBudgets(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+	account, err := h.accounts.Create(h.ctx, "budget@example.test", hashedPassword(t, "a password for budget"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var issued Issued
+	assertQueryBudget(t, h, "issue a session", budgetIssueSession, func(ctx context.Context) error {
+		var issueErr error
+		issued, issueErr = h.sessions.Issue(ctx, account.ID)
+		return issueErr
+	})
+
+	assertQueryBudget(t, h, "authenticate a session", budgetResolveSession, func(ctx context.Context) error {
+		_, authErr := h.sessions.Authenticate(ctx, issued.Token.Value())
+		return authErr
+	})
+}
+
+// TestABudgetActuallyCounts is the check on the check.
+//
+// A budget mechanism that silently counted nothing would let every flow above
+// pass at any cost, and nothing else in this file would notice. So one
+// deliberate extra round trip must be observed.
+func TestABudgetActuallyCounts(t *testing.T) {
+	h := newHarness(t, testLifetime(t))
+
+	ctx, counter, err := database.WithQueryBudget(h.ctx, 0)
+	if err != nil {
+		t.Fatalf("WithQueryBudget: %v", err)
+	}
+	var value int
+	if err := h.pool.QueryRow(ctx, `SELECT 1`).Scan(&value); err != nil {
+		t.Fatalf("probe query: %v", err)
+	}
+	if counter.Count() != 1 {
+		t.Fatalf("the budget counted %d round trips for one query; it is not observing anything", counter.Count())
+	}
+	if counter.Verify() == nil {
+		t.Fatal("a budget of zero accepted one round trip")
+	}
+}
