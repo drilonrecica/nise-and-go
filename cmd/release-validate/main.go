@@ -146,7 +146,7 @@ func validate(tag, dir, commit, reportPath string) ([]string, error) {
 	problems = append(problems, checkHashes(dir, sums)...)
 	problems = append(problems, checkArchives(dir, version, present)...)
 
-	versionProblems, err := checkVersionReport(reportPath, version, commit)
+	versionProblems, err := checkVersionReport(reportPath, tag, commit)
 	if err != nil {
 		return nil, err
 	}
@@ -430,7 +430,13 @@ func zipEntries(path string) (map[string]entry, error) {
 // only check that says anything about the binary rather than about the files
 // around it: an archive can be complete, correctly hashed, and contain a
 // binary built from the wrong commit or stamped with no version at all.
-func checkVersionReport(path, version, commit string) ([]string, error) {
+//
+// The comparison is against the tag, "v" included. That is the form
+// `go install module@vX.Y.Z` reports through debug.ReadBuildInfo, and it is
+// the form internal/version documents — so a release archive reporting the
+// bare number would be one channel disagreeing with another about what the
+// same release is called, which `nise new` then writes into a project recipe.
+func checkVersionReport(path, tag, commit string) ([]string, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -448,9 +454,8 @@ func checkVersionReport(path, version, commit string) ([]string, error) {
 	}
 
 	var problems []string
-	// GoReleaser stamps {{ .Version }}, which is the tag without its "v".
-	if reported.Version != version {
-		problems = append(problems, fmt.Sprintf("the binary reports version %q, and the release is %s", reported.Version, version))
+	if reported.Version != tag {
+		problems = append(problems, fmt.Sprintf("the binary reports version %q, and the release is %s", reported.Version, tag))
 	}
 	if commit != "" && reported.Commit != commit {
 		problems = append(problems, fmt.Sprintf("the binary reports commit %q, and the release was built from %s", reported.Commit, commit))

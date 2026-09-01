@@ -200,6 +200,45 @@ workflow and the properties `test/release` pins.
 through the tap does not give nise any ability to update itself or check for
 updates.
 
+## Every channel serves the same release
+
+The three installation paths are three routes to one set of bytes, not three
+builds. Homebrew installs the same archives GitHub Releases serves, and
+`go install` compiles the same tagged commit. Which means they can be checked
+against each other, and are: every published release is installed through
+every channel, on every platform that channel serves, and the results are
+compared.
+
+```sh
+nise --json version
+```
+
+reports the same version string from all three:
+
+```json
+{"version":"v0.1.0","commit":"…","date":"…"}
+```
+
+The version carries the tag's `v`. That is the form `go install` reports —
+it comes from the module version, which is always `v`-prefixed — so the
+release archives are stamped to match. Archive *file names* keep the bare
+number (`nise_0.1.0_linux_amd64.tar.gz`); the two are deliberately different
+and both are checked.
+
+One difference is real and is not a defect: **`go install` reports no commit
+and no build date.** It builds from a module zip, which carries no version
+control metadata at all, so the Go toolchain has nothing to record. Provenance
+for that channel comes from the module proxy's checksum database rather than
+from the binary. The archive and Homebrew channels carry both, and are checked
+to agree with each other on the commit — which is how a tap still serving the
+previous release gets caught, since from inside that channel everything looks
+fine.
+
+See [checks.md](checks.md#installation-channels) for the workflow, including
+why it also runs on a schedule: the tap is another repository and the module
+proxy is somebody else's cache, and either can stop serving a release that
+worked on the day it was published.
+
 ## Updates and privacy
 
 Nise does not self-update, collect telemetry, or perform automatic update checks. An explicit check may report instructions appropriate to the detected installation channel. The project recipe records CLI and runtime versions for compatibility checks.

@@ -56,9 +56,20 @@ builds:
     # decoration: `nise doctor` and the project recipe compare the CLI version
     # against what a generated project records, so a release that reported
     # "dev" would make those comparisons wrong rather than merely ugly.
+    #
+    # The literal "v" is load-bearing. GoReleaser's {{ .Version }} is the tag
+    # with its "v" stripped, which is right for a file name and wrong here:
+    # the other installation channel is `go install module@v0.1.0`, whose
+    # version comes from debug.ReadBuildInfo and is the module version,
+    # "v0.1.0". Stamping the bare number made one release report two different
+    # version strings depending on how it was installed — and since `nise new`
+    # writes that string into the project recipe verbatim, it made the same
+    # release generate two different project trees. It also contradicted
+    # internal/version's own documented form. A snapshot keeps its
+    # snapshot version_template and simply gains the same prefix.
     ldflags:
       - -s -w
-      - -X github.com/drilonrecica/nise-and-go/internal/version.Version={{ .Version }}
+      - -X github.com/drilonrecica/nise-and-go/internal/version.Version=v{{ .Version }}
       - -X github.com/drilonrecica/nise-and-go/internal/version.Commit={{ .FullCommit }}
       - -X github.com/drilonrecica/nise-and-go/internal/version.Date={{ .CommitDate }}
 

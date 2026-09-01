@@ -1,0 +1,245 @@
+name: Installation channels
+
+# Installs a published release the way three different people would, on every
+# platform that channel serves, and then checks that they all got the same
+# thing.
+#
+# The interesting failure here is not "a channel is broken" — that one is
+# loud. It is **drift**: two channels working, and disagreeing. A release
+# archive is stamped by the release build; `go install` compiles from a module
+# zip and reads its version out of debug.ReadBuildInfo; Homebrew installs the
+# archive but through a formula generated separately. Three paths to one
+# version string, and nothing but this workflow makes them agree.
+#
+# That matters beyond tidiness. `nise new` writes the running binary's version
+# into the project recipe verbatim, and `nise doctor` compares it. Two channels
+# reporting one release differently means the same release generates two
+# different project trees.
+#
+# Every job here starts from a runner with nothing installed. The archive jobs
+# deliberately do not set up Go: the release binaries are static
+# (CGO_ENABLED=0) and installing one is supposed to require no toolchain at
+# all, which is a claim only a runner without a toolchain can test.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published release tag to install (e.g. v0.1.0)"
+        required: true
+        type: string
+  # A channel does not only break at release time. The tap is another
+  # repository, and the module proxy is somebody else's cache; either can stop
+  # serving a release that worked on the day it was published.
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.5"
+
+jobs:
+  resolve:
+    name: Resolve the tag to install
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      # The scheduled run has no event tag and no input, so it takes whatever
+      # is currently the latest published release — which is what somebody
+      # following the documentation today would get.
+      - name: Resolve
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${EVENT_TAG:-$INPUT_TAG}"
+          if [ -z "$tag" ]; then
+            tag="$(gh release list --repo "$GH_REPO" --limit 1 \
+              --exclude-drafts --exclude-pre-releases \
+              --json tagName --jq '.[0].tagName // empty')"
+          fi
+          if [ -z "$tag" ]; then
+            echo "there is no published release to install" >&2
+            exit 1
+          fi
+          echo "installing $tag" >&2
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  archive:
+    name: Release archive on ${{ matrix.os }}
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      # No Go toolchain is set up in this job, deliberately. A release binary
+      # that needs one to run is not a release binary, and the only way to
+      # test that is not to have one.
+      - name: Download and verify the archive for this runner
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          version="${TAG#v}"
+          case "$RUNNER_OS" in
+            Linux)   name="nise_${version}_linux_${RUNNER_ARCH}.tar.gz" ;;
+            macOS)   name="nise_${version}_darwin_${RUNNER_ARCH}.tar.gz" ;;
+            Windows) name="nise_${version}_windows_${RUNNER_ARCH}.zip" ;;
+            *) echo "unhandled runner OS $RUNNER_OS" >&2; exit 1 ;;
+          esac
+          # RUNNER_ARCH is X64/ARM64; the archives are named for GOARCH.
+          name="$(printf '%s' "$name" | sed -e 's/_X64/_amd64/' -e 's/_ARM64/_arm64/')"
+          echo "installing $name"
+
+          gh release download "$TAG" --repo "$GH_REPO" --pattern "$name" --pattern checksums.txt
+          # The check the documentation tells a person to run, run the same
+          # way. --ignore-missing because only one archive was downloaded.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum --check --ignore-missing checksums.txt
+          else
+            shasum -a 256 --check --ignore-missing checksums.txt
+          fi
+
+          mkdir -p install
+          case "$name" in
+            *.zip) unzip -q "$name" -d install ;;
+            *)     tar -xzf "$name" -C install ;;
+          esac
+
+      - name: Report what this channel installed
+        shell: bash
+        run: ./install/nise --json version | tee channel.json
+
+      # Installing is not the claim; the claim is that it works. A CLI that
+      # cannot create a project is not installed in any sense a reader cares
+      # about.
+      - name: Create a project with it
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/install/nise" new channel-check --yes --json
+          test -f channel-check/go.mod
+          test -f channel-check/nise.json
+
+      - name: Upload this channel's report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: channel-archive-${{ matrix.os }}
+          path: channel.json
+
+  go-install:
+    name: go install on ${{ matrix.os }}
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      # This channel is the one that legitimately needs a toolchain — it
+      # compiles the CLI on the installing machine. No checkout: `go install
+      # module@version` must work from an empty directory against the public
+      # module proxy, which is the whole point of the channel.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+
+      - name: Install from the module proxy
+        shell: bash
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: go install github.com/drilonrecica/nise-and-go/cmd/nise@"$TAG"
+
+      - name: Report what this channel installed
+        shell: bash
+        run: |
+          "$(go env GOPATH)/bin/nise" --json version | tee channel.json
+
+      - name: Create a project with it
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          "$(go env GOPATH)/bin/nise" new channel-check --yes --json
+          test -f channel-check/go.mod
+          test -f channel-check/nise.json
+
+      - name: Upload this channel's report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: channel-go-install-${{ matrix.os }}
+          path: channel.json
+
+  homebrew:
+    name: Homebrew tap on ${{ matrix.os }}
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Four of the six release platforms. Homebrew does not run on Windows.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      # `brew install` is the documented command, run as written. The formula
+      # pins the version, so this also proves the tap is serving the release
+      # rather than a stale one.
+      - name: Install from the tap
+        run: brew install drilonrecica/tap/nise
+
+      - name: Report what this channel installed
+        run: nise --json version | tee channel.json
+
+      - name: Create a project with it
+        run: |
+          cd "$RUNNER_TEMP"
+          nise new channel-check --yes --json
+          test -f channel-check/go.mod
+          test -f channel-check/nise.json
+
+      - name: Upload this channel's report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: channel-homebrew-${{ matrix.os }}
+          path: channel.json
+
+  agree:
+    name: Every channel installed the same release
+    needs: [resolve, archive, go-install, homebrew]
+    # Runs even when a channel failed, so the report says which channels
+    # agreed and which never reported rather than nothing at all.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Collect every channel's report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: channel-*
+          path: reports
+
+      - name: Compare them
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: go run ./cmd/channel-agreement -tag "$TAG" -dir reports
