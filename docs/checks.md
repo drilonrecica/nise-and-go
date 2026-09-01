@@ -303,16 +303,62 @@ sixteen goroutines while a seventeenth signals continuously. Both are shapes
 that produce a rare, unreproducible crash in production and a deterministic
 failure under the race detector.
 
+## Security scanning
+
+`.github/workflows/security.yml`, and `make security` locally. Three scans,
+and the split between them is deliberate.
+
+| Target | Tool | Answers |
+|---|---|---|
+| `make vulncheck` | `govulncheck` | **Are we exploitable?** It resolves call graphs, so an advisory in a function nothing calls is informational rather than a failure. |
+| `make osv` | `osv-scanner` | **Are we shipping something known-bad?** Everything required, called or not, across advisory sources beyond Go's own database. |
+| `make secrets` | `gitleaks` | **Did we ever commit a credential?** The whole history, because a secret committed and then deleted is in every clone. |
+
+The two vulnerability scanners run together rather than one instead of the
+other. Precision without breadth misses a dependency that is bad but currently
+unreached; breadth without precision fails on every advisory in the tree,
+which produces a scanner whose output gets ignored.
+
+### It runs on a schedule as well as on push
+
+A vulnerability database changes without this repository changing. Scanned
+only on push, a stable component learns about a new advisory the next time
+somebody happens to commit — which can be months. The weekly run is what turns
+"we scan our dependencies" into a claim about time.
+
+### The tools are installed through the module proxy
+
+All three are `go install` of a pinned version, not third-party actions. That
+is one fewer workflow to pin by SHA and audit, the proxy checksum-verifies
+what it fetches, and it is the mechanism the golangci-lint install already
+uses.
+
+### The gitleaks allowlist
+
+Every entry in `.gitleaks.toml` names a file and says why its contents cannot
+be a credential — the secret detector's own test fixtures, RFC 6455's example
+`Sec-WebSocket-Key`, an idempotency key. An allowlist entry with no reason is
+a hole somebody widened once and nobody can safely narrow again.
+
+It also adds one rule gitleaks does not ship: a PostgreSQL connection string
+with an inline password, which is the shape most likely to be committed here
+by accident. That rule cannot distinguish a placeholder from a credential by
+shape, so the placeholders are allowlisted by value — `password`, `secret`,
+`s3cr3t`, `changeme`, `REDACTED`. A real pasted credential will not be one of
+those words, which was checked by committing one to a scratch repository and
+confirming it fires.
+
+`--redact` is passed, so a finding does not put the secret it found into a
+public log. The file and line are enough to act on; printing the value would
+turn every true positive into a second leak.
+
 ## What CI deliberately does not do
 
 - **No release workflow.** Building or publishing the six release binaries
   (Linux/macOS/Windows × amd64/arm64) is milestone M10. Nothing under
   `.github/workflows/` attempts it.
-- **No vulnerability-scanning workflow.** Dependency/vulnerability scanning
-  is M9-002. Nothing under `.github/workflows/` attempts it. (`gosec`, one of
-  the linters `make lint` runs, scans source code for security-relevant
-  patterns; it is not a dependency vulnerability scanner and does not
-  substitute for M9-002.)
+- **No frontend build or test job.** See "Frontend targets are not wired in
+  yet" above.
 
 ## Verification
 

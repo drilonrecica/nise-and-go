@@ -47,7 +47,9 @@ The optional organization module combines application checks with PostgreSQL RLS
 
 - Pinned tools and workflows.
 - Locked Go and JavaScript dependencies.
-- `govulncheck`, OSV scanning, and secret scanning.
+- `govulncheck`, OSV scanning, and secret scanning. Implemented; see
+  [checks](checks.md). All three run on every push and **weekly**, because a
+  vulnerability database changes without this repository changing.
 - Release checksums, SBOMs, and build attestations.
 
 ## Operator responsibility

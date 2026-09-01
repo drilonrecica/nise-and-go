@@ -1,0 +1,109 @@
+name: Security
+
+# Supply-chain and secret scanning, separate from CI because it is triggered
+# by two different things.
+#
+# On every push and pull request, so a change that introduces a vulnerable
+# dependency or commits a credential is caught by the change that did it.
+#
+# And on a schedule, which is the part that matters more than it looks: a
+# vulnerability database changes without this repository changing. A project
+# scanned only on push learns about a new advisory the next time somebody
+# happens to commit — which for a stable component can be months. The weekly
+# run is what turns "we scan our dependencies" into a statement about time.
+on:
+  push:
+  pull_request:
+  schedule:
+    # Mondays, 06:17 UTC. An odd minute rather than the hour, because
+    # GitHub's scheduler runs everything queued at :00 late and unevenly.
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.5"
+  # Keep in sync with the Makefile by hand; nothing enforces that they agree,
+  # for the same reason nothing enforces the Go version pin (ADR 0008).
+  GOVULNCHECK_VERSION: "v1.7.0"
+  OSV_SCANNER_VERSION: "v2.5.1"
+  GITLEAKS_VERSION: "v8.30.1"
+
+jobs:
+  vulnerabilities:
+    name: Vulnerable dependencies
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      # Both scanners are installed through the module proxy, which
+      # checksum-verifies them, rather than through a third-party action.
+      # That is one fewer workflow to pin by SHA and audit, and it is the
+      # same mechanism the golangci-lint install in ci.yml already uses.
+      - name: Install govulncheck ${{ env.GOVULNCHECK_VERSION }}
+        run: go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
+
+      - name: Install osv-scanner ${{ env.OSV_SCANNER_VERSION }}
+        run: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@${{ env.OSV_SCANNER_VERSION }}
+
+      # govulncheck reports what this code can actually reach: it resolves
+      # call graphs, so a vulnerability in a function nothing calls is
+      # reported as informational rather than as a failure. That precision is
+      # the point — a scanner that fails on every advisory in the dependency
+      # tree is one whose output gets ignored.
+      - name: govulncheck (reachable vulnerabilities)
+        run: make vulncheck
+
+      # osv-scanner reports what is *present*, called or not, and covers
+      # advisories from sources beyond the Go vulnerability database. It is
+      # the wider net, deliberately run alongside the precise one rather than
+      # instead of it: govulncheck answers "are we exploitable", and this
+      # answers "are we shipping something known-bad".
+      - name: osv-scanner (all required modules)
+        run: make osv
+
+  secrets:
+    name: Committed secrets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The whole history, because that is what is being scanned. A
+          # secret that was committed and then deleted is still in every
+          # clone, and a shallow checkout would report it clean.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Install gitleaks ${{ env.GITLEAKS_VERSION }}
+        # The module path is zricethezav/gitleaks even though the repository
+        # moved to gitleaks/gitleaks; the go.mod still declares the old path,
+        # and `go install` requires the declared one.
+        run: go install github.com/zricethezav/gitleaks/v8@${{ env.GITLEAKS_VERSION }}
+
+      # --redact, so a finding does not put the secret it found into a public
+      # log. The file and line are enough to act on, and printing the value
+      # would turn every true positive into a second leak.
+      - name: gitleaks (whole history)
+        run: make secrets
