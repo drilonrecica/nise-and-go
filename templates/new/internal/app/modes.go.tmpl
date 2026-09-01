@@ -9,9 +9,7 @@ import (
 	"time"
 
 	"github.com/drilonrecica/nise-and-go/runtime/lifecycle"
-{{ if .HasNotifications }}
-	"{{.ModulePath}}/internal/features/notifications"
-{{- end }}
+
 	"{{.ModulePath}}/internal/platform/config"
 	"{{.ModulePath}}/internal/platform/jobs"
 )
@@ -45,29 +43,11 @@ func resolveMode(cfg config.Config, override string) (lifecycle.Mode, error) {
 // handed: it would return immediately and abandon jobs mid-flight. The
 // window is shorter than lifecycle.DefaultShutdownTimeout so that the
 // group's own deadline is not consumed entirely by this component.
-func newWorker(client *jobs.Client, logger *slog.Logger{{ if .HasNotifications }}, stream *notifications.Stream{{ end }}) *lifecycle.Worker {
+func newWorker(client *jobs.Client, logger *slog.Logger) *lifecycle.Worker {
 	return lifecycle.NewWorker(func(ctx context.Context) error {
 		if err := client.Start(ctx); err != nil {
 			return err
 		}
-{{- if .HasNotifications }}
-		// The live-update listener runs alongside the job client, in the
-		// same component, because it has the same lifetime and the same
-		// shutdown: one dedicated connection held until the process drains.
-		//
-		// It runs in "all" and "worker" mode, which is where the worker
-		// component runs — so a deployment splitting web and worker
-		// processes gets live updates from the worker's listener and the
-		// web processes' own, since each holds its own fan-out. See
-		// docs/notifications.md.
-		if stream != nil {
-			go func() {
-				if err := stream.Run(ctx); err != nil {
-					logger.Warn("the notification listener stopped", slog.String("detail", err.Error()))
-				}
-			}()
-		}
-{{- end }}
 
 		logger.Info("worker started",
 			slog.Bool("works_jobs", client.Works()),

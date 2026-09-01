@@ -359,12 +359,34 @@ func Run(ctx context.Context, modeOverride string) error {
 	}
 
 	server := lifecycle.NewHTTPServer(cfg.Addr(), handler, gate, lifecycle.WithLogger(logger))
-	worker := newWorker(jobClient, logger{{ if .HasNotifications }}, notificationStream{{ end }})
+	worker := newWorker(jobClient, logger)
 
 	group, err := lifecycle.NewGroup(mode, server, worker)
 	if err != nil {
 		return fmt.Errorf("selecting process components: %w", err)
 	}
+{{- if .HasNotifications }}
+
+	// The live-update listener belongs to whichever process serves the
+	// endpoint, because the fan-out is in-process: a subscriber registered
+	// by an HTTP handler is only woken by the listener in that same
+	// process. It therefore runs wherever the HTTP handler does, and is
+	// joined on the way out. See runNotificationStream.
+	streamDone := make(chan struct{})
+	streamCtx, stopStream := context.WithCancel(context.WithoutCancel(ctx))
+	defer func() {
+		stopStream()
+		<-streamDone
+	}()
+	if mode == lifecycle.ModeAll || mode == lifecycle.ModeWeb {
+		go func() {
+			defer close(streamDone)
+			runNotificationStream(streamCtx, notificationStream, logger)
+		}()
+	} else {
+		close(streamDone)
+	}
+{{- end }}
 
 	logger.Info("starting",
 		slog.String("mode", string(mode)),

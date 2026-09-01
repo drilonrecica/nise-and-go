@@ -137,3 +137,30 @@ func notificationRoutes(
 		r.Get("/notifications/stream", handler)
 	}, nil
 }
+
+// runNotificationStream keeps the live-update listener running for as long as
+// ctx lasts, and returns only once it has stopped.
+//
+// It belongs to the **web** component, not the worker, and that placement is
+// the whole of it. The fan-out is in-process: a subscriber registered by an
+// HTTP handler is only ever woken by the listener running in that same
+// process. Started in the worker instead, a deployment that splits `web` and
+// `worker` would mount the endpoint on processes whose fan-out nothing feeds
+// — clients would connect, subscribe, and silently receive nothing, forever,
+// while the worker held a LISTEN connection with no subscribers to wake.
+//
+// That is exactly what this did until the security review asked which
+// goroutine owned it.
+//
+// Returning only once the listener has stopped is the other half: the process
+// closes its database pool on the way out, and a listener still releasing a
+// connection at that moment is a shutdown race nobody would reproduce
+// deliberately.
+func runNotificationStream(ctx context.Context, stream *notifications.Stream, logger *slog.Logger) {
+	if stream == nil {
+		return
+	}
+	if err := stream.Run(ctx); err != nil {
+		logger.Warn("the notification listener stopped", slog.String("detail", err.Error()))
+	}
+}

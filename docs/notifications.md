@@ -163,6 +163,20 @@ subscribers. A connection per client would cap concurrent viewers at the
 database's connection limit — a much smaller number than a deployment expects
 to serve — and would spend a pooled connection on waiting.
 
+**The listener runs in the process that serves the endpoint**, which means the
+`web` component, not the worker. The fan-out is in-process: a subscriber
+registered by an HTTP handler is only ever woken by the listener in that same
+process. Started in the worker instead, a deployment splitting `web` and
+`worker` would mount the endpoint on processes whose fan-out nothing feeds —
+clients would connect, subscribe, and silently receive nothing forever, while
+the worker held a `LISTEN` connection with no subscribers to wake. It was
+written that way first; the security review asked which goroutine owned it.
+
+It holds one connection from the application pool for the process lifetime.
+With the default `DB_MAX_CONNS=10` that is a tenth of the pool. Account for it
+when sizing, or set `NOTIFICATIONS_SSE=false` on a deployment that does not
+want to.
+
 ### What it deliberately does
 
 - **Ends every stream after thirty minutes.** A stream that never ends is a
