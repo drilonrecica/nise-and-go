@@ -1,0 +1,135 @@
+name: Homebrew tap
+
+# Updates the official Homebrew tap (github.com/drilonrecica/homebrew-tap)
+# so that `brew install drilonrecica/tap/nise` serves the release a human
+# just published.
+#
+# It runs on **publish**, not on the tag push. The release workflow drafts
+# its release, and a formula generated at tag time would point at download
+# URLs that do not exist until somebody presses publish — which is also why
+# this is not GoReleaser's own brews/casks publishing, which runs during the
+# tag build. The publish click is the moment the archives become real, so the
+# publish click is the trigger.
+#
+# The formula is generated from the release's **canonical artifacts**, not
+# from a rebuild: this workflow downloads the published checksums.txt,
+# verifies its build attestation, and embeds those exact hashes. brew then
+# re-verifies every archive it downloads against them, so a tap user gets
+# the same integrity chain as somebody running sha256sum by hand.
+#
+# workflow_dispatch re-points the tap at any already-published release —
+# retrying a failed run, or an explicit rollback with allow-downgrade.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published release tag to generate the formula from (e.g. v0.1.0)"
+        required: true
+        type: string
+      allow-downgrade:
+        description: "Deliberately point the tap at an older version (rollback)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.5"
+
+jobs:
+  update-tap:
+    name: Regenerate and push the formula
+    # A prerelease is published to GitHub Releases for the people who opted
+    # in by reading the releases page; it never reaches the tap, which is
+    # what `brew install` gives everybody. The generator refuses prerelease
+    # tags too — this condition just avoids a run that would fail.
+    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      # workflow_dispatch can name any tag, so the release it names is
+      # checked for the two states the event trigger already excludes: a
+      # draft (its assets are not public yet) and a prerelease.
+      - name: Refuse drafts and prereleases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+          if [ "$draft" != "false" ]; then
+            echo "refusing: release $TAG is a draft; publish it first" >&2
+            exit 1
+          fi
+          prerelease="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)"
+          if [ "$prerelease" != "false" ]; then
+            echo "refusing: release $TAG is a prerelease, and prereleases never reach the tap" >&2
+            exit 1
+          fi
+
+      - name: Download the release's checksums.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern checksums.txt --output checksums.txt
+
+      # The gate that makes the rest worth doing. The attestation proves
+      # checksums.txt was produced by this repository's release workflow at
+      # the named tag — not by anybody who obtained a token and replaced the
+      # release assets. Since the formula embeds hashes from this file and
+      # brew verifies every download against them, attesting this one file
+      # transitively covers all four archives the formula installs.
+      - name: Verify the attestation on checksums.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh attestation verify checksums.txt --repo "$GITHUB_REPOSITORY"
+
+      # HOMEBREW_TAP_TOKEN is a fine-grained personal access token with
+      # contents read/write on drilonrecica/homebrew-tap and nothing else.
+      # The default GITHUB_TOKEN cannot write to another repository, and a
+      # classic PAT would grant far more than one repo's contents. The token
+      # appears only in the clone URL on this ephemeral runner; it is never
+      # echoed.
+      - name: Clone the tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/drilonrecica/homebrew-tap.git" tap
+
+      - name: Generate the formula
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          ALLOW_DOWNGRADE: ${{ inputs.allow-downgrade }}
+        run: |
+          flags=""
+          if [ "$ALLOW_DOWNGRADE" = "true" ]; then
+            flags="-allow-downgrade"
+          fi
+          go run ./cmd/homebrew-formula -tag "$TAG" -checksums checksums.txt -out tap/Formula/nise.rb $flags
+
+      - name: Push the formula
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/nise.rb
+          if git diff --cached --quiet; then
+            echo "the formula already matches $TAG; nothing to push"
+            exit 0
+          fi
+          git commit -m "nise $TAG"
+          git push origin HEAD

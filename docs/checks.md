@@ -497,6 +497,45 @@ produced and attested; and that every action in every workflow is pinned to a
 full commit SHA, first-party ones included — "first-party" describes who wrote
 an action, not what a moved tag would run.
 
+### The Homebrew tap
+
+`.github/workflows/homebrew.yml` updates the official tap
+([drilonrecica/homebrew-tap](https://github.com/drilonrecica/homebrew-tap))
+when a release is **published** — the human's publish click on the draft, not
+the tag push. A formula generated at tag time would point at download URLs
+that do not exist until the draft is published, which is also why the tap is
+not updated by GoReleaser's own Homebrew publishing: that runs during the tag
+build, while the release is still a draft.
+
+The formula is generated from the release's canonical artifacts rather than a
+rebuild: the workflow downloads the published `checksums.txt`, verifies its
+build attestation with `gh attestation verify`, and only then runs
+`cmd/homebrew-formula`, which embeds those exact hashes. brew re-verifies
+every archive it downloads against them, so attesting that one file
+transitively covers all four archives the formula installs — and a formula
+can never be generated from artifacts the release workflow did not produce.
+
+The generator is ordinary tested Go in this repository. It writes the same
+bytes for the same inputs, refuses prerelease tags (the tap is what
+`brew install` gives everybody), refuses a `checksums.txt` missing any of the
+four Homebrew platforms, and refuses to silently move the tap to an older
+version — rolling back is a real operation, spelled `workflow_dispatch` with
+`allow-downgrade`, so it only happens when somebody means it. The
+`workflow_dispatch` path also retries a failed update against any
+already-published release.
+
+Pushing to the tap requires a `HOMEBREW_TAP_TOKEN` repository secret: a
+fine-grained personal access token with contents read/write on
+`drilonrecica/homebrew-tap` and nothing else. The default `GITHUB_TOKEN`
+cannot write to another repository, and scoping the PAT to one repository's
+contents means a leaked token cannot touch this repository, its releases, or
+anything beyond the tap — whose every change is a public commit anyway.
+
+`test/release` pins the properties that make this safe: the workflow triggers
+on publish and never on a tag push, `.goreleaser.yaml` declares no
+`brews`/`homebrew_casks` section, drafts and prereleases are refused on the
+manual path too, and the attestation is verified before the generator runs.
+
 ## What CI deliberately does not do
 
 - **No cross-platform test execution beyond three runners.** The release
