@@ -1,0 +1,81 @@
+# Nise & Go secret-scanning configuration.
+#
+# gitleaks scans this repository's whole commit history, not just its working
+# tree, because a secret that was committed and then deleted is still leaked —
+# it is in the history of every clone.
+#
+# Every allowlist entry below names a specific file and says why the value it
+# contains cannot be a credential. An allowlist entry with no reason is a hole
+# somebody widened once and nobody can safely narrow again.
+#
+# Pinned tool version: gitleaks v8.30.1 (see the Makefile).
+
+[extend]
+# Start from gitleaks' own rule set rather than a hand-written one. Its rules
+# are maintained against the token formats providers actually issue, which is
+# not a thing this project can keep current on its own.
+useDefault = true
+
+[[rules]]
+# gitleaks has no rule for a PostgreSQL URL carrying an inline password, and
+# that is the shape most likely to be committed here by accident — a working
+# connection string pasted from a terminal into a config file or a doc.
+id = "postgres-url-password"
+description = "PostgreSQL connection string with an inline password"
+regex = '''postgres(?:ql)?://[A-Za-z0-9_.-]+:[^@\s/'"]{6,}@'''
+tags = ["database", "credential"]
+
+[allowlist]
+description = "Values that match a secret pattern and provably are not one"
+
+paths = [
+  # The secret detector's own test fixtures.
+  #
+  # `internal/check` is this project's secret scanner for generated
+  # applications. Its tests must contain examples of every shape it detects,
+  # including GitHub's own documented example personal access token and a
+  # truncated RSA key header — a scanner whose tests contained no secrets
+  # would be a scanner nothing proves works.
+  '''internal/check/secrets_test\.go''',
+
+  # RFC 6455's own example. `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==` is
+  # base64 for "the sample nonce" and appears verbatim in the WebSocket
+  # specification; the dev-loop proxy test uses it so the handshake it asserts
+  # is the one the RFC describes.
+  '''internal/dev/proxy_test\.go''',
+
+  # An idempotency key in a generated frontend test: `key-0123456789`. An
+  # idempotency key is a client-chosen identifier for a retry, not a
+  # credential — it authorizes nothing and is safe to log.
+  '''templates/new/frontend/src/lib/api/client\.test\.ts\.tmpl''',
+]
+
+regexes = [
+  # The deliberately public throwaway credentials for job-scoped disposable
+  # containers. Each exists so a CI service or a local development database
+  # has *a* password; none of them protects anything that outlives the
+  # process that created it, and every one of them is committed on purpose so
+  # the command that starts the container is complete and copyable.
+  '''nise-ci-postgres''',
+  '''nise-restricted-role''',
+
+  # "hunter2" is the canonical joke password. Its appearance in a test is a
+  # deliberate signal that the value is fictional.
+  '''hunter2''',
+
+  # Placeholder passwords in the connection strings this file's own
+  # postgres-url-password rule matches.
+  #
+  # The rule cannot tell a placeholder from a credential by shape — that is
+  # the whole difficulty of scanning for connection strings, and the reason
+  # gitleaks ships no rule for them. What it can be told is that a value
+  # which *says* it is a placeholder is one. Everything below is a word
+  # nobody's password manager would generate, and a real pasted credential
+  # will not be among them, so the rule keeps working for the case it exists
+  # for.
+  #
+  # Adding a word here is a decision to stop detecting it. Add a word that
+  # could plausibly be somebody's password and the rule stops being worth
+  # having.
+  '''postgres(?:ql)?://[^:@\s]+:(?:password|secret|s3cr3t|s3cr3t-pw|changeme|\[REDACTED\]|REDACTED)@''',
+]

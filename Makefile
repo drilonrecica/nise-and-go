@@ -46,13 +46,22 @@ GO_FMT_DIRS := cmd internal runtime test
 
 GOLANGCI_LINT_VERSION := 2.11.3
 
+# Security-scanning tools. Pinned by documented version for the same reason
+# golangci-lint is (ADR 0008): a scanner whose findings differ between two
+# machines produces an argument about whether the code is wrong. None of them
+# is a go.mod tool directive, because each drags in a dependency tree this
+# module has no other use for.
+GOVULNCHECK_VERSION := v1.7.0
+OSV_SCANNER_VERSION := v2.5.1
+GITLEAKS_VERSION := v8.30.1
+
 # A literal '#' inside a recipe line starts a Makefile comment even inside
 # shell quotes, unless escaped. HASH lets docs-check build shell patterns
 # and parameter expansions that contain '#' without that ever appearing as
 # a raw character in this file. See docs/checks.md for the full write-up.
 HASH := $(shell printf '\043')
 
-.PHONY: fmt fmt-check vet lint test test-race migration-test generate generate-diff docs-check check help
+.PHONY: fmt fmt-check vet lint test test-race migration-test generate generate-diff docs-check check vulncheck osv secrets security help
 
 fmt: ## Format Go source in place (gofmt -s -w) over cmd, internal, runtime.
 	gofmt -s -w $(GO_FMT_DIRS)
@@ -122,6 +131,32 @@ docs-check: ## Fail if any relative Markdown link in docs/** or a root *.md file
 		done; \
 	done; \
 	exit $$status
+
+vulncheck: ## Report known vulnerabilities this code actually reaches.
+	@command -v govulncheck >/dev/null 2>&1 || { \
+		echo "govulncheck is not installed." >&2; \
+		echo "install it with: go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)" >&2; \
+		exit 1; \
+	}
+	govulncheck $(GO_PACKAGES)
+
+osv: ## Report known vulnerabilities in every required module, called or not.
+	@command -v osv-scanner >/dev/null 2>&1 || { \
+		echo "osv-scanner is not installed." >&2; \
+		echo "install it with: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@$(OSV_SCANNER_VERSION)" >&2; \
+		exit 1; \
+	}
+	osv-scanner scan source --lockfile=go.mod
+
+secrets: ## Scan the whole commit history for committed credentials.
+	@command -v gitleaks >/dev/null 2>&1 || { \
+		echo "gitleaks is not installed." >&2; \
+		echo "install it with: go install github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION)" >&2; \
+		exit 1; \
+	}
+	gitleaks git . --no-banner --redact -c .gitleaks.toml
+
+security: vulncheck osv secrets ## Run every supply-chain and secret scan.
 
 check: fmt-check vet lint test test-race generate-diff docs-check ## Run every hermetic CI check.
 
