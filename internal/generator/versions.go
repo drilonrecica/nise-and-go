@@ -89,6 +89,25 @@ const (
 	// Dockerfile builds with.
 	GoImageTag = "1.26"
 
+	// The base images the generated Dockerfile builds from, pinned by
+	// digest as well as by tag.
+	//
+	// A tag moves. `golang:1.26` is a different image next month, which
+	// means the same commit produces a different binary — and an image
+	// nobody can rebuild is one nobody can audit after an advisory. The tag
+	// is kept beside the digest so a reader can see what the digest is
+	// meant to be; the digest is what actually resolves.
+	//
+	// Bumping one is a deliberate edit with a line in docs/dependencies.md,
+	// the same as any other pin. Resolve the new digest with:
+	//
+	//	docker buildx imagetools inspect <image>:<tag>
+	GoImageDigest      = "sha256:ba4c8df3f74321b0d5c44911ccb694c8156340b684eed1fae09a9bd9f7a82b4d"
+	NodeImageDigest    = "sha256:4d676821dff059fd00d277ee4261ef34ea712317fed0737c03941481b5760c96"
+	RuntimeImage       = "gcr.io/distroless/static-debian12"
+	RuntimeImageTag    = "nonroot"
+	RuntimeImageDigest = "sha256:52dcfbabb7457ea47c82f6e13af8c8a4a1d9f7b0145142b3ecab20f2b888411d"
+
 	// NodeVersion is the minimum Node version the generated frontend
 	// declares in its engines field.
 	NodeVersion = "22.22.2"
