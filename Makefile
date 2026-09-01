@@ -61,7 +61,7 @@ GITLEAKS_VERSION := v8.30.1
 # a raw character in this file. See docs/checks.md for the full write-up.
 HASH := $(shell printf '\043')
 
-.PHONY: fmt fmt-check vet lint test test-race migration-test generate generate-diff docs-check check vulncheck osv secrets security help
+.PHONY: fmt fmt-check vet lint test test-race migration-test generate generate-diff docs-check check vulncheck osv secrets security fuzz help
 
 fmt: ## Format Go source in place (gofmt -s -w) over cmd, internal, runtime.
 	gofmt -s -w $(GO_FMT_DIRS)
@@ -157,6 +157,20 @@ secrets: ## Scan the whole commit history for committed credentials.
 	gitleaks git . --no-banner --redact -c .gitleaks.toml
 
 security: vulncheck osv secrets ## Run every supply-chain and secret scan.
+
+# FUZZTIME is how long each target runs. Thirty seconds is not a thorough
+# fuzz and is not meant to be: it is enough to re-explore a target's committed
+# corpus and to find the shallow regression a change just introduced. Real
+# fuzzing is a long-running activity somebody does deliberately —
+# `make fuzz FUZZTIME=10m` — not something a pull request waits for.
+FUZZTIME ?= 30s
+
+fuzz: ## Run every fuzz target for FUZZTIME each (default 30s).
+	@# go test fuzzes one target at a time, so they are enumerated and run in
+	@# sequence. `-run ^$$` suppresses the ordinary tests, which have already
+	@# run under `make test`; without it every target would re-run the whole
+	@# package's suite before fuzzing.
+	@failed=0; 	for pkg in $$(go list $(GO_PACKAGES)); do 		targets="$$(go test -list '^Fuzz' "$$pkg" 2>/dev/null | grep '^Fuzz' || true)"; 		for target in $$targets; do 			echo "fuzz $$pkg $$target ($(FUZZTIME))"; 			go test "$$pkg" -run '^$$' -fuzz "^$$target$$" -fuzztime $(FUZZTIME) || failed=1; 		done; 	done; 	exit $$failed
 
 check: fmt-check vet lint test test-race generate-diff docs-check ## Run every hermetic CI check.
 

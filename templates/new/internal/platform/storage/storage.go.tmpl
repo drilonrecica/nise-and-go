@@ -272,12 +272,24 @@ func SanitizeFilename(name string) string {
 			b.WriteByte('_')
 		}
 	}
-	cleaned := strings.Trim(b.String(), "._-")
-	if cleaned == "" || cleaned == "." || cleaned == ".." {
-		return "file"
-	}
+	// Truncate before trimming, not after.
+	//
+	// The other order is idempotent right up until a cut lands on a
+	// separator: a name trimmed to 200 characters can end in "-" or ".",
+	// and sanitizing the result again would remove it — so the value stored
+	// and the value produced next time differ. A trailing "." is also not a
+	// legal filename on Windows.
+	//
+	// Everything the builder above emits is ASCII, so cutting at a byte
+	// boundary cannot split a rune. A fuzz target found this; the input was
+	// 197 digits, a space, and two more digits.
+	cleaned := b.String()
 	if len(cleaned) > MaxKeyComponentBytes {
 		cleaned = cleaned[:MaxKeyComponentBytes]
+	}
+	cleaned = strings.Trim(cleaned, "._-")
+	if cleaned == "" || cleaned == "." || cleaned == ".." {
+		return "file"
 	}
 	return cleaned
 }

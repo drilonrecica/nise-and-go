@@ -1,10 +1,12 @@
 package pagination_test
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -605,4 +607,138 @@ func FuzzCursorDecode(f *testing.F) {
 			}
 		}
 	})
+}
+
+// FuzzBindingIsInjective is the filter-side fuzz target.
+//
+// A binding is what stops a cursor issued against one filter set from being
+// replayed against another — the cursor carries a fingerprint of the query
+// that produced it, and a mismatch is refused. That guarantee rests entirely
+// on two different filter sets never producing the same fingerprint, and on
+// one filter set always producing the same one.
+//
+// Both are properties of the canonical encoding, which is where a mistake
+// would live: a separator that can appear inside a value, a length prefix
+// that is written for one field and not another, or a sort that reorders
+// something whose order is meaningful. Every one of those makes two distinct
+// queries collide, and a collision is a cursor that walks rows the current
+// filter was never allowed to see.
+func FuzzBindingIsInjective(f *testing.F) {
+	f.Add("widgets", "status", "open", "owner", "alice")
+	f.Add("widgets", "status", "openowner", "alice", "")
+	f.Add("widgets", "", "", "", "")
+	f.Add("", "a", "b", "c", "d")
+	f.Add("widgets", "a\x00b", "c", "d", "e")
+	f.Add("widgets", "a", "b&c=d", "e", "f")
+	f.Add("widgets\x1f", "a", "b", "c", "d")
+
+	f.Fuzz(func(t *testing.T, resource, keyA, valueA, keyB, valueB string) {
+		first := pagination.NewBinding(resource, url.Values{keyA: {valueA}, keyB: {valueB}})
+		second := pagination.NewBinding(resource, url.Values{keyA: {valueA}, keyB: {valueB}})
+
+		// Deterministic: the same filters must fingerprint the same way, or
+		// a cursor stops verifying against the query that produced it.
+		if first.String() != second.String() {
+			t.Fatalf("the same filters produced two fingerprints: %s and %s", first, second)
+		}
+
+		// A fingerprint is hexadecimal and fixed-width, so it can be logged
+		// and compared without escaping.
+		if len(first.String()) != 64 {
+			t.Fatalf("fingerprint %q is %d characters, want 64", first, len(first.String()))
+		}
+		if _, err := hex.DecodeString(first.String()); err != nil {
+			t.Fatalf("fingerprint %q is not hexadecimal: %v", first, err)
+		}
+
+		// And it must depend on the resource. Two resources sharing a
+		// fingerprint would let a cursor issued for one walk the other.
+		if other := pagination.NewBinding(resource+"x", url.Values{keyA: {valueA}, keyB: {valueB}}); other.String() == first.String() {
+			t.Fatalf("resources %q and %qx share a fingerprint", resource, resource)
+		}
+
+		// Adding a filter must change it. This is the case a naive
+		// concatenation gets wrong: "status=open" and "statu=sopen" encode
+		// to the same bytes without length prefixes.
+		if keyA != "" {
+			extra := pagination.NewBinding(resource, url.Values{keyA: {valueA}, keyB: {valueB}, keyA + "z": {"1"}})
+			if extra.String() == first.String() {
+				t.Fatalf("adding a filter did not change the fingerprint (%s)", first)
+			}
+		}
+	})
+}
+
+// FuzzParsePageRejectsWithoutPanicking covers the whole query-parameter
+// surface a list endpoint exposes, which is the one place every request
+// reaches unauthenticated input.
+//
+// What is asserted is not that a particular value is refused — that is what
+// the table tests are for — but that no value produces a panic, a limit
+// outside the configured bounds, or a page that claims a cursor it did not
+// verify.
+func FuzzParsePageRejectsWithoutPanicking(f *testing.F) {
+	f.Add("25", "", "asc")
+	f.Add("0", "", "")
+	f.Add("-1", "abc", "desc")
+	f.Add("99999999999999999999", "", "")
+	f.Add("1e3", "cur_", "sideways")
+	f.Add("\x00", "\x00", "\x00")
+	f.Add(" 25 ", "%%%", "ASC")
+
+	codec := fuzzCodec(f)
+	limits, err := pagination.NewLimits(25, 100)
+	if err != nil {
+		f.Fatalf("NewLimits: %v", err)
+	}
+	binding := pagination.NewBinding("widgets", url.Values{"status": {"open"}})
+
+	f.Fuzz(func(t *testing.T, limit, cursor, direction string) {
+		query := url.Values{}
+		if limit != "" {
+			query.Set("limit", limit)
+		}
+		if cursor != "" {
+			query.Set("cursor", cursor)
+		}
+		if direction != "" {
+			query.Set("direction", direction)
+		}
+
+		page, err := codec.ParsePage(binding, query, limits)
+		if err != nil {
+			// A refusal is a fine outcome for arbitrary input. What must
+			// never happen is a refusal that also returns a usable page.
+			if page.Limit != 0 || page.HasCursor {
+				t.Fatalf("ParsePage refused %q but returned a usable page (limit %d, cursor %t)",
+					query.Encode(), page.Limit, page.HasCursor)
+			}
+			return
+		}
+
+		if page.Limit < 1 || page.Limit > limits.Max() {
+			t.Fatalf("ParsePage accepted %q and returned limit %d, outside 1..%d",
+				query.Encode(), page.Limit, limits.Max())
+		}
+	})
+}
+
+// fuzzCodec builds a codec for the fuzz targets above. It cannot reuse
+// testCodec, which takes a *testing.T.
+func fuzzCodec(f *testing.F) *pagination.Codec {
+	f.Helper()
+
+	key, err := pagination.NewKey("fuzz", bytes.Repeat([]byte{0x2a}, 32))
+	if err != nil {
+		f.Fatalf("NewKey: %v", err)
+	}
+	ring, err := pagination.NewKeyRing(key)
+	if err != nil {
+		f.Fatalf("NewKeyRing: %v", err)
+	}
+	codec, err := pagination.NewCodec(ring, time.Hour)
+	if err != nil {
+		f.Fatalf("NewCodec: %v", err)
+	}
+	return codec
 }

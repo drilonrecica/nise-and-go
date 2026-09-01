@@ -303,6 +303,49 @@ sixteen goroutines while a seventeenth signals continuously. Both are shapes
 that produce a rare, unreproducible crash in production and a deterministic
 failure under the race detector.
 
+## Fuzzing
+
+`make fuzz` runs every `Fuzz*` target in the repository for `FUZZTIME` each
+(30 seconds in CI, `make fuzz FUZZTIME=10m` when somebody means it).
+
+| Target | Package | What it protects |
+|---|---|---|
+| `FuzzParseToken` | `runtime/session` | Session token parsing — the value every authenticated request carries |
+| `FuzzCursorDecode` | `runtime/pagination` | Cursor decoding, which is signed data arriving from a client |
+| `FuzzBindingIsInjective` | `runtime/pagination` | The filter fingerprint a cursor is bound to |
+| `FuzzParsePageRejectsWithoutPanicking` | `runtime/pagination` | Every list query parameter |
+
+Generated projects carry their own, over the same surfaces plus what they add:
+`FuzzDecode` (the strict JSON body decoder), `FuzzTransportSurface`,
+`FuzzValidateKey` and `FuzzFingerprint` (idempotency), and
+`FuzzValidateKeyNeverAcceptsAnEscape` and
+`FuzzSanitizeFilenameAlwaysProducesOneUsableComponent` (upload metadata).
+
+### They assert properties, not examples
+
+`FuzzBindingIsInjective` does not check that a particular filter set produces
+a particular hash. It checks that the same filters always fingerprint the
+same way, that different resources never share a fingerprint, and that adding
+a filter always changes one — which is what a cursor's binding actually rests
+on, and what a naive concatenation gets wrong (`status=open` and
+`statu=sopen` encode identically without length prefixes).
+
+`FuzzSanitizeFilenameAlwaysProducesOneUsableComponent` checks that the output
+is never empty, spans exactly one path component, and is **idempotent**. That
+last property found a real bug within seconds: the function trimmed `._-` and
+*then* truncated to 200 bytes, so a cut landing on a separator produced a name
+ending in `-` or `.` — a value that differed from what sanitizing it again
+would give, and, with a trailing dot, not a legal Windows filename.
+
+Round-trip and idempotence properties are what make a fuzz target find things
+a table of examples never will.
+
+### A crash becomes a permanent test case
+
+A failure writes a corpus file into `testdata/fuzz/<Target>/`. It is printed
+by the failure, and it must be committed alongside the fix — the input that
+found the bug then runs as an ordinary test case under `make test` forever.
+
 ## Security scanning
 
 `.github/workflows/security.yml`, and `make security` locally. Three scans,
