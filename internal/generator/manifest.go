@@ -393,6 +393,7 @@ var templateFiles = []templateFile{
 	{Template: "internal/features/uploads/uploads_test.go.tmpl", Output: "internal/features/uploads/uploads_test.go", Owner: OwnerApp, Module: recipe.ModuleUploads},
 	{Template: "internal/platform/authorization/authorizer.go.tmpl", Output: "internal/platform/authorization/authorizer.go", Owner: OwnerApp},
 	{Template: "internal/platform/authorization/authorizer_test.go.tmpl", Output: "internal/platform/authorization/authorizer_test.go", Owner: OwnerApp},
+	{Template: "internal/platform/authorization/matrix_test.go.tmpl", Output: "internal/platform/authorization/matrix_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/authorization/catalog.go.tmpl", Output: "internal/platform/authorization/catalog.go", Owner: OwnerApp},
 	{Template: "internal/platform/authorization/catalog_test.go.tmpl", Output: "internal/platform/authorization/catalog_test.go", Owner: OwnerApp},
 	{Template: "internal/platform/httpauth/context.go.tmpl", Output: "internal/platform/httpauth/context.go", Owner: OwnerApp},

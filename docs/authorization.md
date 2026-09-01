@@ -172,3 +172,40 @@ anybody who could type a password do anything.
 - [Reauthentication](reauthentication.md)
 - [Audit log](audit.md)
 - [Security model](security.md)
+
+## The permission matrix
+
+`internal/platform/authorization/matrix_test.go` writes the policy out in full
+— every role, every permission it holds — and checks the catalog against it in
+**both** directions.
+
+Both directions matter, and only one of them is obvious. A test asserting
+"the administrator can manage roles" keeps passing after somebody adds
+`roles.manage` to the **auditor** bundle, and that is the change that actually
+needs noticing: widening a role is a one-line diff in `catalog.go` and a
+completely silent behavioural change. Checked from the catalog's side, it is a
+failing test naming the role and the permission, and adding it to the table is
+a deliberate edit in the same commit.
+
+Two further checks are not redundant with the table:
+
+- **A read-only role holds no write permission**, asserted from a separate
+  list. Without it, making the table agree with a mistake would pass. Verified
+  by widening the auditor bundle — three tests fail — and then editing the
+  table to match, after which two still do.
+- **Every catalogued permission is held by some role.** A permission nobody
+  can have is not harmless: it reads as a control, a reviewer counts it, and
+  every check against it denies everybody — which looks like correct
+  default-deny right up until an administrator grants the role they think
+  covers it.
+
+And on the framework side, `TestEveryPermissionIsEnforcedSomewhere` checks
+that every permission the generated catalog declares appears in at least one
+`Require` or `RequireAll` call, and that no call names a permission the
+catalog does not declare.
+
+**A permission that is declared and never checked is worse than one that does
+not exist.** It appears in the catalog, an administrator grants a role
+expecting it to mean something, and the operation it was supposed to guard is
+open to everyone who can reach it. Nothing about the catalog reveals that — the
+permission is right there in the list.
