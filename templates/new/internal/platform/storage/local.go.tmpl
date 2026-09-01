@@ -190,16 +190,21 @@ func (l *Local) Move(ctx context.Context, from, to string) error {
 	if from == to {
 		return nil
 	}
-	if _, err := l.root.Stat(from); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("%w: %s", ErrNotFound, from)
-		}
-		return fmt.Errorf("storage: stat %s: %w", from, err)
-	}
 	if err := l.mkdirAll(objectDir(to)); err != nil {
 		return err
 	}
+	// The rename is attempted directly, and a missing source is recognised
+	// from its error rather than from a Stat beforehand.
+	//
+	// A Stat would be a check separated from the act it guards: two callers
+	// could both find the object present and both proceed, and which of them
+	// is then told the truth depends on the platform. Letting the rename
+	// itself be the check makes exactly one caller win on any filesystem
+	// where rename is atomic, and saves a syscall.
 	if err := l.root.Rename(from, to); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%w: %s", ErrNotFound, from)
+		}
 		return fmt.Errorf("storage: moving %s to %s: %w", from, to, err)
 	}
 	return nil
