@@ -23,15 +23,34 @@ Each project recipe records:
 - Runtime-package versions.
 - Selected profile and compile-time modules.
 
-`nise doctor` detects incompatible combinations. A planned `nise upgrade` command — it does not exist yet — will update versioned runtime dependencies where safe and present source migrations as reviewable changes; the rules below describe what it is required to do when it ships.
+`nise doctor` detects incompatible combinations, and
+[`nise upgrade`](commands/upgrade.md) moves a project forward: it regenerates
+Nise-owned files, bumps every dependency nise pins in `go.mod` and the
+generated `frontend/package.json`, applies the exact textual codemods a
+migration declares over application-owned Go source, and prints everything else
+for you to do by hand.
 
 ## Upgrade rules
 
-- Safe mechanical codemods are allowed.
-- Handwritten application code is never silently replaced.
-- Database migrations remain explicit.
-- Package-manager-owned CLI binaries are updated through their package manager.
+- Safe mechanical codemods are allowed. A codemod is an **exact textual
+  replacement a migration declares** — never an AST rewrite, never a
+  reformatting pass — and every application is counted and reported with its
+  file. `--no-codemods` refuses them and turns each into a note.
+- Handwritten application code is never silently replaced. `nise upgrade`
+  regenerates only files carrying the Nise-owned header; a change to an
+  application-owned file is printed as a note for you to make.
+- A dependency you removed stays removed, and one you pinned ahead of nise
+  stays ahead and is named. An upgrade only ever moves a version forward.
+- Database migrations remain explicit. `nise upgrade` does not run one.
+- Package-manager-owned CLI binaries are updated through their package
+  manager. [`nise version check`](commands/version.md) reports which command
+  that is for the way you installed nise, and runs none of them.
 - Applications may remain on an older supported version or detach from Nise.
+
+An upgrade performs no network access. `go mod tidy` and `pnpm install` are
+named in its output rather than run, because an upgrade must not be the command
+that discovers a dependency is unreachable — least of all halfway through
+writing files.
 
 ## Requirements for 1.0
 

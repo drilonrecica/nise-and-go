@@ -30,6 +30,7 @@ func Commands() []*Command {
 		dbCommand(),
 		generateCommand(),
 		checkCommand(),
+		upgradeCommand(),
 	}
 }
 

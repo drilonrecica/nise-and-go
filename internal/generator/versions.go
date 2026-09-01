@@ -256,3 +256,39 @@ func FrontendDependencies() []Dependency {
 	copy(out, frontendDependencies)
 	return out
 }
+
+// goDependencies is the set of Go module requirements the generated go.mod
+// pins, as module path and exact version.
+//
+// It exists so `nise upgrade` can bump them without parsing the template, and
+// it is written out rather than derived from templateData because a list a
+// second reader has to agree with is the point: TestGoModTemplatePinsExactly
+// TheDeclaredDependencies fails if go.mod.tmpl grows a requirement this list
+// does not name, or names one the template does not render. A dependency nise
+// pins and never bumps is worse than one it does not pin at all — the project
+// keeps an old version and nothing says so.
+//
+// Order is the order the template writes them, so an upgrade's report reads in
+// the same order as the file it changes.
+var goDependencies = []Dependency{
+	{Name: NiseModulePath, Version: NiseModuleVersion},
+	{Name: "github.com/go-chi/chi/v5", Version: ChiVersion},
+	{Name: "github.com/jackc/pgx/v5", Version: PgxVersion},
+	{Name: "github.com/oapi-codegen/oapi-codegen/v2", Version: OAPICodegenVersion},
+	{Name: "github.com/oapi-codegen/runtime", Version: OAPIRuntimeVersion},
+	{Name: "github.com/pressly/goose/v3", Version: GooseVersion},
+	{Name: "github.com/riverqueue/river", Version: RiverVersion},
+	{Name: "github.com/riverqueue/river/riverdriver", Version: RiverVersion},
+	{Name: "github.com/riverqueue/river/riverdriver/riverpgxv5", Version: RiverVersion},
+	{Name: "github.com/sqlc-dev/sqlc", Version: SQLCVersion},
+	{Name: "golang.org/x/crypto", Version: XCryptoVersion},
+}
+
+// GoDependencies returns the Go module requirements the generated go.mod pins,
+// in the order the template writes them. The returned slice is a copy; callers
+// may modify it.
+func GoDependencies() []Dependency {
+	out := make([]Dependency, len(goDependencies))
+	copy(out, goDependencies)
+	return out
+}
