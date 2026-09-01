@@ -54,7 +54,7 @@ on Linux, macOS, and Windows:
   macOS and Windows. Nise does not pin a specific container runtime version
   (see toolchain.md).
 - The maintainer's day-to-day development environment is Linux — it is the
-  environment the exact verified versions in `docs/toolchain.md` (Go 1.26.5,
+  environment the exact verified versions in `docs/toolchain.md` (Go 1.26.7,
   Node 22.22.2, pnpm 10.33.0, Docker 29.6.2, Podman 5.8.4) were captured on —
   but Linux is not the *only* supported development platform. macOS and
   Windows contributors are expected to work, subject to the CI caveat below:

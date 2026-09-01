@@ -15,7 +15,7 @@ permissions:
 env:
   # Keep in sync with docs/toolchain.md and .tool-versions by hand; nothing
   # in this repository enforces that the three agree (see ADR 0008).
-  GO_VERSION: "1.26.5"
+  GO_VERSION: "1.26.7"
   GOLANGCI_LINT_VERSION: "2.11.3"
 
 jobs:

@@ -11,7 +11,7 @@ import (
 // profile's floor, not the exact verified patch version: toolchain.md is
 // explicit that no older 22.x Node has been verified (so 22.22.2 is the
 // floor, not a ceiling) and that Go's own directive is "go 1.26.0" (the
-// verified 1.26.5 toolchain is a specific installation of that same
+// verified 1.26.7 toolchain is a specific installation of that same
 // line, not a separate requirement). They are declared once, here, as
 // unexported package-level values — not exported, not mutated after
 // initialization, and not read from any external source — the same
