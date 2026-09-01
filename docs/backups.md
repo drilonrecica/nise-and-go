@@ -175,14 +175,207 @@ Every command takes `-json`:
 
 `verified` is set only by `db verify`, and only after a restore succeeded.
 
+## Off-server retention
+
+Taking a backup and keeping one are different problems, and this application
+only solves the first. It writes a file. Where that file goes, how long it
+lives, and who can delete it are decisions nothing here makes for you — but
+they are the decisions that determine whether you have a backup at all.
+
+### A backup on the same host is not a backup
+
+It survives `DROP TABLE`. It does not survive:
+
+- the disk, the volume, or the filesystem failing;
+- the server being terminated, by you, by an autoscaler, or by a billing
+  problem;
+- an attacker with root, who deletes the backups first because they are the
+  thing that makes the ransom optional;
+- the provider account being lost or suspended.
+
+Every one of those is more common than the one it does protect against.
+
+This is why the encryption matters more than it first appears: **because the
+file is sealed before it leaves, the destination does not have to be
+trusted.** Object storage at a different provider, a different account, or a
+partner's server are all usable, and none of them can read what they hold.
+Without that, off-server storage is a decision about trust and stays a plan.
+
+### A schedule that actually runs
+
+```sh
+#!/bin/sh
+# /usr/local/bin/myapp-backup
+set -eu
+
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+file="/var/backups/myapp-${stamp}.backup"
+
+/usr/local/bin/myapp db backup -out "$file"
+/usr/local/bin/myapp db verify -from "$file"
+
+rclone copyto "$file" "offsite:myapp-backups/${stamp}.backup"
+rclone delete --min-age 30d "offsite:myapp-backups/"
+
+find /var/backups -name 'myapp-*.backup' -mtime +2 -delete
+```
+
+Run it from a systemd timer, a cron entry, or the platform's scheduler. The
+order is the point:
+
+1. **Back up.**
+2. **Verify, before uploading.** A backup that does not restore is worth
+   knowing about now rather than during an incident, and there is no reason to
+   pay to store one.
+3. **Copy off the host.**
+4. **Prune the remote by age, and the local copy sooner.** The local file is a
+   staging area, not the archive.
+
+Alert on the exit status. A backup job that has been failing quietly for three
+weeks is the ordinary way this goes wrong — the pipeline was set up once,
+worked, and stopped, and nothing was watching the part that only matters on a
+day that has not happened yet.
+
+### How long to keep them
+
+A common ladder is seven daily, four weekly, and six monthly copies. The
+number is less important than the reasoning behind it:
+
+**Retention has to be longer than the time it takes you to notice.** Hardware
+failure is noticed in minutes. A bad migration, a `DELETE` with a wrong
+`WHERE`, or a bug that has been quietly corrupting one column is noticed days
+or weeks later — by a user, in a report, or never. If you keep two days of
+backups and discover on Thursday that something broke on Monday, every backup
+you have contains the broken state.
+
+Long retention is also a data-protection decision: personal data in a backup
+is still personal data, and a deletion request is not honoured by a copy you
+kept for seven years. Pick a window you can justify in both directions.
+
+### Retention an attacker cannot undo
+
+If the credential that writes the backups can also delete them, then anyone who
+compromises the application host can delete the archive — and that is
+specifically what ransomware does first.
+
+Pick at least one:
+
+- **Write-only credentials.** The uploader can `PutObject` and nothing else;
+  pruning runs from somewhere the application cannot reach.
+- **Object lock or immutable retention.** The provider refuses deletion until
+  the retention period expires, including from the account owner.
+- **Versioning with a lifecycle rule**, so a delete is a tombstone over a copy
+  that still exists.
+- **A pull-based copy.** A machine the application cannot reach connects in
+  and fetches, rather than being pushed to.
+
+### Verify the copy you would actually restore from
+
+The example above verifies before uploading, which catches a bad dump. It does
+not catch a truncated upload, a corrupted object, or a bucket somebody
+lifecycle-ruled into oblivion.
+
+At least monthly, download from the off-server location and verify **that**
+file:
+
+```sh
+rclone copyto "offsite:myapp-backups/20260901T030000Z.backup" /tmp/drill.backup
+myapp db verify -from /tmp/drill.backup
+```
+
+And at least once, restore it into a scratch database by hand and look at the
+data — the number of rows in your largest table, the most recent row, a record
+you recognize. `db verify` proves the schema arrives; it does not prove that
+what you have been backing up is what you thought.
+
+Time it while you do. That number is your recovery time, and it is usually the
+first honest one anybody has.
+
+### Where the key lives
+
+The key must not live where the backups live. An archive and its key in the
+same bucket is an archive in plaintext with extra steps.
+
+It also must be findable during an outage, by more than one person, without
+the systems that are down. A key only the application server has is worth
+nothing after the application server is gone, and a key only one person knows
+is a single point of failure with opinions and holidays.
+
+A password manager the team already uses, a cloud KMS in a different account,
+or a sealed envelope in a safe are all defensible. Whichever it is, write down
+where it is somewhere that survives the outage, and check during the restore
+drill that the person doing the drill can actually get it.
+
+## Point-in-time recovery
+
+A logical dump restores to the moment it was taken. If you back up nightly at
+03:00 and lose the database at 17:00, you have lost fourteen hours of writes.
+For many applications that is acceptable and worth saying out loud rather than
+discovering. For some it is not.
+
+**PITR** — a base backup plus continuously archived write-ahead log, replayed
+to a chosen moment — reduces that window to seconds. It is not part of this
+application and cannot be: WAL archiving is configured on the PostgreSQL
+server, and nothing running as a client can provide it.
+
+### How to get it
+
+- **A managed PostgreSQL provider.** Almost all of them include PITR, and
+  this is the cheapest way to have it: somebody else runs the archiving, and
+  monitors it.
+- **[pgBackRest](https://pgbackrest.org/), [WAL-G](https://github.com/wal-g/wal-g),
+  or [Barman](https://pgbarman.org/)** on a self-hosted server. All three do
+  base backups, WAL archiving to object storage, retention, and
+  restore-to-timestamp.
+
+Do not hand-roll `archive_command` with `cp`. The failure mode is specific and
+bad: if archiving fails and nothing notices, PostgreSQL retains WAL until the
+data directory fills and the server stops. The tools above handle that; a
+shell one-liner does not.
+
+### What it costs
+
+- Storage for a continuous WAL stream, not a nightly file.
+- **Monitoring of the archive itself.** An archive that has silently stopped
+  is worse than no PITR, because you believe you have it.
+- A restore procedure that is materially more involved than
+  `db restore -from <file>`, and therefore one that has to be practised.
+
+### It does not replace logical dumps
+
+PITR and `db backup` fail differently, which is why the answer is often both:
+
+| | Logical dump (`db backup`) | PITR |
+|---|---|---|
+| Recovers from hardware or host loss | Yes, to the last dump | Yes, to seconds |
+| Recovers from a bad migration or a wrong `DELETE` | Yes — restore an earlier dump | Yes, if you catch it before it ages out of the WAL retention |
+| Survives PostgreSQL major-version upgrades | Yes; restores into a newer server | No; physical backups are version- and platform-locked |
+| Portable to another machine, provider, or laptop | Yes | Only to a matching server |
+| Readable without the production environment | Yes | No |
+| Recovery time | Minutes to hours, proportional to data | Minutes, plus WAL replay |
+
+A physical backup replays corruption faithfully. A logical dump from before the
+mistake is the thing that survives "we deleted the wrong rows and noticed on
+Thursday". Keep taking them even with PITR configured — they are cheap, and
+they are the copy you can open on a laptop.
+
+### Choosing
+
+Ask what losing the interval between backups would actually cost. If the answer
+is "some support tickets", nightly dumps are the right amount of engineering,
+and dumping more often is the cheapest improvement available. If the answer is
+"orders we cannot reconstruct" or "money", PITR is worth its operational cost
+— and a managed provider is worth considering before running the archiving
+yourself.
+
 ## What is not here
 
-- **Retention, rotation, and off-server copies.** Taking a backup and keeping
-  it are different problems; see [deployment](deployment.md).
-- **Point-in-time recovery.** A logical dump restores to the moment it was
-  taken. PITR needs WAL archiving, which is a property of the PostgreSQL
-  deployment rather than of this application.
-- **Key rotation.** See above.
+- **Key rotation.** Re-encrypting an archive under a new key is not
+  implemented. See [the key](#the-key) above.
+- **A scheduler.** This application takes a backup when told to. Running that
+  on a timer, alerting when it fails, and pruning the archive are the
+  deployment's, and the example above is a starting point rather than a
+  supported feature.
 
 ## Related
 

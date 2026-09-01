@@ -133,9 +133,13 @@ processes, because that is where the endpoint is served — see
 
 ## What this recipe does not do
 
-- **Backups.** Coolify can schedule PostgreSQL backups; whether they are
-  encrypted, where they go, and whether they restore is yours to decide and
-  yours to test.
+- **Backups.** This binary takes them — `{{.AppName}} db backup`, `db verify`,
+  `db restore` — but nothing schedules them, copies them off this host, or
+  prunes them. Coolify can schedule PostgreSQL backups of its own; either way,
+  whether they are encrypted, where they go, and whether they restore is yours
+  to decide and yours to test. A backup on the same host survives a dropped
+  table and nothing else. See `docs/backups.md` in the framework repository
+  for a schedule, retention, and point-in-time recovery.
 - **A separate database role.** This runs the application as the role that
   owns the tables. With the organizations module that is refused in
   production, because a superuser or a role with `BYPASSRLS` bypasses every
