@@ -497,6 +497,66 @@ produced and attested; and that every action in every workflow is pinned to a
 full commit SHA, first-party ones included — "first-party" describes who wrote
 an action, not what a moved tag would run.
 
+### Validating a published release
+
+Everything above checks an *input*. `ci.yml` checks the commit,
+`goreleaser check` checks the configuration, `test/release` checks that the
+configuration and the documentation agree. Nothing there checks the output.
+
+Between "GoReleaser exited 0" and "a stranger downloads a file" there is an
+upload, a draft, a human pressing publish, and a set of release assets that
+anybody with write access can add to or delete from. So
+`.github/workflows/release-validate.yml` runs on the publish click and reads
+what that stranger would actually get:
+
+| Check | The failure it catches |
+|---|---|
+| Every asset's build attestation | An asset substituted or added after the build |
+| The asset set is exactly 6 archives + 6 SBOMs + `checksums.txt` | A platform whose users cannot install; a file the workflow did not build |
+| `checksums.txt` covers every artifact, and only those | A subset file, under which one unlisted archive passes `sha256sum --check` untouched |
+| Every published hash, recomputed | A truncated or corrupted upload |
+| Each archive holds exactly the binary, `LICENSE`, `README.md` | An archive that unpacks to the wrong thing, or to something extra |
+| The binary carries an executable mode | An install that produces a file nobody can run |
+| `nise --json version` against the tag and the tag's commit | A binary built from the wrong commit, or with no `ldflags` applied |
+| `nise new` with the released binary | A perfectly checksummed file that is not a working CLI |
+
+The attestation is verified **first**, and `test/release` pins that order by
+position rather than by presence — both steps existing in the wrong order is
+the bug, and a test for presence alone passes on it.
+
+The work is done by `cmd/release-validate`, ordinary tested Go in this
+repository rather than shell in a YAML file. It is hermetic: no network, no
+toolchain, no subprocess, just files on disk. That is what lets its tests
+build a release, break it one way at a time, and assert the exact finding —
+including the failure that matters most, which is a validator that *could not
+look* reporting nothing wrong. Being unable to look exits 2; a broken release
+exits 1.
+
+### Rollback validation
+
+"Roll back to the previous version" is a promise the release notes make and
+nothing keeps. The previous release's assets can be deleted, replaced, or
+converted back to a draft, and none of that is visible until somebody needs
+to roll back — which is, by definition, a bad moment to find out.
+
+So the validation workflow runs over **two** releases as a matrix: the one
+just published, and the most recent published release that is neither a draft
+nor a prerelease. Rolling back onto a release candidate is not a rollback
+anybody wants, and a draft's assets are not public at all. The matrix is
+`fail-fast: false`, because a rollback target that broke is worth knowing
+about even when the release that just went out is perfect.
+
+A repository with one release has no rollback target. That is stated in the
+log and validated as a single tag, rather than failing.
+
+`workflow_dispatch` validates any published release on demand: a rollback
+rehearsal before you need one, a retry after an unrelated failure, or a check
+that a release from a year ago is still installable.
+
+Rolling the Homebrew tap back is a separate, deliberate operation — see the
+tap section below and
+[cli-and-distribution.md](cli-and-distribution.md#going-back-to-an-earlier-version).
+
 ### The Homebrew tap
 
 `.github/workflows/homebrew.yml` updates the official tap
