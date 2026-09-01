@@ -67,8 +67,23 @@ services:
       LOG_FORMAT: json
       LOG_LEVEL: info
       DEBUG: "false"
+{{- if .HasOrganizations}}
+      # The application connects as {{.AppName}}_app, not as the role that owns
+      # the tables. Row-level security does not apply to a table's owner, and
+      # a superuser bypasses it outright — so an application running as either
+      # has policies that are never consulted. It would start, pass every test
+      # that checks the policies exist, and enforce nothing at all, which is
+      # why production refuses to start that way rather than warning.
+      #
+      # The role is created by deploy/initdb/00-app-role.sh when the database
+      # is first initialized, and the migrations' default privileges grant it
+      # access to every table they create.
+      DATABASE_URL: postgres://{{.AppName}}_app@db:5432/{{.AppName}}?sslmode=disable
+      DATABASE_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD}
+{{- else}}
       DATABASE_URL: postgres://{{.AppName}}@db:5432/{{.AppName}}?sslmode=disable
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+{{- end}}
       DB_MAX_CONNS: "10"
       # Pagination cursors are signed. Without a configured key the process
       # generates one, and every restart and every replica then rejects
@@ -86,6 +101,20 @@ services:
       SMTP_ENCRYPTION: ${SMTP_ENCRYPTION:-starttls}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+{{- if .HasUploads}}
+    volumes:
+      # Uploaded objects. The image creates this directory owned by the user
+      # the process runs as, so the volume inherits that ownership — without
+      # it the volume is created owned by root and the application fails at
+      # startup, when it builds the object store, rather than at the first
+      # upload.
+      #
+      # A local directory is the simplest thing that works and the least
+      # durable: it lives on one host, is not backed up by the database
+      # backup, and does not survive the machine. Point STORAGE_BACKEND at s3
+      # before this recipe is more than a local trial.
+      - object-storage:/var/lib/{{.AppName}}/storage
+{{- end}}
     depends_on:
       db:
         condition: service_healthy
@@ -98,8 +127,26 @@ services:
       POSTGRES_USER: {{.AppName}}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: {{.AppName}}
+{{- if .HasOrganizations}}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD}
+{{- end}}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+{{- if .HasOrganizations}}
+      # Scripts here run once, when the data directory is first initialized —
+      # so this creates the unprivileged role before the first migration, and
+      # the default privileges it sets apply to every table the migrations go
+      # on to create. Running it later would grant nothing on the tables that
+      # already existed.
+      #
+      # The `z` is not decoration. On a host with SELinux enforcing — Fedora,
+      # RHEL, and their derivatives — a bind mount the container has not been
+      # granted access to is unreadable, and PostgreSQL fails to start with
+      # "can't open /docker-entrypoint-initdb.d/: Permission denied" rather
+      # than with anything about SELinux. It relabels the directory as
+      # container-shareable; on a host without SELinux it is ignored.
+      - ./initdb:/docker-entrypoint-initdb.d:ro,z
+{{- end}}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready --quiet --username {{.AppName}} --dbname {{.AppName}}"]
       interval: 2s
@@ -113,11 +160,20 @@ services:
 # exited process does not already prove. Probe /readyz from outside instead —
 # that is the endpoint your load balancer and orchestrator should both use.
 #
-# This recipe runs the application as the same role that owns the tables. With
-# the organizations module that is refused in production, because a superuser
-# or a role with BYPASSRLS bypasses every row-level security policy. A
-# multitenant deployment needs a second, unprivileged role — see
-# docs/multitenancy.md.
+{{if .HasOrganizations}}# Two database roles, and the split is the point. Migrations run as
+# {{.AppName}}, which owns the tables; the application connects as
+# {{.AppName}}_app, which owns nothing. Row-level security does not apply to a
+# table's owner and does not apply to a superuser at all, so an application
+# running as either has policies that are never consulted — and would enforce
+# nothing while passing every test that checks the policies exist. Production
+# refuses to start that way rather than warning, which is why this recipe has
+# a second role rather than a comment recommending one. See
+# docs/multitenancy.md.{{else}}# This recipe runs the application as the same role that owns the tables. That
+# is fine here: without the organizations module there are no row-level
+# security policies for an owner's exemption to bypass. Selecting that module
+# changes this recipe to create a second, unprivileged role — see
+# docs/multitenancy.md.{{end}}
 
 volumes:
-  postgres-data:
+  postgres-data:{{if .HasUploads}}
+  object-storage:{{end}}

@@ -59,6 +59,16 @@ COPY --from=frontend /src/internal/platform/webui/embedded/client ./internal/pla
 # building the same commit get the same bytes. -s -w drop the symbol and DWARF
 # tables, which are a third of the size and of no use in production.
 RUN go build -trimpath -ldflags="-s -w" -o /out/{{.AppName}} ./cmd/{{.AppName}}
+{{- if .HasUploads}}
+
+# An empty directory, created here so the runtime stage can copy it with the
+# right ownership. The runtime image is distroless and has no shell, so there
+# is no `RUN mkdir` available there — and a volume mounted over a path that
+# does not exist in the image is created owned by root, which a container
+# running as nonroot cannot write to. Creating it in this stage is the only
+# place a directory can be given an owner before the volume inherits it.
+RUN mkdir -p /out/storage
+{{- end}}
 
 FROM {{.RuntimeImage}}:{{.RuntimeImageTag}}@{{.RuntimeImageDigest}}
 
@@ -81,6 +91,19 @@ LABEL org.opencontainers.image.base.digest="{{.RuntimeImageDigest}}"
 
 WORKDIR /
 COPY --from=build /out/{{.AppName}} /{{.AppName}}
+{{- if .HasUploads}}
+
+# The local object store's directory, owned by the user the process runs as.
+# A named volume mounted here inherits that ownership; mounted over a path the
+# image does not have, it would be created owned by root and the application
+# would fail to start with "permission denied" on its first upload — or, as it
+# happens, before serving anything at all, because the store is built during
+# startup.
+#
+# STORAGE_LOCAL_DIR is set to it below. Point STORAGE_BACKEND at s3 instead and
+# neither this directory nor the volume matters.
+COPY --from=build --chown=nonroot:nonroot /out/storage /var/lib/{{.AppName}}/storage
+{{- end}}
 
 # nonroot is uid/gid 65532 in the distroless image. It is named rather than
 # numbered so the intent survives a base-image change, and it is set here
@@ -94,7 +117,7 @@ EXPOSE 8080
 # container nothing can reach. The application refuses a public bind in
 # production without this exact opt-in, which is the check working rather than
 # being bypassed: inside a container, published ports are the boundary.
-ENV APP_ENV=production BIND_ADDR=0.0.0.0 ALLOW_PUBLIC_BIND=true PORT=8080
+ENV APP_ENV=production BIND_ADDR=0.0.0.0 ALLOW_PUBLIC_BIND=true PORT=8080{{if .HasUploads}} STORAGE_LOCAL_DIR=/var/lib/{{.AppName}}/storage{{end}}
 
 # No HEALTHCHECK. This image has no shell and no HTTP client, so any
 # instruction here would need a second binary purely to call an endpoint the

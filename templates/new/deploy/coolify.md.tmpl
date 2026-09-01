@@ -52,6 +52,12 @@ setting whose absence is invisible until it matters.
 | `MAIL_TRANSPORT` | `smtp` | The log transport sends nothing, silently |
 | `MAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_ENCRYPTION` | your relay | |
 | `SMTP_USERNAME`, `SMTP_PASSWORD` | your relay | Credentials without encryption are refused at startup |
+{{- if .HasOrganizations}}
+| `APP_DB_PASSWORD` | a second password | The application connects as an unprivileged role, not the one that owns the tables — see below |
+{{- end}}
+{{- if .HasUploads}}
+| `STORAGE_LOCAL_DIR` | a writable persistent path | The local object store; a container-local path loses every upload on redeploy |
+{{- end}}
 
 Generate the signing key with:
 
@@ -62,7 +68,43 @@ echo "k1:$(openssl rand -base64 32)"
 Rotate it by making the new key active and moving the old one to
 `CURSOR_RETIRED_KEYS`, so cursors already issued keep verifying.
 
-## 4. Migrations, as a pre-deploy command
+{{if .HasOrganizations}}## Two database roles
+
+This application uses row-level security, and row-level security does **not**
+apply to a table's owner — nor to a superuser at all. An application connecting
+as either has policies that are never consulted: it would start, pass every
+test that checks the policies exist, and enforce nothing. It refuses to start
+that way rather than warning about it.
+
+So there are two roles:
+
+| Role | Used by | Privileges |
+|---|---|---|
+| `{{.AppName}}` | migrations | Owns the tables |
+| `{{.AppName}}_app` | the application | Read and write rows. Not a superuser, no `BYPASSRLS`, cannot alter the schema |
+
+`deploy/initdb/00-app-role.sh` creates the second one when the database is
+first initialized, and sets default privileges so every table the migrations go
+on to create is granted to it automatically. If your database already exists,
+run those statements once by hand as the owner — an init script only runs on a
+fresh data directory.
+
+`APP_DB_PASSWORD` is that role's password, and it is a different secret from
+`POSTGRES_PASSWORD`. Making them the same defeats the point of having two
+roles.
+
+{{end}}{{if .HasUploads}}## Uploaded objects need somewhere durable
+
+`STORAGE_BACKEND=local` writes objects to `STORAGE_LOCAL_DIR`. On Coolify that
+must be a **persistent volume**: a container-local path loses every uploaded
+file on the next deploy, and the database rows pointing at them stay behind,
+which is worse than losing both.
+
+The database backup does not include them. `db backup` is a logical dump of
+PostgreSQL; the objects are files. Back them up separately, or use
+`STORAGE_BACKEND=s3` and let the provider do it.
+
+{{end}}## 4. Migrations, as a pre-deploy command
 
 Set Coolify's **pre-deployment command** to:
 
