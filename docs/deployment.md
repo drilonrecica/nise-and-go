@@ -168,9 +168,15 @@ does not carry — run them from an operator machine, a scheduled job, or a
 sidecar. See [Backups](backups.md) for the format, the encryption, and what
 `-confirm` is for.
 
-Retention, off-server copies, and PostgreSQL point-in-time recovery remain the
-operator's, and are not automated here. VPS snapshots are defence in depth,
-not the database backup plan.
+Retention, off-server copies, and point-in-time recovery are not automated
+here — this application writes a file when told to, and nothing more. What to
+do with that file is covered in [Backups](backups.md): why a backup on the
+same host is not one, a schedule that backs up, verifies, uploads and prunes,
+how long to keep copies and why the window has to outlast the time it takes
+you to notice a problem, retention an attacker cannot undo, and when PITR is
+worth its operational cost.
+
+VPS snapshots are defence in depth, not the database backup plan.
 
 ## Releases and rollback
 
