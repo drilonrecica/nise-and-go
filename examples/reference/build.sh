@@ -36,10 +36,20 @@ nise="$repo/dist/reference-nise"
 mkdir -p "$(dirname "$nise")"
 ( cd "$repo" && go build -o "$nise" ./cmd/nise )
 
-name=$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$here/recipe.json")
-module_path=$(sed -n 's/.*"modulePath"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$here/recipe.json")
-modules=$(sed -n 's/.*"modules"[[:space:]]*:[[:space:]]*\[\(.*\)\].*/\1/p' "$here/recipe.json" |
-	tr -d '" ' | tr ',' '\n')
+# recipe.json is read with sed rather than jq, because jq is not in
+# docs/toolchain.md and this script must run on a clean machine. The file is
+# flattened first: the modules array spans several lines when the file is
+# pretty-printed, and a line-oriented match silently produced *no* modules —
+# which is why the verification below exists rather than trusting this parse.
+flat=$(tr -d ' \t\n' < "$here/recipe.json")
+name=$(printf '%s' "$flat" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')
+module_path=$(printf '%s' "$flat" | sed -n 's/.*"modulePath":"\([^"]*\)".*/\1/p')
+modules=$(printf '%s' "$flat" | sed -n 's/.*"modules":\[\([^]]*\)\].*/\1/p' | tr -d '"' | tr ',' '\n')
+
+if [ -z "$name" ] || [ -z "$module_path" ]; then
+	echo "refusing: could not read the project name or module path from recipe.json" >&2
+	exit 1
+fi
 
 set -- new "$name" --module-path "$module_path" --yes
 for module in $modules; do
@@ -51,6 +61,20 @@ parent=$(dirname "$destination")
 mkdir -p "$parent"
 ( cd "$parent" && "$nise" "$@" )
 mv "$parent/$name" "$destination"
+
+# Verify rather than trust. A module flag that failed to parse produces an
+# application silently missing whole subsystems — no organizations, no uploads,
+# no notifications — and every later check would pass on it, because there is
+# nothing wrong with the application that was built. It is simply not the one
+# that was asked for. This has happened once already.
+for module in $modules; do
+	[ -n "$module" ] || continue
+	if ! grep -q "\"$module\"" "$destination/nise.json"; then
+		echo "refusing: the generated project does not record the \"$module\" module" >&2
+		echo "recipe.json asked for it; $destination/nise.json does not have it." >&2
+		exit 1
+	fi
+done
 
 # The overlay. Every file here is application-owned; a Nise-owned path in it
 # would mean the reference application works by overwriting generated output,
