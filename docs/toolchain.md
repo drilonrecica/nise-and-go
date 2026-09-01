@@ -13,7 +13,7 @@ generated project.
   this repository keeps the `go mod tidy`-produced form rather than fighting
   a value that reverts on the next tidy (see
   [ADR 0008](adr/0008-toolchain-and-dependencies.md)).
-- Verified development toolchain: Go 1.26.5, linux/amd64.
+- Verified development toolchain: Go 1.26.7, linux/amd64.
 - `GOTOOLCHAIN=local`. Nise does not let `go` silently download a newer
   toolchain; contributors and CI install the pinned version explicitly.
 
@@ -78,7 +78,7 @@ The repository root `.tool-versions` file pins `golang`, `nodejs`, and `pnpm`
 in the plain-text format shared by asdf and mise:
 
 ```text
-golang 1.26.5
+golang 1.26.7
 nodejs 22.22.2
 pnpm 10.33.0
 ```
@@ -101,7 +101,7 @@ supports the project's Compose file is sufficient.
 
 ## Verification
 
-- `go version` → `go1.26.5 linux/amd64` (or the pinned patch version).
+- `go version` → `go1.26.7 linux/amd64` (or the pinned patch version).
 - `go env GOTOOLCHAIN` → `local`.
 - `go tool` → lists the pinned tool directives alongside the Go toolchain's
   built-in tools.

@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.26.5"
+  GO_VERSION: "1.26.7"
   # Keep in sync with the Makefile by hand; nothing enforces that they agree,
   # for the same reason nothing enforces the Go version pin (ADR 0008).
   GORELEASER_VERSION: "v2.17.1"
