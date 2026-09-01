@@ -1,0 +1,48 @@
+#!/bin/sh
+# Generated once by nise; owned by this application. Nise will not overwrite it.
+#
+# Creates the unprivileged role the application connects as.
+#
+# It exists because row-level security does not apply to a table's owner, and
+# does not apply to a superuser at all. An application running as either has
+# policies that are never consulted: it starts, it passes every test that
+# checks the policies exist, and it enforces nothing. Production refuses to
+# start that way — see database.CheckTenantIsolation — so this is not a
+# hardening option, it is what makes the recipe work.
+#
+# PostgreSQL runs everything in /docker-entrypoint-initdb.d exactly once, when
+# the data directory is first initialized. That timing is what makes the
+# ALTER DEFAULT PRIVILEGES below worth writing: it runs before the first
+# migration, so every table the migrations go on to create is granted
+# automatically. Run afterwards, it would grant nothing on the tables that
+# already existed, and the grant would have to be repeated after every
+# migration that adds one.
+#
+# Re-running this against an existing volume does nothing. To apply it to a
+# database that already exists, run the same statements by hand as the owner.
+set -eu
+
+if [ -z "${APP_DB_PASSWORD:-}" ]; then
+	echo "APP_DB_PASSWORD is not set; the application role would have no password." >&2
+	exit 1
+fi
+
+psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 \
+	--set app_password="$APP_DB_PASSWORD" <<-'SQL'
+	-- NOSUPERUSER and NOBYPASSRLS are stated rather than left to the default,
+	-- because they are the whole reason this role exists and a default is not
+	-- a decision somebody reviewed.
+	CREATE ROLE {{.AppName}}_app LOGIN PASSWORD :'app_password' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+
+	GRANT USAGE ON SCHEMA public TO {{.AppName}}_app;
+
+	-- Data, not schema. The application reads and writes rows; it does not
+	-- create, alter, or drop anything — migrations do, as the owner, as their
+	-- own step before the application starts.
+	ALTER DEFAULT PRIVILEGES IN SCHEMA public
+		GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {{.AppName}}_app;
+	ALTER DEFAULT PRIVILEGES IN SCHEMA public
+		GRANT USAGE, SELECT ON SEQUENCES TO {{.AppName}}_app;
+	ALTER DEFAULT PRIVILEGES IN SCHEMA public
+		GRANT EXECUTE ON FUNCTIONS TO {{.AppName}}_app;
+SQL

@@ -182,6 +182,13 @@ var templateFiles = []templateFile{
 	{Template: "deploy/README.md.tmpl", Output: "deploy/README.md", Owner: OwnerApp},
 	{Template: "deploy/coolify.md.tmpl", Output: "deploy/coolify.md", Owner: OwnerApp},
 	{Template: "deploy/compose.yaml.tmpl", Output: "deploy/compose.yaml", Owner: OwnerApp},
+	// The Compose recipe's database initializes an unprivileged application
+	// role, and only the organizations module needs one: row-level security
+	// does not apply to a table's owner, so an application running as the
+	// owner would have policies that are never consulted. Without that module
+	// there are no policies for an owner's exemption to bypass, and a second
+	// role would be complexity in the simple case.
+	{Template: "deploy/initdb/00-app-role.sh.tmpl", Output: "deploy/initdb/00-app-role.sh", Owner: OwnerApp, Module: recipe.ModuleOrganizations},
 	{Template: "frontend/README.md.tmpl", Output: "frontend/README.md", Owner: OwnerApp},
 	{Template: "frontend/gitignore.tmpl", Output: "frontend/.gitignore", Owner: OwnerApp},
 	{Template: "frontend/biome.jsonc.tmpl", Output: "frontend/biome.jsonc", Owner: OwnerApp, Raw: true},

@@ -113,10 +113,10 @@ services:
 # exited process does not already prove. Probe /readyz from outside instead —
 # that is the endpoint your load balancer and orchestrator should both use.
 #
-# This recipe runs the application as the same role that owns the tables. With
-# the organizations module that is refused in production, because a superuser
-# or a role with BYPASSRLS bypasses every row-level security policy. A
-# multitenant deployment needs a second, unprivileged role — see
+# This recipe runs the application as the same role that owns the tables. That
+# is fine here: without the organizations module there are no row-level
+# security policies for an owner's exemption to bypass. Selecting that module
+# changes this recipe to create a second, unprivileged role — see
 # docs/multitenancy.md.
 
 volumes:
