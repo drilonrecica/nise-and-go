@@ -371,6 +371,7 @@ var templateFiles = []templateFile{
 	{Template: "internal/features/organizations/convert.go.tmpl", Output: "internal/features/organizations/convert.go", Owner: OwnerApp, Module: recipe.ModuleOrganizations},
 	{Template: "internal/features/organizations/organizations.go.tmpl", Output: "internal/features/organizations/organizations.go", Owner: OwnerApp, Module: recipe.ModuleOrganizations},
 	{Template: "internal/features/organizations/organizations_test.go.tmpl", Output: "internal/features/organizations/organizations_test.go", Owner: OwnerApp, Module: recipe.ModuleOrganizations},
+	{Template: "internal/features/organizations/tenant_leak_test.go.tmpl", Output: "internal/features/organizations/tenant_leak_test.go", Owner: OwnerApp, Module: recipe.ModuleOrganizations},
 	{Template: "internal/features/organizations/queries/organizations.sql.tmpl", Output: "internal/features/organizations/queries/organizations.sql", Owner: OwnerApp, Raw: true, Module: recipe.ModuleOrganizations},
 	{Template: "internal/features/organizations/sqlc.yaml.tmpl", Output: "internal/features/organizations/sqlc.yaml", Owner: OwnerApp, Raw: true, Module: recipe.ModuleOrganizations},
 	{Template: "internal/features/organizations/store/db.go.tmpl", Output: "internal/features/organizations/store/db.go", Owner: OwnerNise, Raw: true, Module: recipe.ModuleOrganizations},

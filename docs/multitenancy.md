@@ -149,3 +149,66 @@ CREATE POLICY invoices_tenant_isolation ON invoices
 All four statements, every time. Then reach the table only through
 `WithinTenant`, and add the cross-tenant read, write, update, and delete tests
 — the ones in `internal/features/organizations` are the template.
+
+## Background jobs
+
+A background job has no request. Nothing establishes its tenant unless the job
+does.
+
+```go
+type SendInvoiceArgs struct {
+    OrgID     string `json:"org_id"`
+    InvoiceID string `json:"invoice_id"`
+}
+
+func (w *SendInvoiceWorker) Work(ctx context.Context, job *river.Job[SendInvoiceArgs]) error {
+    return w.transactor.WithinTenant(ctx, job.Args.OrgID, transaction.Options{},
+        func(ctx context.Context, tx pgx.Tx) error {
+            // …
+        })
+}
+```
+
+The organization goes in the job's **arguments**. That is what makes
+establishing it possible, and it makes the tenant visible in the queue — an
+operator looking at a stuck job can see which tenant it belongs to without
+running it.
+
+A worker that forgets reads **nothing**, which is the default-deny reaching
+the one place with no request to inherit from. That is proved rather than
+asserted: `tenant_leak_test.go` runs a real River job with no tenant
+established and checks it sees zero rows, runs one that establishes its tenant
+and checks it sees exactly its own, and runs six tenants' jobs concurrently
+over a three-connection pool checking that none of them ever sees another's.
+
+### The queue itself is not tenant-scoped
+
+River's own tables carry no row-level security, deliberately. A worker fetches
+jobs **before** it knows which tenant any of them belongs to, so a policy on
+`river_job` would leave every worker fetching nothing — a queue that silently
+stops with every job still sitting in it.
+
+A test asserts that no `river*` table has row security enabled, because this is
+a mistake somebody will eventually make while tightening things up.
+
+## How the pooled-connection proof is made adversarial
+
+A connection that is never reused cannot carry anything to the next request,
+so a test on a large pool is a test that cannot fail.
+
+`TestConcurrentTenantsOnASmallPoolNeverSeeEachOther` runs eight tenants over a
+**two**-connection pool, forty rounds each, so every connection is handed back
+and forth continuously. `TestATenantTransactionInterleavedWithAnUnscopedOneLeaksNothing`
+alternates a scoped and an unscoped read on a **one**-connection pool, which
+guarantees the second one gets the connection the first used.
+
+Both were negative-checked by changing `set_config('app.current_org_id', $1,
+true)` to `false` — a plain `SET` instead of `SET LOCAL` — and both catch the
+tenant surviving on the connection.
+
+One note for anyone writing more of these: assert **outside** the transaction
+callback. `t.Fatalf` calls `runtime.Goexit`, and doing that from inside a
+callback abandons the transaction mid-flight; on a one-connection pool nothing
+can reclaim the connection and the binary hangs to its timeout instead of
+failing. The negative check above took ten minutes before that was fixed and
+three seconds after.

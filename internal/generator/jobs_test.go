@@ -727,3 +727,40 @@ func TestRowLevelSecurityIsConfiguredTheOnlyWayThatWorks(t *testing.T) {
 		t.Error("the isolation tests do not check their own premise")
 	}
 }
+
+// TestTenantContextCannotEscapeAConnectionOrAJob pins M8-012: the two places
+// tenant context can leak, and the shape of the proofs that it does not.
+func TestTenantContextCannotEscapeAConnectionOrAJob(t *testing.T) {
+	t.Parallel()
+
+	content := planContent(t, allModulesOptions())
+	leak := content["internal/features/organizations/tenant_leak_test.go"]
+	if leak == "" {
+		t.Fatal("a project with the organizations module has no tenant-leak proof")
+	}
+
+	for _, name := range []string{
+		"TestConcurrentTenantsOnASmallPoolNeverSeeEachOther",
+		"TestATenantTransactionInterleavedWithAnUnscopedOneLeaksNothing",
+		"TestAJobWithNoTenantContextSeesNothing",
+		"TestAJobThatEstablishesItsTenantSeesOnlyThatTenant",
+		"TestJobsForDifferentTenantsRunningTogetherDoNotLeak",
+		"TestTheJobQueueItselfIsNotTenantScoped",
+	} {
+		if !strings.Contains(leak, name) {
+			t.Errorf("the tenant-leak proof lacks %s", name)
+		}
+	}
+
+	// The pool has to be small, or the proof is vacuous: a connection that
+	// is never reused cannot carry anything to the next request.
+	if !strings.Contains(leak, "newHarnessWithPoolSize(t, 1)") || !strings.Contains(leak, "newHarnessWithPoolSize(t, 2)") {
+		t.Error("the pooled-connection proofs do not force connection reuse, so they could not observe a leak")
+	}
+
+	// A tenant-scoped job must carry its organization in its arguments,
+	// where an operator can see it without running the job.
+	if !strings.Contains(leak, "OrgID string `json:\"org_id\"`") {
+		t.Error("the tenant-scoped job does not carry its organization in its arguments")
+	}
+}

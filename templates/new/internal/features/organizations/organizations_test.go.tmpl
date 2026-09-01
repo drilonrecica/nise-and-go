@@ -5,6 +5,8 @@ package organizations
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -28,14 +30,20 @@ type harness struct {
 	orgs       *Organizations
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T) *harness { return newHarnessWithPoolSize(t, 6) }
+
+// newHarnessWithPoolSize builds the harness with a chosen pool size. The
+// tenant-leak tests use a deliberately small one: a connection that is never
+// reused cannot carry anything to the next request, so a large pool is a
+// test that cannot fail.
+func newHarnessWithPoolSize(t *testing.T, maxConns int) *harness {
 	t.Helper()
 
 	testDatabase := dbtest.New(t)
 	ctx, cancel := context.WithTimeout(context.Background(), organizationsTestTimeout)
 	t.Cleanup(cancel)
 
-	settings, err := database.NewSettings(6, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
+	settings, err := database.NewSettings(maxConns, 0, time.Minute, time.Minute, time.Second, 5*time.Second)
 	if err != nil {
 		t.Fatalf("NewSettings: %v", err)
 	}
@@ -502,4 +510,11 @@ func TestInputIsValidatedBeforeItReachesTheDatabase(t *testing.T) {
 	if created != 0 {
 		t.Errorf("refused input created %d organizations", created)
 	}
+}
+
+
+// discardLogger is the logger the job-backed tenant tests pass, since none of
+// them asserts anything about log output.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
