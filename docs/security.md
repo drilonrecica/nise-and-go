@@ -91,11 +91,20 @@ model.
   codes** for every enrolled account until each re-enrols
   ([ADR 0023](adr/0023-second-factor-design.md)). Recovery codes are stored
   only as digests.
-- **A leaked `BACKUP_ENCRYPTION_KEY` opens every backup ever taken, and there
-  is no rotation procedure.** The encryption is sound
-  ([backups](backups.md)); re-encrypting an archive under a new key is not
-  implemented, so separating a compromised key from the backups it opens means
-  taking fresh ones and destroying the old, on the operator's own schedule.
+- **A leaked `BACKUP_ENCRYPTION_KEY` opens every backup ever taken, and
+  rotating does not change that.** The encryption is sound
+  ([backups](backups.md)), and rotation has a documented procedure
+  ([key custody and rotation](backups.md#key-custody-and-rotation)) — but it is
+  a cutover: it protects everything from the cutover onwards and nothing before
+  it. Separating a compromised key from the archives it opens means destroying
+  those archives and accepting the shortened recovery window. There is no
+  re-encryption command, because re-encrypting an archive requires a plaintext
+  copy of the whole database to exist somewhere.
+- **A lost `BACKUP_ENCRYPTION_KEY` is lost data.** There is no escrow and no
+  recovery. Whether the key can actually be retrieved during an outage, by
+  somebody other than the person who created it, is an operator-side property
+  this framework can document and cannot verify — which is why the restore
+  drill is written to include retrieving the key.
 - **A backup is a complete copy of the data with none of the access control**,
   and where it is kept is entirely the operator's decision. This framework
   encrypts it and verifies that it restores; it does not move it anywhere,

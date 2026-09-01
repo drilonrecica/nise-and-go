@@ -114,9 +114,8 @@ not hold the key that opens every one of them.
 Store it somewhere that is not the machine holding the backups. A key kept
 beside the ciphertext defends against nothing that actually happens.
 
-> Key rotation — re-encrypting an archive under a new key, and what to do with
-> the old one — is not implemented and not documented yet. It is tracked as an
-> open question in the [threat model](threat-model.md).
+Rotation is a real operation with a real procedure, and it is **not**
+re-encryption. See [Key custody and rotation](#key-custody-and-rotation).
 
 ## The header
 
@@ -306,6 +305,135 @@ or a sealed envelope in a safe are all defensible. Whichever it is, write down
 where it is somewhere that survives the outage, and check during the restore
 drill that the person doing the drill can actually get it.
 
+## Key custody and rotation
+
+Everything above is about a file. This section is about the thirty-two bytes
+that decide whether that file is a backup or a large opaque object, and it is
+the part most likely to be the reason a restore fails.
+
+### Custody is a set, not a key
+
+The moment you rotate once you hold two keys, and the archives each one opens
+have different expiry dates. So the thing to keep is not "the backup key" but a
+short table, kept wherever your team keeps secrets:
+
+| Key | In use from | In use until | Opens archives until | Destroy after |
+|---|---|---|---|---|
+| `2026-01` | 2026-01-14 | 2026-09-01 | last archive created before 2026-09-01 ages out | 2026-10-01 |
+| `2026-09` | 2026-09-01 | current | — | — |
+
+The last column is the one people forget. **A retired key must outlive the
+archives it opens.** Destroying it the day you rotate turns every existing
+backup into an unreadable file, which is the same outcome as never having
+taken them and is discovered at the worst possible moment.
+
+Four properties, and each fails in a way that has actually happened somewhere:
+
+- **Not where the backups are.** An archive and its key in the same bucket is
+  an archive in plaintext with extra steps.
+- **Reachable during an outage, without the systems that are down.** A key
+  only the application server has is worth nothing once the application server
+  is gone.
+- **Reachable by more than one person.** A key one person knows is a single
+  point of failure with opinions and holidays.
+- **Written down where the *pointer* survives too.** Knowing a key exists and
+  not where is the same as not having it. Put the location in the runbook, not
+  only in somebody's memory.
+
+A password manager the team already uses, a cloud KMS in a different account
+from the backups, or a sealed envelope in a safe are all defensible. What is
+not defensible is a `.env` on the backup host.
+
+### Which key opens which archive
+
+Nise stores **no key identifier** in the file, and that is deliberate.
+
+A fingerprint of the key in a cleartext header is an offline oracle: anybody
+holding the archive can test candidate keys against it without touching the
+ciphertext. An operator-chosen label avoids that but adds a configuration
+setting, a format version, and a new way for the label to be wrong.
+
+Neither is needed, because the header already carries the answer:
+
+```json
+{"database":"myapp","schema_version":9,"created_at":"2026-09-01T12:00:00Z"}
+```
+
+`created_at` is readable without any key. Compare it against your rotation
+dates and you have the key — which is exactly what the table above is for, and
+why the table is the deliverable rather than a feature.
+
+### Rotation is a cutover, not a rewrite
+
+There is no `db rekey`, and there should not be. Re-encrypting an existing
+archive means decrypting it first, which means a plaintext copy of the entire
+database existing somewhere — the precise thing this design refuses to do even
+during verification, where it would have been convenient. Doing it across a
+whole archive, on a schedule, is worse.
+
+So rotation moves forward instead:
+
+```sh
+# 1. New key. Same shape as the first one.
+openssl rand -base64 32
+
+# 2. Put it wherever your secrets live, and record the date in the key table.
+
+# 3. Switch the backup job to it.
+export BACKUP_ENCRYPTION_KEY_FILE=/run/secrets/backup-key-2026-09
+
+# 4. Take a backup and VERIFY it before trusting the new key.
+./myapp db backup -out /backups/myapp-2026-09-01.backup
+./myapp db verify -from /backups/myapp-2026-09-01.backup
+
+# 5. Keep the old key. Every archive taken before step 3 still needs it.
+```
+
+Step 4 is not a formality. A mistyped key, a file with a trailing newline, or
+a secret that did not reach the container all produce a backup that appears to
+work; `db verify` restores it, and is the only thing that finds out.
+
+After that, the old key expires on its own: archives age out under your
+retention policy, and when the last one created before the cutover is gone,
+the old key opens nothing and can be destroyed. Write that date in the table
+when you rotate, while you know it.
+
+### When to rotate
+
+On a schedule, and on an event.
+
+**Annually** is a defensible schedule for a key that has never left its store.
+Rotation is cheap here — one new key, one verified backup — and the value is
+mostly that the procedure is one somebody has actually done before the day
+they have to.
+
+**Immediately** when the key may have been exposed: it was pasted into a chat,
+committed and force-pushed away, printed by a debug log, or held by somebody
+who has left. And when you do, be honest about what rotation buys, because it
+is less than people assume:
+
+> Rotating does **not** protect the archives already taken. Anybody holding the
+> old key and a copy of the old ciphertext can still read them, forever.
+> Rotation protects everything from the cutover onwards and nothing before it.
+
+If the exposure is serious, rotation is the first of two steps. The second is
+deciding what to do about the archives the old key still opens: delete them and
+accept the shortened recovery window, or keep them and accept that they are
+readable by whoever has that key. There is no third option, and choosing
+between two bad ones quickly is better than discovering later that you never
+chose.
+
+### The failure to plan for
+
+**A lost key is lost data.** There is no recovery, no escrow, and no support
+channel that can help — the encryption is doing exactly what it was asked to.
+
+This is the argument for the custody rules above, not a disclaimer. Verify
+during the restore drill that the person doing the drill can actually retrieve
+the key, from the store, without the production systems, on their own. A
+custody arrangement nobody has exercised is a belief about a custody
+arrangement.
+
 ## Point-in-time recovery
 
 A logical dump restores to the moment it was taken. If you back up nightly at
@@ -370,8 +498,13 @@ yourself.
 
 ## What is not here
 
-- **Key rotation.** Re-encrypting an archive under a new key is not
-  implemented. See [the key](#the-key) above.
+- **Re-encrypting an existing archive.** There is no `db rekey`. Rotation is
+  a cutover, not a rewrite — see
+  [Key custody and rotation](#key-custody-and-rotation) for why that is the
+  design rather than a gap.
+- **A key registry.** Which key opens which archive is answered by the
+  archive's own `created_at` against your rotation dates. Nise stores no key
+  identifier and knows nothing about your keys.
 - **A scheduler.** This application takes a backup when told to. Running that
   on a timer, alerting when it fails, and pruning the archive are the
   deployment's, and the example above is a starting point rather than a

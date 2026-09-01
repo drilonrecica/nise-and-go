@@ -145,11 +145,28 @@ restoring into a database missing part of itself. `db verify` restores a
 backup into a scratch database rather than checking a checksum. See
 [Backups](backups.md).
 
-What that leaves: the key. `BACKUP_ENCRYPTION_KEY` has no rotation procedure
-and no re-encryption command, so an archive is only as separable from a leaked
-key as the operator's own key management makes it. That is stated here as an
-unsolved problem rather than implied away, and it is listed among the
-[residual risks](security.md#residual-risks).
+What that leaves: the key. `BACKUP_ENCRYPTION_KEY` is the whole of the
+confidentiality claim, and its custody is entirely the operator's.
+
+Rotation has a documented procedure, and it is a **cutover rather than a
+re-encryption**: there is no `db rekey`, because re-encrypting an archive means
+decrypting it first, and a plaintext copy of the whole database existing
+anywhere is the thing this design refuses even during verification, where it
+would have been convenient. So a new key is cut over to, a fresh backup is
+taken and verified under it, and the retired key is kept until the last archive
+it opens ages out. Which key opens which archive is answered by the archive's
+own cleartext `created_at` against the operator's rotation dates — nise stores
+no key identifier, because a fingerprint in a cleartext header is an offline
+oracle for testing candidate keys. See
+[Key custody and rotation](backups.md#key-custody-and-rotation).
+
+What that procedure does **not** buy is stated there and repeated here, because
+it is the part people assume away: rotating protects everything from the
+cutover onwards and nothing before it. Anybody holding the old key and a copy
+of the old ciphertext can still read those archives, forever. Separating a
+compromised key from the data it opens means destroying the archives it opens.
+That, and a lost key being lost data, remain [residual
+risks](security.md#residual-risks).
 
 ## What is deliberately out of scope
 
