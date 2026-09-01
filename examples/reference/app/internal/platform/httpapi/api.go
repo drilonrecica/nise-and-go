@@ -1,0 +1,388 @@
+// Generated once by nise; owned by this application. Nise will not overwrite it.
+
+//go:generate go tool oapi-codegen --config ../../../api/oapi-codegen.yaml -o openapigen/openapi.gen.go ../../../api/openapi.yaml
+
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"slices"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/drilonrecica/nise-and-go/runtime/pagination"
+	"github.com/drilonrecica/nise-and-go/runtime/password"
+
+	"workbench/internal/features/auth"
+	"workbench/internal/features/reservation"
+	"workbench/internal/features/resource"
+	"workbench/internal/platform/httpapi/httpjson"
+	"workbench/internal/platform/httpapi/openapigen"
+	"workbench/internal/platform/httpapi/problem"
+	"workbench/internal/platform/httpauth"
+	"workbench/internal/platform/idempotency"
+)
+
+// Server adapts application behavior to the strict interface generated from
+// api/openapi.yaml. Add dependencies as explicit fields when operations need
+// them; transport methods should delegate business behavior to use cases.
+type Server struct {
+	cursors     *pagination.Codec
+	credentials Credentials
+	sessions    SessionDirectory
+	accounts    AccountDirectory
+	invitations Enrollment
+	cookies     *httpauth.Cookies
+	compromised password.Compromised
+	modules     []string
+	environment string
+
+	// Workbench's own.
+	resources    *resource.Resources
+	reservations *reservation.Reservations
+	tenancy      Tenancy
+}
+
+// The four interfaces below are declared here, by the consumer, rather than
+// imported from the package that provides them. That is the same rule
+// internal/features/auth follows for its own Throttler and Auditor, and it
+// buys the same two things: this package names exactly the operations it uses,
+// so a reader knows the transport's whole reach into the domain from one
+// screen; and a test can build the surface without a database, which is what
+// makes "no handler touches a use case before checking for a session" a thing
+// a hermetic test can actually prove.
+
+// Credentials is the sign-in, second-factor, and password-change use case.
+type Credentials interface {
+	Authenticate(ctx context.Context, email, secret string) (auth.Login, error)
+	CompleteSecondFactor(ctx context.Context, challengeToken, code string) (auth.Login, error)
+	ChangePassword(ctx context.Context, userID, current, next string, compromised password.Compromised, keepSessionID string) (auth.Issued, error)
+}
+
+// SessionDirectory lists and ends sessions.
+type SessionDirectory interface {
+	List(ctx context.Context, userID, currentSessionID string, limit int) ([]auth.Summary, error)
+	Revoke(ctx context.Context, sessionID, reason string) error
+	RevokeOtherSessions(ctx context.Context, userID, keepSessionID, reason string) (int64, error)
+}
+
+// AccountDirectory resolves an identity already named by a session.
+type AccountDirectory interface {
+	FindByID(ctx context.Context, userID string) (auth.Account, error)
+}
+
+// Enrollment turns an invitation token into an account.
+type Enrollment interface {
+	Accept(ctx context.Context, rawToken, secret string) (auth.Account, error)
+}
+
+// ServerDeps are the use cases and boundaries the API surface delegates to.
+//
+// It is a struct rather than a parameter list because every field is required
+// and the list is long enough that positional arguments would be a source of
+// silently swapped dependencies of the same type.
+type ServerDeps struct {
+	// Cursors issues and verifies the opaque pagination tokens every
+	// cursor-paged collection uses.
+	Cursors *pagination.Codec
+	// Credentials is the sign-in, second-factor, and password use case.
+	Credentials Credentials
+	// Sessions lists and ends sessions.
+	Sessions SessionDirectory
+	// Accounts resolves identities.
+	Accounts AccountDirectory
+	// Invitations turns an enrollment token into an account.
+	Invitations Enrollment
+	// Cookies writes and clears the session and anti-forgery cookies.
+	Cookies *httpauth.Cookies
+	// Compromised is the known-breached password list a new password is
+	// checked against.
+	Compromised password.Compromised
+	// Resources and Reservations are Workbench's own use cases.
+	Resources    *resource.Resources
+	Reservations *reservation.Reservations
+	// Tenancy resolves whether a caller is in the organization their request
+	// names. It is separate from the use cases because it answers a question
+	// asked before either of them runs, and because a handler that resolved
+	// membership through a feature would be a handler that could forget to.
+	Tenancy Tenancy
+	// Modules are the optional compile-time modules this binary carries, for
+	// the About/System page.
+	Modules []string
+	// Environment is the deployment environment, for the same page.
+	Environment string
+}
+
+// NewServer constructs the application's strict OpenAPI adapter.
+//
+// Every dependency is required rather than optional. A nil here would not
+// produce a degraded surface, it would produce one that panics on the first
+// request that needs the missing piece — and for the authentication
+// dependencies it would produce one that appears to work until somebody tries
+// to sign in.
+func NewServer(deps ServerDeps) (*Server, error) {
+	switch {
+	case deps.Cursors == nil:
+		// A collection that silently fell back to an unauthenticated position
+		// would be exactly the defect the codec exists to prevent.
+		return nil, errors.New("httpapi: a cursor codec is required")
+	case deps.Credentials == nil || deps.Sessions == nil || deps.Accounts == nil || deps.Invitations == nil:
+		return nil, errors.New("httpapi: the authentication use cases are required")
+	case deps.Cookies == nil:
+		return nil, errors.New("httpapi: the session cookie boundary is required")
+	case deps.Compromised == nil:
+		return nil, errors.New("httpapi: a compromised-password source is required; pass the application's list")
+	case deps.Resources == nil || deps.Reservations == nil:
+		return nil, errors.New("httpapi: the resource and reservation use cases are required")
+	case deps.Tenancy == nil:
+		// Without it every tenant-scoped handler would have to decide what to
+		// do with an unresolvable membership, and the tempting answer — carry
+		// on — is a cross-tenant read.
+		return nil, errors.New("httpapi: a tenancy resolver is required")
+	}
+	return &Server{
+		cursors:      deps.Cursors,
+		credentials:  deps.Credentials,
+		sessions:     deps.Sessions,
+		accounts:     deps.Accounts,
+		invitations:  deps.Invitations,
+		cookies:      deps.Cookies,
+		compromised:  deps.Compromised,
+		resources:    deps.Resources,
+		reservations: deps.Reservations,
+		tenancy:      deps.Tenancy,
+		modules:      slices.Clone(deps.Modules),
+		environment:  deps.Environment,
+	}, nil
+}
+
+var _ openapigen.StrictServerInterface = (*Server)(nil)
+
+// Register mounts every generated operation relative to the router supplied by
+// the /api/v1 boundary. The generated non-strict interface is only an adapter;
+// application code implements StrictServerInterface above.
+func (s *Server) Register(r chi.Router) {
+	strict := openapigen.NewStrictHandlerWithOptions(s, nil, openapigen.StrictHTTPServerOptions{
+		RequestErrorHandlerFunc: requestTransportError,
+		// A handler answers with a public problem by returning
+		// problem.Fail(definition); anything else is a defect and gets the
+		// generic 500 rather than a status the caller might trust.
+		ResponseErrorHandlerFunc:  problem.ResponseHandler(problem.InternalServerError()),
+		JSONBodyDecoder:           httpjson.Decode,
+		JSONResponseSizeChecker:   httpjson.CheckResponseSize,
+		RequestContentTypeMatcher: httpjson.MatchesMediaType,
+		RequestBodyAbsentChecker:  httpjson.IsBodyAbsent,
+	})
+	_ = openapigen.HandlerFromMux(strict, r)
+}
+
+func requestTransportError(w http.ResponseWriter, r *http.Request, err error) {
+	definition := problem.InvalidRequest()
+	switch {
+	case errors.Is(err, httpjson.ErrRequestBodyTooLarge):
+		definition = problem.RequestBodyTooLarge()
+	case errors.Is(err, httpjson.ErrUnsupportedMediaType), errors.Is(err, openapigen.ErrUnsupportedRequestContentType):
+		definition = problem.UnsupportedMediaType()
+	}
+	problem.Handler(definition)(w, r, err)
+}
+
+// paginationProblem maps one pagination parsing failure onto this
+// application's public catalog.
+//
+// Every pagination failure is the client's, so none of them is a 5xx. An
+// expired cursor gets its own code because it is the one case a well-behaved
+// client can act on without changing anything: start the listing again.
+func paginationProblem(err error) problem.Definition {
+	switch {
+	case errors.Is(err, pagination.ErrCursorExpired):
+		return problem.CursorExpired()
+	case errors.Is(err, pagination.ErrReportTooDeep):
+		return problem.ReportTooDeep()
+	default:
+		return problem.InvalidPagination()
+	}
+}
+
+// GetAPIIndex returns the versioned API root directly, without a generic
+// response envelope. It remains distinct from the public health probes.
+func (*Server) GetAPIIndex(context.Context, openapigen.GetAPIIndexRequestObject) (openapigen.GetAPIIndexResponseObject, error) {
+	return openapigen.GetAPIIndex200JSONResponse{
+		Version: openapigen.V1,
+	}, nil
+}
+
+// idempotencyKey reads and validates the client's key for a sensitive command.
+//
+// The header is required rather than optional for the commands that use it: a
+// command that is only sometimes idempotent is one whose safety depends on the
+// client remembering to ask for it.
+func idempotencyKey(r *http.Request) (string, error) {
+	key := r.Header.Get(idempotency.HeaderName)
+	if err := idempotency.ValidateKey(key); err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
+// idempotencyFingerprint derives what makes two attempts the same request:
+// the method, the path, and the decoded request body.
+//
+// It hashes the decoded value rather than the raw bytes because the strict
+// decoder has already consumed those, and because a re-encoded Go struct is
+// canonical — field order is fixed, so two attempts that differ only in JSON
+// key order are correctly treated as the same request. Anything outside the
+// body that must not change between attempts (an actor, a tenant) belongs in
+// the scope, not here.
+func idempotencyFingerprint(r *http.Request, requestBody any) ([]byte, error) {
+	encoded, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprinting the idempotent request: %w", err)
+	}
+	return idempotency.Fingerprint(r.Method, r.URL.Path, encoded), nil
+}
+
+// idempotencyProblem maps one idempotency failure onto the public catalog.
+//
+// A concurrent attempt and a reused key are deliberately different statuses: a
+// client should retry the first and must never retry the second.
+func idempotencyProblem(err error) problem.Definition {
+	switch {
+	case errors.Is(err, idempotency.ErrConcurrentRequest):
+		return problem.IdempotencyConflict()
+	case errors.Is(err, idempotency.ErrKeyReuse):
+		return problem.IdempotencyKeyReuse()
+	case errors.Is(err, idempotency.ErrInvalidKey):
+		return problem.InvalidIdempotencyKey()
+	default:
+		return problem.InternalServerError()
+	}
+}
+
+// cursorBinding fingerprints the query a cursor belongs to: the collection's
+// path and every request parameter except the pagination parameters
+// themselves.
+//
+// Excluding exactly those three is what lets a client walk pages without
+// invalidating its own cursor, while changing any filter, sort, or search term
+// invalidates it. A collection with a filter that does not travel in the query
+// string — a path parameter, or the caller's tenant — includes it in resource
+// so that two different result sets can never share a binding.
+func cursorBinding(r *http.Request, resource string) pagination.Binding {
+	query := r.URL.Query()
+	filters := make(url.Values, len(query))
+	for key, values := range query {
+		switch key {
+		case pagination.LimitParam, pagination.AfterParam, pagination.BeforeParam:
+			continue
+		default:
+			filters[key] = values
+		}
+	}
+	return pagination.NewBinding(resource, filters)
+}
+
+// pageBoundaries is what a use case reports about one page of rows: the sort
+// key of its first and last row, and whether rows exist on either side.
+type pageBoundaries struct {
+	// First is the sort key of the first row on this page, in the query's
+	// sort order. It is empty for an empty page.
+	First []string
+	// Last is the sort key of the last row on this page.
+	Last []string
+	// HasMore reports that rows exist after Last in the direction the page
+	// was read.
+	HasMore bool
+	// HasPrevious reports that rows exist before First.
+	HasPrevious bool
+}
+
+// issueCursorPage turns those boundaries into the wire contract, minting one
+// authenticated cursor per direction that actually has a further page.
+//
+// A cursor member stays absent rather than becoming an empty string or null:
+// the contract says an absent member means there is no page that way, and a
+// client testing for presence must not have to also test for emptiness.
+func issueCursorPage(codec *pagination.Codec, binding pagination.Binding, boundaries pageBoundaries) (openapigen.CursorPage, error) {
+	page := openapigen.CursorPage{HasMore: boundaries.HasMore}
+	if boundaries.HasMore && len(boundaries.Last) > 0 {
+		next, err := codec.Encode(binding, pagination.Forward, boundaries.Last)
+		if err != nil {
+			return openapigen.CursorPage{}, fmt.Errorf("issuing the next cursor: %w", err)
+		}
+		page.NextCursor = &next
+	}
+	if boundaries.HasPrevious && len(boundaries.First) > 0 {
+		previous, err := codec.Encode(binding, pagination.Backward, boundaries.First)
+		if err != nil {
+			return openapigen.CursorPage{}, fmt.Errorf("issuing the previous cursor: %w", err)
+		}
+		page.PrevCursor = &previous
+	}
+	return page, nil
+}
+
+// newAPIRootCursorCollection keeps the cursor-paginated fixture faithful to
+// its non-null OpenAPI contract, for the same reason
+// newAPIRootCollection does.
+func newAPIRootCursorCollection(items []openapigen.APIRoot, page openapigen.CursorPage) openapigen.APIRootCursorCollection {
+	if items == nil {
+		items = []openapigen.APIRoot{}
+	}
+	return openapigen.APIRootCursorCollection{
+		Items: items,
+		Page:  page,
+	}
+}
+
+// issueReportPage turns a parsed report and its total row count into the wire
+// contract.
+//
+// Nothing here recomputes the page or the size: they are echoed from the
+// request the totals were built for, so a report can never describe a page
+// other than the one it returned. The int32 narrowing is safe because
+// pagination.Report.Totals refuses a page number or size outside the bounds
+// the wire contract declares.
+func issueReportPage(totals pagination.Totals) openapigen.ReportPage {
+	return openapigen.ReportPage{
+		// #nosec G115 -- page and size come from validated pagination
+		// parameters, both bounded far inside int32 before a page is issued.
+		Page: int32(totals.Page),
+		// #nosec G115 -- see above.
+		Size:       int32(totals.Size),
+		Total:      totals.Total,
+		TotalPages: totals.TotalPages,
+		HasMore:    totals.HasMore,
+	}
+}
+
+// newAPIRootReportCollection keeps the offset-paginated fixture faithful to
+// its non-null OpenAPI contract, for the same reason newAPIRootCollection
+// does.
+func newAPIRootReportCollection(items []openapigen.APIRoot, page openapigen.ReportPage) openapigen.APIRootReportCollection {
+	if items == nil {
+		items = []openapigen.APIRoot{}
+	}
+	return openapigen.APIRootReportCollection{
+		Items: items,
+		Page:  page,
+	}
+}
+
+// newAPIRootCollection keeps the concrete collection fixture faithful to its
+// non-null OpenAPI contract. Generated Go slices remain nil-able, so every
+// domain collection constructor must enforce the same empty-array invariant.
+func newAPIRootCollection(items []openapigen.APIRoot, page openapigen.Page) openapigen.APIRootCollection {
+	if items == nil {
+		items = []openapigen.APIRoot{}
+	}
+	return openapigen.APIRootCollection{
+		Items: items,
+		Page:  page,
+	}
+}
