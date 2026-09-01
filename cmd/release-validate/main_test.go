@@ -185,7 +185,7 @@ func TestACorrectReleaseValidates(t *testing.T) {
 	dir := newRelease(t).write()
 
 	problems := check(t, dir,
-		"-version-report", versionReport(t, testVersion, testCommit, "2026-09-01T00:00:00Z"),
+		"-version-report", versionReport(t, "v"+testVersion, testCommit, "2026-09-01T00:00:00Z"),
 		"-commit", testCommit)
 	if len(problems) != 0 {
 		t.Fatalf("a correct release was reported as broken: %v", problems)
@@ -351,13 +351,21 @@ func TestTheBinaryMustReportTheReleaseItIsIn(t *testing.T) {
 
 	t.Run("wrong version", func(t *testing.T) {
 		t.Parallel()
-		report := versionReport(t, "0.0.9", testCommit, "2026-09-01T00:00:00Z")
-		mustFind(t, check(t, dir, "-version-report", report), `reports version "0.0.9"`)
+		report := versionReport(t, "v0.0.9", testCommit, "2026-09-01T00:00:00Z")
+		mustFind(t, check(t, dir, "-version-report", report), `reports version "v0.0.9"`)
 	})
 	t.Run("wrong commit", func(t *testing.T) {
 		t.Parallel()
-		report := versionReport(t, testVersion, strings.Repeat("f", 40), "2026-09-01T00:00:00Z")
+		report := versionReport(t, "v"+testVersion, strings.Repeat("f", 40), "2026-09-01T00:00:00Z")
 		mustFind(t, check(t, dir, "-version-report", report, "-commit", testCommit), "and the release was built from")
+	})
+	// The bare number is what GoReleaser's {{ .Version }} produces, and it is
+	// the form `go install` never reports. One release must not answer this
+	// question two ways depending on how it was installed.
+	t.Run("stamped without the tag's v", func(t *testing.T) {
+		t.Parallel()
+		report := versionReport(t, testVersion, testCommit, "2026-09-01T00:00:00Z")
+		mustFind(t, check(t, dir, "-version-report", report), `reports version "0.1.0"`)
 	})
 	t.Run("unstamped", func(t *testing.T) {
 		t.Parallel()
