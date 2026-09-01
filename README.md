@@ -65,6 +65,9 @@ Generation is deterministic. Generated business features and frontend components
 
 ## Documentation
 
+Start with **[Your first Nise application](docs/tutorial.md)**: thirty minutes,
+from nothing installed to a running application with a feature you added.
+
 - [Documentation index](docs/README.md)
 - [Project status](docs/project-status.md)
 - [Philosophy](docs/philosophy.md)

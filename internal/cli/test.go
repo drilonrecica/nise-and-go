@@ -125,6 +125,20 @@ func planPackageScriptSuite(name, root string, scriptNames []string) suitePlan {
 	if err := json.Unmarshal(data, &pkg); err != nil {
 		return suitePlan{Name: name, SkipReason: fmt.Sprintf("frontend/package.json does not parse as JSON: %s", err)}
 	}
+	// Dependencies are declared and not installed, which is the state a
+	// freshly generated project is in.
+	//
+	// Running the suite anyway produces "paraglide-js: command not found" —
+	// a missing binary nobody asked for, from a script nobody read, with
+	// pnpm's own "did you mean to install?" three screens further down. The
+	// answer is one command, so this says it instead of running into the
+	// wall. Skipped rather than failed: nothing is wrong with the project.
+	if _, err := os.Stat(filepath.Join(root, "frontend", "node_modules")); err != nil {
+		return suitePlan{
+			Name:       name,
+			SkipReason: "frontend/node_modules is missing; run `pnpm --dir frontend install` first",
+		}
+	}
 	for _, script := range scriptNames {
 		if _, ok := pkg.Scripts[script]; ok {
 			return suitePlan{

@@ -81,7 +81,31 @@ func checkPnpm(ctx context.Context, r Runner, timeout time.Duration) Check {
 // build a missing tool, which would violate doctor's no-implicit-network
 // contract. Explicit build/test/generator commands are the user-authorized
 // execution boundary.
-func checkSqlc(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool) Check {
+// noModuleHere is the answer for a generator tool when there is no Go module
+// to resolve it against.
+//
+// `go tool` reads the go.mod of the directory it runs in, so these three are
+// tools a *module* declares rather than tools a machine installs. There are
+// three situations and they deserve three answers: inside a generated project
+// the tool is declared and deliberately not invoked; inside this framework's
+// own repository it is declared and checked; and in a directory with no module
+// at all it is not missing so much as inapplicable.
+//
+// The third case is where somebody stands the first time they run `nise
+// doctor` — before they have created anything. Reporting a failure there made
+// the first command a new reader runs answer with three red lines and a remedy
+// naming a "repository root" that does not exist yet. A check that cannot
+// evaluate its subject skips with a reason, exactly as the recipe checks do.
+func noModuleHere(name string) Check {
+	return Check{
+		Name:     name,
+		Status:   StatusSkipped,
+		Found:    "no go.mod here or in any parent, so no module declares this tool",
+		Required: "only evaluated inside a Go module that declares it: a project created by nise new, or this framework's own repository",
+	}
+}
+
+func checkSqlc(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject, hasModule bool) Check {
 	spec := minVersionSpec{
 		name:    "sqlc",
 		command: "go",
@@ -97,10 +121,13 @@ func checkSqlc(ctx context.Context, r Runner, timeout time.Duration, insideGener
 			Required: "run `make sqlc-compile` explicitly to resolve and verify the pinned local sqlc tool",
 		}
 	}
+	if !hasModule {
+		return noModuleHere(spec.name)
+	}
 	return checkMinVersion(ctx, r, timeout, spec)
 }
 
-func checkGoose(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool) Check {
+func checkGoose(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject, hasModule bool) Check {
 	spec := minVersionSpec{
 		name:    "goose",
 		command: "go",
@@ -116,10 +143,13 @@ func checkGoose(ctx context.Context, r Runner, timeout time.Duration, insideGene
 			Required: "run `go test ./db/... ./internal/platform/database/...` explicitly to resolve and verify the embedded Goose integration",
 		}
 	}
+	if !hasModule {
+		return noModuleHere(spec.name)
+	}
 	return checkMinVersion(ctx, r, timeout, spec)
 }
 
-func checkOapiCodegen(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject bool) Check {
+func checkOapiCodegen(ctx context.Context, r Runner, timeout time.Duration, insideGeneratedProject, hasModule bool) Check {
 	spec := minVersionSpec{
 		name:    "oapi-codegen",
 		command: "go",
@@ -134,6 +164,9 @@ func checkOapiCodegen(ctx context.Context, r Runner, timeout time.Duration, insi
 			Found:    "declared by this project's go.mod but not executed implicitly",
 			Required: "run `make api-check` explicitly to resolve the pinned tool and verify that strict server bindings match api/openapi.yaml",
 		}
+	}
+	if !hasModule {
+		return noModuleHere(spec.name)
 	}
 	return checkMinVersion(ctx, r, timeout, spec)
 }

@@ -2,6 +2,8 @@ package doctor
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -59,19 +61,46 @@ func Run(ctx context.Context, opts Options) Report {
 	// is where they matter most — and is separately surfaced by the
 	// "recipe" check itself.
 	_, insideGeneratedProject, _ := findRecipeRoot(opts.WorkDir)
+	// Whether `go tool` has a module to resolve against at all. It is a
+	// separate question from "is this a generated project": this framework's
+	// own repository is a module that declares the three generator tools and
+	// is not a generated project, and an empty directory is neither.
+	hasModule := hasGoModule(opts.WorkDir)
 
 	checks := []Check{
 		checkGo(ctx, r, timeout),
 		checkNode(ctx, r, timeout),
 		checkPnpm(ctx, r, timeout),
 		checkContainerRuntime(ctx, r, timeout),
-		checkSqlc(ctx, r, timeout, insideGeneratedProject),
-		checkGoose(ctx, r, timeout, insideGeneratedProject),
-		checkOapiCodegen(ctx, r, timeout, insideGeneratedProject),
+		checkSqlc(ctx, r, timeout, insideGeneratedProject, hasModule),
+		checkGoose(ctx, r, timeout, insideGeneratedProject, hasModule),
+		checkOapiCodegen(ctx, r, timeout, insideGeneratedProject, hasModule),
 	}
 
 	recipeCheck, rec := checkRecipe(opts.WorkDir)
 	checks = append(checks, recipeCheck, checkRecipeCompatibility(rec, opts.NiseVersion))
 
 	return Report{Checks: checks}
+}
+
+// hasGoModule reports whether dir or any parent holds a go.mod.
+//
+// It walks up rather than looking only at dir, because `go tool` does: a
+// command run in a subdirectory of a module resolves against that module's
+// tools, and a check that looked only at the immediate directory would report
+// "no module" from inside one.
+func hasGoModule(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
